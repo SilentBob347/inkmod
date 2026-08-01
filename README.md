@@ -31,7 +31,7 @@ interface localization, extra format support, and a set of UI/reliability fixes.
 
 ## Changelog
 
-### Unreleased
+### v1.0.2
 
 - **Reader font shortcut**: the power-button "Change font" action (short- and
   long-press) used to cycle a legacy built-in font list that no longer exists in
