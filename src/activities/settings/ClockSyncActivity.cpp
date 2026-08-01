@@ -123,7 +123,11 @@ void ClockSyncActivity::render(RenderLock&&) {
     case SUCCESS: {
       renderer.drawCenteredText(UI_12_FONT_ID, midY - 20, tr(STR_CLOCK_SYNC_OK), true, EpdFontFamily::BOLD);
       if (syncedTime[0] != '\0') {
-        char line[32];
+        // 32 bytes was too tight: multi-byte UTF-8 translations of STR_CURRENT_TIME (e.g.
+        // Cyrillic "Текущее время:" is 26 bytes on its own) plus the formatting space and
+        // the time string could exceed it by a byte or two, silently truncating the last
+        // character of the displayed time. Sized generously so this can't recur.
+        char line[64];
         snprintf(line, sizeof(line), "%s %s", tr(STR_CURRENT_TIME), syncedTime);
         renderer.drawCenteredText(UI_10_FONT_ID, midY + 10, line);
       }

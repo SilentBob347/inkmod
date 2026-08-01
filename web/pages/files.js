@@ -3901,6 +3901,28 @@ async function convertEpubFile(file, progressCallback) {
         if (modified) {
           t = whitespaceGuard.restore(safeSerialize(doc, whitespaceGuard.content));
         }
+      } else if (Object.keys(renamed).length > 0) {
+        // DOMParser couldn't parse this as strict application/xhtml+xml - very common
+        // for epubs with HTML-style (non-self-closing) tags like <img src="...">
+        // instead of <img src="..." />. Without this fallback, the image-renaming
+        // pass above never ran for this file, so any <img src="..."> still points at
+        // the pre-rename filename (e.g. "i_001.png") even though the actual image was
+        // recompressed and saved as "i_001.jpg" - the reader then fails to find the
+        // referenced file and simply shows nothing. Patch just the src attributes via
+        // plain text replacement instead; width/height stripping and split-image
+        // wrapping are skipped for these files, but the image itself still shows up.
+        const beforeFallback = t;
+        t = t.replace(/(<img\b[^>]*\bsrc\s*=\s*["'])([^"']+)(["'])/gi, (full, pre, src, post) => {
+          const decodedSrc = decodeHref(src);
+          const resolvedSrc = resolvePath(xhtmlPath, decodedSrc);
+          const match = Object.entries(renamed).find(([oldPath]) => resolvedSrc === oldPath);
+          if (!match) return full;
+          const [oldPath, newPath] = match;
+          return pre + decodedSrc.replace(oldPath.split('/').pop(), newPath.split('/').pop()) + post;
+        });
+        if (t !== beforeFallback) {
+          logFix('img src (regex fallback)', xhtmlPath.split('/').pop());
+        }
       }
     } catch (e) {
       console.warn('DOMParser error for', xhtmlPath, e.message);

@@ -31,6 +31,45 @@ interface localization, extra format support, and a set of UI/reliability fixes.
 
 ## Changelog
 
+### v1.0.3
+
+- **Landscape orientation**: fixed the on-screen control-button strip overlapping list
+  content and header titles across the app (Settings, Language, Font, Network mode,
+  KOReader sync, OPDS, button remap, recent books, bookmarks, file actions,
+  confirmation dialogs) when the screen is rotated to landscape. These screens now
+  use the same orientation-aware safe-area layout the reader already used, instead of
+  always assuming a portrait-only bottom button bar.
+- **Clock sync screen**: fixed "Current time: 20:4" (last digit missing) after a
+  successful sync — the display buffer was 1 byte too small for the multi-byte UTF-8
+  translation of "Current time:" plus the time string, so `snprintf` silently
+  truncated it.
+- **Clock kerning bug, fixed at the root**: certain digit pairs (e.g. "3"+"4",
+  "3"+"5") had bad kerning-table data that pulled the second digit far enough left to
+  visually vanish behind the first. Previously patched only for the header clock;
+  now fixed for every on-screen digit pair (dates, stats, page numbers, battery %, …)
+  by skipping kerning between two ASCII digits at the renderer level.
+- **RoundedRaff**: fixed broken/missing Cyrillic letters (и, ш, л, е, я and others)
+  when "Interface text size" is set to Large. That mode used a separate LexendDeca
+  14pt font with incomplete Cyrillic glyph coverage in this build; it now uses the
+  same Inter 12pt bump every other theme uses, which has full Cyrillic coverage.
+- **EPUB image optimization**: fixed recompressed images (e.g. `.png` → `.jpg`)
+  disappearing entirely from the book after running "Optimize" on upload. The
+  optimizer's image-reference rewriter only ran when the chapter HTML parsed as
+  strict XHTML; content using HTML-style tags (e.g. `<img src="...">` without a
+  self-closing `/>`) failed that parse and silently skipped the rewrite, so `<img>`
+  tags kept pointing at the old (now-renamed) filename. Added a plain-text regex
+  fallback so image references still get fixed even when strict parsing fails.
+- **Reader stability on image-heavy books**: some large, heavily-illustrated books
+  (e.g. children's encyclopedias) could reboot the device while reading, with no
+  error shown. Root cause: this build compiles with C++ exceptions disabled, so any
+  failed memory allocation anywhere in the app — not just the image-loading paths
+  already guarded by memory checks — silently aborted and rebooted with nothing in
+  the log. Added a global out-of-memory handler that logs the heap state before
+  restarting (so a future case like this is diagnosable from one log capture), and
+  widened the memory headroom required before loading another inline image, so the
+  existing "skip further images under memory pressure" fallback kicks in earlier —
+  before the surrounding text/CSS parsing has a chance to exhaust the remainder.
+
 ### v1.0.2
 
 - **Reader font shortcut**: the power-button "Change font" action (short- and

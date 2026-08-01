@@ -140,14 +140,13 @@ void FontSelectionActivity::handleSelection() {
 void FontSelectionActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
   const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto safeArea = UITheme::getInstance().getScreenSafeArea(renderer, /*hasFrontButtonHints=*/true, /*hasSideButtonHints=*/false);
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_FONT_FAMILY));
+  GUI.drawHeader(renderer, Rect{safeArea.x, metrics.topPadding, safeArea.width, metrics.headerHeight}, tr(STR_FONT_FAMILY));
 
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  const int contentHeight = safeArea.y + safeArea.height - contentTop - metrics.verticalSpacing;
 
   // Determine which font index is currently active (to mark as "Selected")
   int currentFontIndex = -1;
@@ -162,8 +161,8 @@ void FontSelectionActivity::render(RenderLock&&) {
   }
 
   GUI.drawList(
-      renderer, Rect{0, contentTop, pageWidth, contentHeight}, static_cast<int>(fonts_.size()), selectedIndex_,
-      [this](int index) { return fonts_[index].name; }, nullptr, nullptr,
+      renderer, Rect{safeArea.x, contentTop, safeArea.width, contentHeight}, static_cast<int>(fonts_.size()),
+      selectedIndex_, [this](int index) { return fonts_[index].name; }, nullptr, nullptr,
       [this, currentFontIndex](int index) -> std::string { return index == currentFontIndex ? tr(STR_SELECTED) : ""; },
       true);
 

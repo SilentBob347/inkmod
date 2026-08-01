@@ -10,6 +10,7 @@
 #include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <HalSystem.h>
+#include <MemoryBudget.h>
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <Logging.h>
@@ -17,6 +18,7 @@
 #include <WiFi.h>
 #include <builtinFonts/all.h>
 #include <ctime>
+#include <new>
 
 #ifdef SIMULATOR
 using esp_reset_reason_t = int;
@@ -148,11 +150,18 @@ EpdFontFamily uiLargeFontFamily(&uiLargeRegularFont, &uiLargeBoldFont);
 // device that another theme's rows have room too, add it to the switch below.
 void applyUiTextSize(GfxRenderer& r) {
   if (SETTINGS.uiTextSize == InkMODSettings::UI_TEXT_SIZE_LARGE) {
-    if (SETTINGS.uiTheme == InkMODSettings::ROUNDEDRAFF) {
-      r.replaceFont(UI_10_FONT_ID, uiLargeFontFamily);
-    } else {
-      r.replaceFont(UI_10_FONT_ID, ui12FontFamily);
-    }
+    // NOTE: RoundedRaff used to get a bigger LexendDeca 14pt bump here instead of the
+    // Inter 12pt one every other theme uses (its taller list rows have room for it - see
+    // the metrics comment above). Reverted to Inter 12pt for all themes: the checked-in
+    // lexenddeca_14_bold.h/lexenddeca_14_regular.h are missing several Cyrillic glyphs
+    // (и, ш, л, е, я and others - confirmed against the font's own additional-intervals
+    // fallback list in lib/EpdFont/scripts/convert-builtin-fonts.sh) that a ChareInk7
+    // fallback was meant to supply at generation time but evidently didn't end up in
+    // these particular committed headers, so Cyrillic UI text renders with missing-glyph
+    // boxes for those letters. Re-enable the RoundedRaff branch once lexenddeca_14_*.h
+    // are regenerated (needs the LexendDeca + ChareInk7 source fonts, not present in
+    // this checkout) and verified to have full Cyrillic coverage.
+    r.replaceFont(UI_10_FONT_ID, ui12FontFamily);
   } else {
     r.replaceFont(UI_10_FONT_ID, ui10FontFamily);
   }
@@ -665,8 +674,29 @@ void attemptSilentBootTimeSync(const BootTimeSyncCandidate& candidate) {
   WiFi.mode(WIFI_OFF);
 }
 
+// Called by every plain `new`/`std::vector`/`std::string` growth (anything not using
+// `new (std::nothrow)`) when the allocator can't satisfy the request. Exceptions are
+// disabled in this build (-fno-exceptions), so without this handler installed, a failed
+// allocation anywhere in the app - not just the "big ticket" spots already guarded by
+// MemoryBudget checks (image decoders, inline EPUB images) - silently aborts and resets
+// the device with no diagnostic at all. This doesn't recover the allocation (there's
+// nothing safe to free from here), but it gets the heap state into the serial log before
+// the inevitable restart, so a low-memory crash is diagnosable from one log capture
+// instead of hours of static code review.
+void outOfMemoryHandler() {
+  const auto heap = MemoryBudget::snapshot();
+  LOG_ERR("MEM", "operator new failed - out of memory (free=%u maxAlloc=%u) - restarting", heap.freeHeap,
+          heap.maxAllocHeap);
+#ifdef ENABLE_SERIAL_LOG
+  logSerial.flush();
+#endif
+  delay(50);  // Give the serial log time to actually go out before the reset.
+  esp_restart();
+}
+
 void setup() {
   t1 = millis();
+  std::set_new_handler(outOfMemoryHandler);
 
   const esp_reset_reason_t rawResetReason = esp_reset_reason();
   const esp_sleep_wakeup_cause_t rawWakeupCause = esp_sleep_get_wakeup_cause();

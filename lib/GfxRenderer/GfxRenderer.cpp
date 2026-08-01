@@ -762,7 +762,16 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
     // identical character pairs always produce the same pixel step regardless of
     // where they fall on the line.
     if (prevCp != 0) {
-      const auto kernFP = font.getKerning(prevCp, cp, style);  // 4.4 fixed-point kern
+      const bool bothDigits = prevCp >= '0' && prevCp <= '9' && cp >= '0' && cp <= '9';
+      // Skip kerning between two ASCII digits: some fonts ship with bad kerning-table
+      // entries for specific digit pairs (observed: "3"+"4", "3"+"5") that pull the
+      // second digit far enough left to visually overlap and disappear behind the
+      // first - e.g. a clock showing "11:34" as "11:3". Digits have no real
+      // typographic need for kerning against each other (they're meant to read like
+      // tabular figures), so just skip the lookup for digit-digit pairs everywhere
+      // rather than special-casing every screen that happens to draw two digits in a
+      // row (clocks, dates, stats, battery percentage, page numbers, ...).
+      const auto kernFP = bothDigits ? 0 : font.getKerning(prevCp, cp, style);  // 4.4 fixed-point kern
       lastBaseX += fp4::toPixel(prevAdvanceFP + kernFP);       // snap 12.4 fixed-point to nearest pixel
     }
 

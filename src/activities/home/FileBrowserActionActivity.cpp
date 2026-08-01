@@ -64,10 +64,9 @@ void FileBrowserActionActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
-  const int titleX = metrics.contentSidePadding;
-  const int titleMaxWidth = std::max(0, pageWidth - titleX - metrics.contentSidePadding - kBatteryTextReserveWidth);
+  const auto safeArea = UITheme::getInstance().getScreenSafeArea(renderer, /*hasFrontButtonHints=*/true, /*hasSideButtonHints=*/false);
+  const int titleX = safeArea.x + metrics.contentSidePadding;
+  const int titleMaxWidth = std::max(0, safeArea.width - metrics.contentSidePadding * 2 - kBatteryTextReserveWidth);
   const auto titleLines =
       renderer.wrappedText(kTitleFontId, title.c_str(), titleMaxWidth, kTitleMaxLines, EpdFontFamily::BOLD);
   const int titleLineHeight = renderer.getLineHeight(kTitleFontId);
@@ -78,7 +77,7 @@ void FileBrowserActionActivity::render(RenderLock&&) {
   const int titleBottomPadding = tallHeader ? kTallHeaderTitleBottomPadding : kCompactHeaderTitleBottomPadding;
   const int actionHeaderHeight =
       std::max(metrics.headerHeight, titleY - metrics.topPadding + titleBlockHeight + titleBottomPadding);
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, actionHeaderHeight}, "");
+  GUI.drawHeader(renderer, Rect{safeArea.x, metrics.topPadding, safeArea.width, actionHeaderHeight}, "");
 
   for (int i = 0; i < static_cast<int>(titleLines.size()); ++i) {
     renderer.drawText(kTitleFontId, titleX, titleY + i * (titleLineHeight + kTitleLineGap), titleLines[i].c_str(), true,
@@ -86,9 +85,9 @@ void FileBrowserActionActivity::render(RenderLock&&) {
   }
 
   const int contentTop = metrics.topPadding + actionHeaderHeight + metrics.verticalSpacing;
-  const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
-  GUI.drawList(renderer, Rect{0, contentTop, pageWidth, contentHeight}, static_cast<int>(items.size()), selectedIndex,
-               [this](int index) { return std::string(I18N.get(items[index].labelId)); });
+  const int contentHeight = safeArea.y + safeArea.height - contentTop - metrics.verticalSpacing * 2;
+  GUI.drawList(renderer, Rect{safeArea.x, contentTop, safeArea.width, contentHeight}, static_cast<int>(items.size()),
+               selectedIndex, [this](int index) { return std::string(I18N.get(items[index].labelId)); });
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

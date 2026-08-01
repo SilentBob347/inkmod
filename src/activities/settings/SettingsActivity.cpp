@@ -835,8 +835,9 @@ void SettingsActivity::render(RenderLock&&) {
   const auto pageHeight = renderer.getScreenHeight();
 
   const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto safeArea = UITheme::getInstance().getScreenSafeArea(renderer, /*hasFrontButtonHints=*/true, /*hasSideButtonHints=*/false);
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_SETTINGS_TITLE));
+  GUI.drawHeader(renderer, Rect{safeArea.x, metrics.topPadding, safeArea.width, metrics.headerHeight}, tr(STR_SETTINGS_TITLE));
   int headerDateLineBottom = headerDateLineBottomY(renderer, metrics);
   if (SETTINGS.uiTheme == InkMODSettings::ROUNDEDRAFF) {
     headerDateLineBottom += roundedRaffHeaderDateYOffset;
@@ -848,14 +849,14 @@ void SettingsActivity::render(RenderLock&&) {
   for (int i = 0; i < categoryCount; i++) {
     tabs.push_back({I18N.get(categoryNames[i]), selectedCategoryIndex == i});
   }
-  GUI.drawTabBar(renderer, Rect{0, metrics.topPadding + metrics.headerHeight, pageWidth, metrics.tabBarHeight}, tabs,
-                 selectedSettingIndex == 0);
+  GUI.drawTabBar(renderer, Rect{safeArea.x, metrics.topPadding + metrics.headerHeight, safeArea.width, metrics.tabBarHeight},
+                 tabs, selectedSettingIndex == 0);
 
   const auto& settings = *currentSettings;
-  Rect listRect{0, metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing,
-                pageWidth,
-                pageHeight - (metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight +
-                              metrics.buttonHintsHeight + metrics.verticalSpacing * 2)};
+  Rect listRect{safeArea.x, metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing,
+                safeArea.width,
+                safeArea.y + safeArea.height - (metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight +
+                                                metrics.verticalSpacing * 2)};
   const StrId submenuTitleId = activeSubmenuTitleId();
   if (submenuTitleId != StrId::STR_NONE_OPT) {
     constexpr int submenuHeaderFontId = UI_10_FONT_ID;

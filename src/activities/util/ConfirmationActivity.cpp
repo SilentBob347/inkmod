@@ -19,10 +19,11 @@ void ConfirmationActivity::onEnter() {
   Activity::onEnter();
 
   const auto& metrics = UITheme::getInstance().getMetrics();
+  const auto safeArea = UITheme::getInstance().getScreenSafeArea(renderer, /*hasFrontButtonHints=*/true, /*hasSideButtonHints=*/false);
   lineHeight = renderer.getLineHeight(fontId);
-  const int maxWidth = renderer.getScreenWidth() - (margin * 2);
-  const int contentTop = margin;
-  const int contentBottom = renderer.getScreenHeight() - metrics.buttonHintsHeight - margin;
+  const int maxWidth = safeArea.width - (margin * 2);
+  const int contentTop = safeArea.y + margin;
+  const int contentBottom = safeArea.y + safeArea.height - margin;
   const int contentHeight = contentBottom - contentTop;
   const int maxTotalLines = std::max(1, contentHeight / lineHeight);
 
