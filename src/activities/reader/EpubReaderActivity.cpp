@@ -1923,10 +1923,29 @@ void EpubReaderActivity::executeReaderQuickAction(InkMODSettings::LONG_PRESS_MEN
     case InkMODSettings::LONG_MENU_SLEEP:
       enterDeepSleep();
       break;
-    case InkMODSettings::LONG_MENU_CHANGE_FONT:
-      SETTINGS.fontFamily = (SETTINGS.fontFamily + 1) % InkMODSettings::FONT_FAMILY_COUNT;
+    case InkMODSettings::LONG_MENU_CHANGE_FONT: {
+      // This firmware has no built-in reader fonts - they're SD-card only (see the
+      // FontSelectionActivity.cpp comment). SETTINGS.fontFamily is a legacy field kept
+      // only so old settings files still parse; cycling it has no visible effect. Cycle
+      // through the actually-installed SD font families instead, matching what
+      // FontSelectionActivity offers.
+      const auto& families = sdFontSystem.registry().getFamilies();
+      if (!families.empty()) {
+        const int currentIdx = SETTINGS.sdFontFamilyName[0] != '\0'
+                                    ? sdFontSystem.registry().getFamilyIndex(SETTINGS.sdFontFamilyName)
+                                    : -1;
+        const int nextIdx = (currentIdx + 1 >= static_cast<int>(families.size())) ? 0 : currentIdx + 1;
+        strncpy(SETTINGS.sdFontFamilyName, families[nextIdx].name.c_str(), sizeof(SETTINGS.sdFontFamilyName) - 1);
+        SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
+        sdFontSystem.ensureLoaded(renderer);
+        SETTINGS.saveToFile();
+      } else {
+        // No SD fonts installed at all - nothing real to cycle to.
+        SETTINGS.fontFamily = (SETTINGS.fontFamily + 1) % InkMODSettings::FONT_FAMILY_COUNT;
+      }
       reindexCurrentSection();
       break;
+    }
     case InkMODSettings::LONG_MENU_TOGGLE_GUIDE_DOTS:
       SETTINGS.guideReadingEnabled = !SETTINGS.guideReadingEnabled;
       reindexCurrentSection();

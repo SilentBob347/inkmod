@@ -17,6 +17,17 @@ else
   sed -i '' "s/inkmod_version = .*/inkmod_version = $VERSION/" platformio.ini
 fi
 git add platformio.ini
-git commit -m "Update inkmod_version to $VERSION"
-git tag "v$VERSION"
-echo "Tagged v$VERSION — push with: git push && git push origin v$VERSION"
+if git diff --cached --quiet; then
+  echo "platformio.ini is already at version $VERSION - nothing to commit, tagging as-is."
+else
+  git commit -m "Update inkmod_version to $VERSION"
+fi
+
+if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+  echo "Tag v$VERSION already exists locally - not re-tagging." >&2
+else
+  git tag "v$VERSION"
+fi
+echo "Tagged v$VERSION — push with:"
+echo "  git push"
+echo "  git push origin v$VERSION"
