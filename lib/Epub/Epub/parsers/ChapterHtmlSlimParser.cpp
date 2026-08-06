@@ -74,8 +74,6 @@ const char* getAttribute(const XML_Char** atts, const char* attrName) {
   return nullptr;
 }
 
-bool isNonNavigableInlineElement(const char* name) { return strcmp(name, "span") == 0; }
-
 bool isInternalEpubLink(const char* href) {
   if (!href || href[0] == '\0') return false;
   if (strncmp(href, "http://", 7) == 0 || strncmp(href, "https://", 8) == 0) return false;
@@ -148,6 +146,7 @@ void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
   effectiveDirection = currentCssStyle.direction;
   effectiveSup = currentCssStyle.hasVerticalAlign() && currentCssStyle.verticalAlign == CssVerticalAlign::Super;
   effectiveSub = currentCssStyle.hasVerticalAlign() && currentCssStyle.verticalAlign == CssVerticalAlign::Sub;
+  effectiveSmallCaps = currentCssStyle.hasSmallCaps() && currentCssStyle.smallCaps;
 
   // Apply inline style stack in order
   for (const auto& entry : inlineStyleStack) {
@@ -177,6 +176,9 @@ void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
     if (entry.hasSub) {
       effectiveSub = entry.sub;
       if (entry.sub) effectiveSup = false;
+    }
+    if (entry.hasSmallCaps) {
+      effectiveSmallCaps = entry.smallCaps;
     }
   }
 
@@ -319,6 +321,9 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
     fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::SUP);
   } else if (effectiveSub) {
     fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::SUB);
+  }
+  if (effectiveSmallCaps) {
+    fontStyle = static_cast<EpdFontFamily::Style>(fontStyle | EpdFontFamily::SMALL_CAPS);
   }
 
   // flush the buffer
@@ -841,7 +846,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
         const char* idValue = atts[i + 1];
         const bool isTocAnchor =
             std::find(self->tocAnchors.begin(), self->tocAnchors.end(), idValue) != self->tocAnchors.end();
-        if (isTocAnchor || (!isNonNavigableInlineElement(name) && self->anchorData.size() < MAX_ANCHORS_PER_CHAPTER)) {
+        if (isTocAnchor || self->anchorData.size() < MAX_ANCHORS_PER_CHAPTER) {
           self->pendingAnchorId = idValue;
         }
       } else if (strcmp(atts[i], "dir") == 0) {
@@ -1656,7 +1661,8 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
   } else if (strcmp(name, "span") == 0 || !isHeaderOrBlock(name)) {
     // Handle span and other inline elements for CSS styling
     if (cssStyle.hasFontWeight() || cssStyle.hasFontStyle() || cssStyle.hasTextDecoration() ||
-        cssStyle.hasBackgroundBlack() || cssStyle.hasVerticalAlign() || cssStyle.hasDirection()) {
+        cssStyle.hasBackgroundBlack() || cssStyle.hasVerticalAlign() || cssStyle.hasDirection() ||
+        cssStyle.hasSmallCaps()) {
       // Flush buffer before style change so preceding text gets current style
       if (self->partWordBufferIndex > 0) {
         self->flushPartWordBuffer();
@@ -1693,6 +1699,10 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
         }
       }
       ChapterHtmlSlimParser::applyDirectionToEntry(entry, cssStyle);
+      if (cssStyle.hasSmallCaps()) {
+        entry.hasSmallCaps = true;
+        entry.smallCaps = cssStyle.smallCaps;
+      }
       self->inlineStyleStack.push_back(entry);
       self->updateEffectiveInlineStyle();
     }

@@ -19,6 +19,15 @@ class InkMODState {
   uint8_t readerActivityLoadCount = 0;
   bool lastSleepFromReader = false;
   bool showBootScreen = true;
+  // esp_timer_get_time() value (microseconds since boot) as of the last
+  // time USB charging was observed, persisted so "since last charge" (see
+  // HalPowerManager::getLastChargeMonotonicUs()) survives a reflash/reset,
+  // not just a deep sleep - the in-RAM (RTC_DATA_ATTR) copy that setting
+  // reads during normal operation is faster to update and doesn't need an
+  // SD write per poll, but resets to 0 on every fresh flash without this.
+  // Written on charge-state transitions only (see main.cpp's loop()), and
+  // read once at boot to seed the RTC copy - never written moment-to-moment.
+  uint64_t lastChargeMonotonicUs = 0;
 
   // Returns true if idx was shown within the last checkCount picks.
   // Walks backwards from the most recently written slot.

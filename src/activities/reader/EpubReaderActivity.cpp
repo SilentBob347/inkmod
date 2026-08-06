@@ -13,6 +13,7 @@
 #include <MemoryBudget.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <iterator>
 #include <limits>
@@ -2466,6 +2467,30 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     if (!loadedSection) {
       LOG_DBG("ERS", "Cache not found, building... (free=%u, maxAlloc=%u)", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
+      // A spine item's own size (not the cumulative-to-here total the
+      // reading-progress math elsewhere uses) - checked once, before ever
+      // touching it, because a genuinely oversized single chapter doesn't
+      // fail cleanly the way a normal low-heap condition further down this
+      // function does: layoutAbortedForLowMemory only fires once
+      // ChapterHtmlSlimParser is already deep into tokenizing/paginating,
+      // and for a many-megabyte file that's a very long, ever more
+      // memory-pressured wait first - indistinguishable from a genuine
+      // hang, not a clean abort. A book with a single spine item covering
+      // an entire "complete works" (a real, if unusual, EPUB export this
+      // reader has actually been sent) is the case this guards; a normal
+      // book's chapters are nowhere near this threshold.
+      constexpr size_t kMaxSaneSpineItemBytes = 1024 * 1024;
+      const size_t cumulativeThroughHere = epub->getCumulativeSpineItemSize(currentSpineIndex);
+      const size_t cumulativeThroughPrevious = currentSpineIndex > 0 ? epub->getCumulativeSpineItemSize(currentSpineIndex - 1) : 0;
+      const size_t thisItemBytes =
+          cumulativeThroughHere > cumulativeThroughPrevious ? cumulativeThroughHere - cumulativeThroughPrevious : 0;
+      if (thisItemBytes > kMaxSaneSpineItemBytes) {
+        LOG_ERR("ERS", "Spine item %d is %zu bytes - too large to lay out on this device, refusing instead of hanging",
+                currentSpineIndex, thisItemBytes);
+        showLowMemoryLayoutError();
+        return;
+      }
+
       GUI.drawPopup(renderer, tr(STR_INDEXING));
 
       const auto popupFn = [this]() { GUI.drawPopup(renderer, tr(STR_INDEXING)); };
@@ -2762,6 +2787,26 @@ void EpubReaderActivity::silentIndexNextChapterIfNeeded(const uint16_t viewportW
     return;
   }
 
+  // Same guard as the interactive open path (see the size check right
+  // before Section::createSectionFile() further up this file) - without
+  // it, this background prefetch is the thing that actually hits an
+  // oversized spine item first, since it runs speculatively while the
+  // user is still reading the *current* chapter. It would spend minutes
+  // failing the exact same slow way before the interactive guard ever got
+  // a chance to refuse quickly once the user actually turned the page.
+  {
+    constexpr size_t kMaxSaneSpineItemBytes = 1024 * 1024;
+    const size_t cumulativeThroughNext = epub->getCumulativeSpineItemSize(nextSpineIndex);
+    const size_t cumulativeThroughCurrent = epub->getCumulativeSpineItemSize(currentSpineIndex);
+    const size_t nextItemBytes =
+        cumulativeThroughNext > cumulativeThroughCurrent ? cumulativeThroughNext - cumulativeThroughCurrent : 0;
+    if (nextItemBytes > kMaxSaneSpineItemBytes) {
+      LOG_DBG("ERS", "Silent next-chapter indexing skipped: spine=%d is %zu bytes - too large to prefetch",
+              nextSpineIndex, nextItemBytes);
+      return;
+    }
+  }
+
   LOG_DBG("ERS", "Silently indexing next chapter: %d (free=%u, maxAlloc=%u)", nextSpineIndex, ESP.getFreeHeap(),
           ESP.getMaxAllocHeap());
   if (!nextSection.createSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
@@ -3019,8 +3064,38 @@ void EpubReaderActivity::renderStatusBar() const {
                                                        section->pageCount > 0 ? section->pageCount : 1);
   char timeLeftLabel[24] = {};
   const char* timeLeft = formatTimeLeftLabel(timeLeftLabel, sizeof(timeLeftLabel)) ? timeLeftLabel : nullptr;
+
+  // A whole-book page count isn't something this reader actually has -
+  // computing one for real would mean paginating every chapter up front,
+  // which is exactly what the lazy per-chapter loading (FB2 and otherwise)
+  // is built to avoid. This is an estimate instead: how many pages-per-byte
+  // the *current* chapter works out to, scaled up to the book's total byte
+  // size. It's only as good as that one chapter is representative of the
+  // whole book (a title page or a chapter with unusually dense/sparse
+  // formatting will skew it), but it's cheap - reusing byte totals the
+  // reader already tracks for the % progress bar - and self-corrects as
+  // the reader moves through chapters with different densities.
+  int bookWideCurrentPage = -1;
+  int bookWideTotalPages = -1;
+  if (SETTINGS.statusBarChapterPageCount == 2 && pageCount > 0) {
+    const size_t cumulativeThroughHere = epub->getCumulativeSpineItemSize(currentSpineIndex);
+    const size_t cumulativeThroughPrevious =
+        currentSpineIndex > 0 ? epub->getCumulativeSpineItemSize(currentSpineIndex - 1) : 0;
+    const size_t currentChapterBytes =
+        cumulativeThroughHere > cumulativeThroughPrevious ? cumulativeThroughHere - cumulativeThroughPrevious : 0;
+    const size_t totalBookBytes = epub->getBookSize();
+    if (currentChapterBytes > 0 && totalBookBytes > 0) {
+      const float avgPagesPerByte = pageCount / static_cast<float>(currentChapterBytes);
+      const float estimatedTotalPages = avgPagesPerByte * static_cast<float>(totalBookBytes);
+      bookWideTotalPages = std::max(1, static_cast<int>(std::lround(estimatedTotalPages)));
+      bookWideCurrentPage =
+          std::max(1, static_cast<int>(std::lround(bookProgress / 100.0f * estimatedTotalPages)));
+      bookWideCurrentPage = std::min(bookWideCurrentPage, bookWideTotalPages);
+    }
+  }
+
   GUI.drawStatusBar(renderer, bookProgress, currentPage, pageCount, title, 0, textYOffset, bookmarked, timeLeft,
-                    ReaderUtils::readerDarkModeEnabled());
+                    ReaderUtils::readerDarkModeEnabled(), bookWideCurrentPage, bookWideTotalPages);
   GUI.drawTopStatusBarClock(renderer, UITheme::getInstance().getMetrics().topPadding, nullptr, true, 0,
                             ReaderUtils::readerDarkModeEnabled());
 }
@@ -3148,6 +3223,24 @@ bool EpubReaderActivity::drawCurrentPageToBuffer(const std::string& filePath, Gf
   if (!loadedSection) {
     if (!MemoryBudget::hasHeapForOptionalEpubRebuild("SLP", "EPUB sleep-page cache rebuild", spineIndex)) {
       return false;
+    }
+
+    // Same "don't even try" guard as the interactive open path and the
+    // background next-chapter prefetch (see their own comments) - the
+    // sleep screen can land on any spine index the user happened to be
+    // reading, including an oversized one, and shouldn't spend minutes
+    // failing to build a page snapshot for it either.
+    {
+      constexpr size_t kMaxSaneSpineItemBytes = 1024 * 1024;
+      const size_t cumulativeThroughHere = epub->getCumulativeSpineItemSize(spineIndex);
+      const size_t cumulativeThroughPrevious = spineIndex > 0 ? epub->getCumulativeSpineItemSize(spineIndex - 1) : 0;
+      const size_t thisItemBytes =
+          cumulativeThroughHere > cumulativeThroughPrevious ? cumulativeThroughHere - cumulativeThroughPrevious : 0;
+      if (thisItemBytes > kMaxSaneSpineItemBytes) {
+        LOG_DBG("SLP", "EPUB: spine %d is %zu bytes - too large for sleep-page rebuild, skipping", spineIndex,
+                thisItemBytes);
+        return false;
+      }
     }
 
     LOG_DBG("SLP", "EPUB: section cache not found for spine %d, rebuilding (free=%u, maxAlloc=%u)", spineIndex,

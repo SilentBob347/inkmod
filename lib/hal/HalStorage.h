@@ -45,6 +45,10 @@ class HalStorage {
   bool openFileForWrite(const char* moduleName, const String& path, HalFile& file);
   bool removeDir(const char* path);
 
+  // Total and used SD card capacity in bytes (see SDCardManager::sdTotalBytes()/sdUsedBytes()).
+  uint64_t getCardTotalBytes();
+  uint64_t getCardUsedBytes();
+
   static HalStorage& getInstance() { return instance; }
 
   class StorageLock;  // private class, used internally

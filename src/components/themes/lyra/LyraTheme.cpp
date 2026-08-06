@@ -503,39 +503,26 @@ void LyraTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   constexpr int textYOffset = 7;
   
   const char* labels[] = {btn1, btn2, btn3, btn4};
-  
-  // Calculate adaptive button width based on text content
-  int maxTextWidth = 0;
-  for (int i = 0; i < 4; i++) {
-    if (labels[i] != nullptr && labels[i][0] != '\0') {
-      int textW = renderer.getTextWidth(SMALL_FONT_ID, labels[i]);
-      if (textW > maxTextWidth) maxTextWidth = textW;
-    }
-  }
-  
-  // Button width = max text width + padding (16px on each side)
-  // Never less than 70px and never more than 130px
-  int adaptiveButtonWidth = std::max(maxTextWidth + 32, 70);
-  adaptiveButtonWidth = std::min(adaptiveButtonWidth, 130);
-  
+
+  // Fill the row edge-to-edge (minus a small fixed margin) instead of only
+  // growing buttons to fit their text: on a wide screen, capping width at a
+  // small fixed max left buttons bunched in the middle with a lot of empty
+  // margin on both sides, which doesn't match how a button row is supposed
+  // to read - four buttons occupying nearly the full width with a small,
+  // even margin and small, even gaps.
+  constexpr int outerMargin = 12;
+  constexpr int gap = 12;
   const int screenWidth = renderer.getScreenWidth();
-  int totalButtonsWidth = adaptiveButtonWidth * 4 + 60; // 60 = gaps between buttons
-  int startX = (screenWidth - totalButtonsWidth) / 2;
-  
-  // If adaptive doesn't fit, use smaller width
-  if (startX < 10) {
-    adaptiveButtonWidth = (screenWidth - 60) / 4;
-    totalButtonsWidth = adaptiveButtonWidth * 4 + 60;
-    startX = (screenWidth - totalButtonsWidth) / 2;
-  }
-  
-  // Ensure minimum button width
+  int adaptiveButtonWidth = (screenWidth - 2 * outerMargin - 3 * gap) / 4;
   adaptiveButtonWidth = std::max(adaptiveButtonWidth, 60);
-  
+
+  const int totalButtonsWidth = adaptiveButtonWidth * 4 + 3 * gap;
+  const int startX = (screenWidth - totalButtonsWidth) / 2;
+
   // Calculate positions
   int buttonPos[4];
   for (int i = 0; i < 4; i++) {
-    buttonPos[i] = startX + i * (adaptiveButtonWidth + 20);
+    buttonPos[i] = startX + i * (adaptiveButtonWidth + gap);
   }
 
   for (int i = 0; i < 4; i++) {

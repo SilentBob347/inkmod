@@ -336,7 +336,8 @@ void SettingsActivity::openSubmenu(SettingAction action) {
   setCurrentSettingsForCategory();
   selectedSettingIndex = 1;
   while (selectedSettingIndex > 0 && selectedSettingIndex <= settingsCount &&
-         (*currentSettings)[selectedSettingIndex - 1].type == SettingType::SECTION_HEADER) {
+         ((*currentSettings)[selectedSettingIndex - 1].type == SettingType::SECTION_HEADER ||
+          (*currentSettings)[selectedSettingIndex - 1].type == SettingType::INFO)) {
     selectedSettingIndex = ButtonNavigator::nextIndex(selectedSettingIndex, settingsCount + 1);
   }
 }
@@ -511,6 +512,19 @@ void SettingsActivity::onExit() {
 }
 
 void SettingsActivity::loop() {
+  // If the internal-storage background scan (triggered by pressing Select
+  // on that row) finishes while the user is just sitting on this screen,
+  // nothing else would trigger a redraw - every other update here happens
+  // in response to a button press. loop() runs continuously regardless of
+  // input, so it's the one place that can notice a background task
+  // finishing on its own and force the row to redraw with the real value
+  // instead of leaving it on "Загрузка..." until the next unrelated press.
+  static bool storageUsageWasReady = false;
+  if (StorageUsageCalc::ready() && !storageUsageWasReady) {
+    storageUsageWasReady = true;
+    requestUpdate();
+  }
+
   bool hasChangedCategory = false;
 
   // Handle actions with early return
@@ -547,7 +561,8 @@ void SettingsActivity::loop() {
   buttonNavigator.onNextRelease([this] {
     selectedSettingIndex = ButtonNavigator::nextIndex(selectedSettingIndex, settingsCount + 1);
     while (selectedSettingIndex > 0 && selectedSettingIndex <= settingsCount &&
-           (*currentSettings)[selectedSettingIndex - 1].type == SettingType::SECTION_HEADER) {
+           ((*currentSettings)[selectedSettingIndex - 1].type == SettingType::SECTION_HEADER ||
+            (*currentSettings)[selectedSettingIndex - 1].type == SettingType::INFO)) {
       selectedSettingIndex = ButtonNavigator::nextIndex(selectedSettingIndex, settingsCount + 1);
     }
     requestUpdate();
@@ -556,7 +571,8 @@ void SettingsActivity::loop() {
   buttonNavigator.onPreviousRelease([this] {
     selectedSettingIndex = ButtonNavigator::previousIndex(selectedSettingIndex, settingsCount + 1);
     while (selectedSettingIndex > 0 && selectedSettingIndex <= settingsCount &&
-           (*currentSettings)[selectedSettingIndex - 1].type == SettingType::SECTION_HEADER) {
+           ((*currentSettings)[selectedSettingIndex - 1].type == SettingType::SECTION_HEADER ||
+            (*currentSettings)[selectedSettingIndex - 1].type == SettingType::INFO)) {
       selectedSettingIndex = ButtonNavigator::previousIndex(selectedSettingIndex, settingsCount + 1);
     }
     requestUpdate();
@@ -579,7 +595,8 @@ void SettingsActivity::loop() {
     setCurrentSettingsForCategory();
     // Advance past any leading section headers
     while (selectedSettingIndex > 0 && selectedSettingIndex <= settingsCount &&
-           (*currentSettings)[selectedSettingIndex - 1].type == SettingType::SECTION_HEADER) {
+           ((*currentSettings)[selectedSettingIndex - 1].type == SettingType::SECTION_HEADER ||
+            (*currentSettings)[selectedSettingIndex - 1].type == SettingType::INFO)) {
       const int nextIndex = ButtonNavigator::nextIndex(selectedSettingIndex, settingsCount + 1);
       if (nextIndex <= selectedSettingIndex) {
         selectedSettingIndex = settingsCount;
@@ -724,6 +741,10 @@ void SettingsActivity::toggleCurrentSetting() {
         break;
       case SettingAction::ClockSync:
         startActivityForResult(std::make_unique<ClockSyncActivity>(renderer, mappedInput), resultHandler);
+        break;
+      case SettingAction::CalculateStorageUsage:
+        StorageUsageCalc::start();
+        requestUpdate();
         break;
       case SettingAction::ReaderFontOptions:
       case SettingAction::ReaderPageLayout:
@@ -879,8 +900,9 @@ void SettingsActivity::render(RenderLock&&) {
         if (settingShowsNavigationCaret(setting)) {
           valueText = ">";
         } else if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
-          const bool value = SETTINGS.*(setting.valuePtr);
-          valueText = value ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
+          const bool rawValue = SETTINGS.*(setting.valuePtr);
+          const bool displayValue = setting.invertedToggleDisplay ? !rawValue : rawValue;
+          valueText = displayValue ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
         } else if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
           const uint8_t value = SETTINGS.*(setting.valuePtr);
           const uint8_t displayValue = enumDisplayIndexForRawValue(setting, value);
@@ -900,6 +922,12 @@ void SettingsActivity::render(RenderLock&&) {
           } else if (setting.stringMaxLen > 0) {
             valueText = reinterpret_cast<const char*>(&SETTINGS) + setting.stringOffset;
           }
+        } else if (setting.type == SettingType::INFO && setting.stringGetter) {
+          valueText = setting.stringGetter();
+        } else if (setting.type == SettingType::ACTION && setting.action == SettingAction::Language) {
+          valueText = I18N.getLanguageName(I18N.getLanguage());
+        } else if (setting.type == SettingType::ACTION && setting.stringGetter) {
+          valueText = setting.stringGetter();
         }
         return valueText;
       },

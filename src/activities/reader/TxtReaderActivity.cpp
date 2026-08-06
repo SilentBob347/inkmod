@@ -417,7 +417,8 @@ void TxtReaderActivity::buildPageIndex() {
 
   LOG_DBG("TRS", "Building page index for %zu bytes...", fileSize);
 
-  GUI.drawPopup(renderer, tr(STR_INDEXING));
+  const Rect popupRect = GUI.drawPopup(renderer, tr(STR_INDEXING));
+  GUI.fillPopupProgress(renderer, popupRect, 0);
 
   while (offset < fileSize) {
     std::vector<std::string> tempLines;
@@ -437,9 +438,11 @@ void TxtReaderActivity::buildPageIndex() {
       pageOffsets.push_back(offset);
     }
 
-    // Yield to other tasks periodically
+    // Yield to other tasks periodically, and let the popup show it's still
+    // working rather than looking hung during a long index build.
     if (pageOffsets.size() % 20 == 0) {
       vTaskDelay(1);
+      GUI.fillPopupProgress(renderer, popupRect, static_cast<int>(offset * 100 / fileSize));
     }
   }
 

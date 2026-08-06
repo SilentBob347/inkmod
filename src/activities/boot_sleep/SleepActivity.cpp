@@ -438,6 +438,9 @@ void SleepActivity::onEnter() {
     case (InkMODSettings::SLEEP_SCREEN_MODE::CALENDAR_SLEEP):
     case (InkMODSettings::SLEEP_SCREEN_MODE::CALENDAR_SLEEP_INVERTED):
       return renderCalendarSleepScreen();
+    case (InkMODSettings::SLEEP_SCREEN_MODE::CALENDAR_SLEEP_LANDSCAPE):
+    case (InkMODSettings::SLEEP_SCREEN_MODE::CALENDAR_SLEEP_LANDSCAPE_INVERTED):
+      return renderCalendarSleepScreenLandscape();
     default:
       return renderDefaultSleepScreen();
   }
@@ -797,6 +800,54 @@ void drawBigDigit(const GfxRenderer& renderer, const int x, const int y, const i
   if (segs & 0x40)
     renderer.fillRoundedRect(x, y + halfH - thickness / 2, w, thickness, thickness / 2, Color::Black);  // g
 }
+
+// GfxRenderer::drawImage() rotates where an image ends up on screen for the
+// current orientation, but not the bitmap's own pixels (its own source has
+// a "TODO: Rotate bits" marking exactly this gap) - fine for every other
+// screen that draws InkMODLogo120, since they all use Portrait, but the
+// landscape calendar below is the first to draw it under
+// LandscapeClockwise, where the pixels come out wrong. A manual 180-degree
+// pre-rotation of the bitmap (matching how LandscapeClockwise's own
+// coordinate math is described relative to the panel's native frame) did
+// not fix it in testing, and guessing further at some other fixed-angle
+// transform risks the same outcome. fillRect(), unlike drawImage(), is
+// already proven correct in this orientation - it's what draws the
+// today/weekday highlight boxes elsewhere on this same screen, and those
+// land correctly - so this draws the logo as a series of small filled
+// rectangles (one per horizontal run of "on" pixels in a row) through
+// that same call instead of as a single blitted image, guaranteeing
+// consistent rotation handling instead of another blind guess at it.
+void drawRotationSafeLogo(const GfxRenderer& renderer, const int x, const int y) {
+  constexpr int kSize = 120;
+  constexpr int kBytesPerRow = kSize / 8;  // 15
+  // 90 degrees clockwise: a horizontal run of "on" pixels at source row R,
+  // columns [runStart, runEnd), lands at a single column (kSize-1-R) in
+  // the rotated output, spanning rows [runStart, runEnd) there - i.e. it
+  // becomes a vertical run instead of a horizontal one. Standard 90°CW
+  // point mapping is (row, col) -> (newRow=col, newCol=kSize-1-row); this
+  // is that same mapping applied to a whole run instead of one pixel at a
+  // time, since fillRect() can draw the whole run in one call either way.
+  for (int row = 0; row < kSize; row++) {
+    const uint8_t* srcRow = InkMODLogo120 + row * kBytesPerRow;
+    const int rotatedCol = kSize - 1 - row;
+    int runStart = -1;
+    for (int col = 0; col <= kSize; col++) {
+      // InkMODLogo120's own comment: "0 = black ink" - a *clear* bit is
+      // the one that should be drawn, not a set one. Got this backwards
+      // the first time, which is exactly why it came out as a near-solid
+      // black square: the background (the majority of the image, all 1
+      // bits under this format) was what got filled in, leaving the actual
+      // logo shape as the unfilled negative space instead.
+      const bool bitSet = col < kSize && !((srcRow[col / 8] >> (7 - (col % 8))) & 1);
+      if (bitSet && runStart < 0) {
+        runStart = col;
+      } else if (!bitSet && runStart >= 0) {
+        renderer.fillRect(x + rotatedCol, y + runStart, 1, col - runStart, true);
+        runStart = -1;
+      }
+    }
+  }
+}
 }  // namespace
 
 void SleepActivity::renderCalendarSleepScreen() const {
@@ -936,6 +987,184 @@ void SleepActivity::renderCalendarSleepScreen() const {
   }
 
   renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
+}
+
+// Landscape sibling of renderCalendarSleepScreen() above, for standing the
+// device on its side like a small desk calendar. Same data/helpers, laid
+// out side-by-side (month info on the left, day grid on the right) instead
+// of stacked top-to-bottom - stacking the portrait blocks as-is wouldn't
+// fit the wide-short 800x480 shape landscape orientation gives this
+// screen (see GfxRenderer::Orientation - LandscapeCounterClockwise is the
+// panel's native rotated direction, matching "stand it up sideways").
+void SleepActivity::renderCalendarSleepScreenLandscape() const {
+  if (SETTINGS.clockDisabled) {
+    return renderDefaultSleepScreen();
+  }
+
+  ReadingStatsDateTime now;
+  if (!getCurrentLocalReadingStatsDateTime(now)) {
+    return renderDefaultSleepScreen();
+  }
+
+  renderer.setOrientation(GfxRenderer::Orientation::LandscapeClockwise);
+
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto pageHeight = renderer.getScreenHeight();
+  constexpr int kMargin = 24;
+
+  renderer.clearScreen();
+
+  const ReadingStatsDate firstOfMonth{now.date.year, now.date.month, 1};
+  const uint8_t firstDow = readingStatsDayOfWeekIndex(firstOfMonth);  // Monday = 0
+  const uint8_t totalDays = daysInMonth(now.date.year, now.date.month);
+  const uint8_t todayDow = readingStatsDayOfWeekIndex(now.date);
+  const int gridRows = (firstDow + totalDays + 6) / 7;
+
+  // Left sidebar: month name, year, big-digit month number, small wordmark
+  // at the very bottom - everything the portrait header+logo blocks show,
+  // just stacked in a narrow column instead of spread across the full
+  // width. Sized to the logo's own width (120px) rather than a wider,
+  // independently-chosen column - the month/year text and big digits sit
+  // within that same 120px, so the whole column reads as one aligned
+  // block instead of text spilling wider than the logo below it.
+  constexpr int kSidebarW = 120;
+  constexpr int kSidebarGap = 32;
+  const int gridX = kMargin + kSidebarW + kSidebarGap;
+  const int gridAreaW = pageWidth - gridX - kMargin;
+  const int colW = gridAreaW / 7;
+
+  const int monthLineH = renderer.getLineHeight(UI_12_FONT_ID);
+  const int yearLineH = renderer.getLineHeight(UI_12_FONT_ID);
+  constexpr int kHeaderLineGap = 6;
+  constexpr int kMonthNumH = 90;
+  constexpr int kLogoSize = 120;
+  const int wordmarkLineH = renderer.getLineHeight(UI_10_FONT_ID);
+
+  // Weekday header row + day grid sizing, computed here (ahead of actually
+  // drawing either side) so the sidebar and the grid can share a single
+  // top position below instead of each being centered on its own -
+  // centering them independently kept their vertical *centers* aligned,
+  // but since the two blocks aren't the same height, that still left
+  // their top edges - "Август" vs. the "ПН" weekday row - starting from
+  // different heights and reading as unbalanced. A printed calendar's
+  // month header and day grid start from the same line; matching that
+  // directly is simpler than trying to fix it through independent
+  // centering.
+  const int dowLineH = renderer.getLineHeight(UI_10_FONT_ID);
+  const int dowRowH = dowLineH + 20;
+  constexpr int dowGap = 20;
+  // A shorter row height than the portrait screen's fixed 62px - this
+  // layout has less vertical room to spend (480px total vs. 800px) and,
+  // unlike the portrait grid, still has to share that height with nothing
+  // above it but a top margin, so every pixel of row height directly
+  // competes with fitting a 6-row month at all.
+  constexpr int kRowHeight = 54;
+  constexpr int kHighlightSize = 38;
+
+  // Shared top: a small fixed margin below the top edge, like a real desk
+  // calendar's month header sits right near the top of the card rather
+  // than being mathematically centered in whatever space is available -
+  // centering it (this used to compute a position based on the taller of
+  // the two blocks) ended up reading as "randomly" positioned depending
+  // on how much shorter the content was than the available height,
+  // instead of the simple, predictable "starts near the top" a printed
+  // calendar actually looks like.
+  constexpr int kTopPad = 20;
+  const int sharedTop = kMargin + kTopPad;
+
+  int sidebarY = sharedTop;
+  const int gridTop = sharedTop;
+
+  renderer.drawText(UI_12_FONT_ID, kMargin, sidebarY, calendarMonthName(now.date.month), true, EpdFontFamily::BOLD);
+  sidebarY += monthLineH + kHeaderLineGap;
+  char yearBuf[8];
+  snprintf(yearBuf, sizeof(yearBuf), "%u", static_cast<unsigned>(now.date.year));
+  renderer.drawText(UI_12_FONT_ID, kMargin, sidebarY, yearBuf, true, EpdFontFamily::BOLD);
+  sidebarY += yearLineH + 20;
+
+  // Big-digit month number, sized to the sidebar's own width rather than
+  // matching the header block's height (there's no equally-wide "other
+  // side" to match here, unlike the portrait layout's left/right split).
+  // Noticeably smaller than the portrait screen's big digits (150px) -
+  // at that size here it visually overpowered the month/year text above
+  // it and the logo below, instead of reading as one balanced sidebar.
+  const int digitW = static_cast<int>(kMonthNumH * 0.56f);
+  constexpr int kDigitGap = 8;
+  const unsigned monthTens = static_cast<unsigned>(now.date.month) / 10;
+  const unsigned monthOnes = static_cast<unsigned>(now.date.month) % 10;
+  drawBigDigit(renderer, kMargin, sidebarY, digitW, kMonthNumH, monthTens);
+  drawBigDigit(renderer, kMargin + digitW + kDigitGap, sidebarY, digitW, kMonthNumH, monthOnes);
+  sidebarY += kMonthNumH + 16;
+
+  // Full logo + wordmark, same as the portrait sleep screens use - unlike
+  // the earlier version of this screen, there's room for it here once the
+  // big digits above are trimmed down a little: drawImage() can't scale
+  // InkMODLogo120 (it assumes the width/height passed in match the image's
+  // actual native 120x120 layout, so shrinking it would corrupt it rather
+  // than resize it), so it's drawn at that native size, not scaled to fit.
+  // drawRotationSafeLogo(), not a plain drawImage() call, specifically
+  // because this screen runs under LandscapeClockwise - see that
+  // function's own comment for why.
+  drawRotationSafeLogo(renderer, kMargin, sidebarY);
+  sidebarY += kLogoSize + 4;
+  const int wordmarkW = renderer.getTextWidth(UI_10_FONT_ID, tr(STR_INKMOD), EpdFontFamily::BOLD);
+  renderer.drawText(UI_10_FONT_ID, kMargin + (kLogoSize - wordmarkW) / 2, sidebarY, tr(STR_INKMOD), true,
+                    EpdFontFamily::BOLD);
+
+  // Weekday header row + day grid, on the right, starting from the same
+  // sharedTop the sidebar used above.
+  int y = gridTop + dowGap;
+  for (int col = 0; col < 7; col++) {
+    const char* dow = calendarDayOfWeekAbbrev(col);
+    const int w = renderer.getTextWidth(UI_10_FONT_ID, dow, EpdFontFamily::BOLD);
+    const int cx = gridX + colW * col + colW / 2;
+    if (col == todayDow) {
+      const int boxW = w + 16;
+      const int boxH = dowLineH + 8;
+      renderer.fillRoundedRect(cx - boxW / 2, y - 4, boxW, boxH, 6, Color::Black);
+      renderer.drawText(UI_10_FONT_ID, cx - w / 2, y, dow, false, EpdFontFamily::BOLD);
+    } else {
+      renderer.drawText(UI_10_FONT_ID, cx - w / 2, y, dow, true, EpdFontFamily::BOLD);
+    }
+  }
+  y += dowRowH;
+
+  const int numLineH = renderer.getLineHeight(UI_10_FONT_ID);
+  int dayNum = 1;
+  for (int row = 0; dayNum <= totalDays; row++) {
+    const int rowY = y + row * kRowHeight;
+    for (int col = 0; col < 7; col++) {
+      if (row == 0 && col < firstDow) {
+        continue;
+      }
+      if (dayNum > totalDays) {
+        break;
+      }
+
+      char numBuf[4];
+      snprintf(numBuf, sizeof(numBuf), "%u", static_cast<unsigned>(dayNum));
+      const int cx = gridX + colW * col + colW / 2;
+      const bool isToday = (dayNum == now.date.day);
+
+      if (isToday) {
+        renderer.fillRoundedRect(cx - kHighlightSize / 2, rowY - 6, kHighlightSize, kHighlightSize, 8, Color::Black);
+        const int w = renderer.getTextWidth(UI_10_FONT_ID, numBuf, EpdFontFamily::BOLD);
+        renderer.drawText(UI_10_FONT_ID, cx - w / 2, rowY - 6 + (kHighlightSize - numLineH) / 2, numBuf, false,
+                          EpdFontFamily::BOLD);
+      } else {
+        const int w = renderer.getTextWidth(UI_10_FONT_ID, numBuf, EpdFontFamily::BOLD);
+        renderer.drawText(UI_10_FONT_ID, cx - w / 2, rowY, numBuf, true, EpdFontFamily::BOLD);
+      }
+      dayNum++;
+    }
+  }
+
+  if (SETTINGS.sleepScreen == InkMODSettings::SLEEP_SCREEN_MODE::CALENDAR_SLEEP_LANDSCAPE_INVERTED) {
+    renderer.invertScreen();
+  }
+
+  renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
+  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
 }
 
 void SleepActivity::renderLastScreenSleepScreen() const {

@@ -760,6 +760,16 @@ void HomeActivity::onEnter() {
   minimalHomeNavIndex = -1;
   carouselFramesReady = false;
   carouselWarmupPending = isCarouselTheme;
+  coverRendered = false;
+  // A saved cover snapshot (see storeCoverBuffer()/restoreCoverBuffer()) is
+  // only ever valid for the exact screen content it was captured from.
+  // Coming back here after Settings/FileBrowser drew something completely
+  // different over the same screen region leaves whatever was captured
+  // before that trip stale - restoring it would blit old (or, worse,
+  // since-reused-by-something-else) pixel data instead of the current
+  // cover. Dropping it here forces a fresh render on next draw, the same
+  // as every other piece of carousel state onEnter() already resets.
+  freeCoverBuffer();
 
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int recentBooksToLoad =

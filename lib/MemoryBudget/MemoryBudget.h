@@ -25,7 +25,21 @@ constexpr uint32_t EPUB_INLINE_IMAGE_SD_FONT_RELEASE_MIN_FREE = 120U * 1024U;
 constexpr uint32_t EPUB_INLINE_IMAGE_SD_FONT_RELEASE_MIN_MAX_ALLOC = 80U * 1024U;
 constexpr uint32_t OPTIONAL_EPUB_REBUILD_MIN_FREE = 96U * 1024U;
 constexpr uint32_t OPTIONAL_EPUB_REBUILD_MIN_MAX_ALLOC = 48U * 1024U;
-constexpr uint32_t IMAGE_DECODER_HEADROOM = 16U * 1024U;
+// Margin above the decoder's own estimated size that hasHeapForImageDecoder()
+// requires before letting PngToFramebufferConverter/JpegToFramebufferConverter
+// call new (std::nothrow) PNG()/JPEGDEC() (which then does its own further
+// internal allocation for zlib/scanline buffers). This check and that
+// allocation aren't atomic - the display refresh runs as its own
+// concurrently-scheduled task (see the periodic "Wait complete: refresh"
+// activity that continues throughout book loading), so heap state can shift
+// between "checked OK" and "actually allocated" if that task's own working
+// set lands in between. A real crash was traced to exactly this gap: the
+// check passed with free=66600/maxAlloc=59380 against a 16KB headroom
+// (which cleared the ~45KB decoder requirement by only ~14KB), and the
+// PNG decoder's own subsequent internal allocation still failed. Widened
+// well past that observed margin so a modest concurrent allocation in the
+// gap can't eat all of it.
+constexpr uint32_t IMAGE_DECODER_HEADROOM = 48U * 1024U;
 
 inline HeapSnapshot snapshot() { return {ESP.getFreeHeap(), ESP.getMaxAllocHeap()}; }
 

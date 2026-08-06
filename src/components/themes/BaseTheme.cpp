@@ -159,9 +159,10 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   constexpr int buttonHeight = BaseMetrics::values.buttonHintsHeight;
   constexpr int buttonY = BaseMetrics::values.buttonHintsHeight;
   constexpr int textYOffset = 7;  // Distance from top of button to text baseline
-  // X3 has wider screen in portrait (528 vs 480), use more spacing
-  constexpr int x4ButtonPositions[] = {25, 130, 245, 350};
-  constexpr int x3ButtonPositions[] = {38, 154, 268, 384};
+  // Evenly spaced with equal outer margins on both sides (previous values
+  // let neighboring buttons overlap by a pixel and had unequal margins).
+  constexpr int x4ButtonPositions[] = {11, 128, 246, 363};
+  constexpr int x3ButtonPositions[] = {21, 148, 274, 401};
   const int* buttonPositions = gpio.deviceIsX3() ? x3ButtonPositions : x4ButtonPositions;
   const char* labels[] = {btn1, btn2, btn3, btn4};
 
@@ -790,7 +791,8 @@ void BaseTheme::fillPopupProgress(const GfxRenderer& renderer, const Rect& layou
 
 void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage,
                               const int pageCount, std::string title, const int paddingBottom, const int textYOffset,
-                              const bool isPageBookmarked, const char* timeLeftLabel, const bool darkMode) const {
+                              const bool isPageBookmarked, const char* timeLeftLabel, const bool darkMode,
+                              const int bookWideCurrentPage, const int bookWideTotalPages) const {
   const bool foregroundBlack = !darkMode;
   auto metrics = UITheme::getInstance().getMetrics();
   int orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft;
@@ -806,12 +808,23 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
     // Right aligned text for progress counter
     char progressStr[32];
 
+    // Mode 2 (whole-book estimate) needs the caller to have actually
+    // supplied it - EpubReaderActivity does; TXT/XTC/the settings preview
+    // screen don't, since a book-wide page count isn't a meaningful
+    // concept for a single-file TXT or for XTC's own page model. Falling
+    // back to the chapter-relative numbers in that case rather than
+    // showing a blank/bogus counter.
+    const bool useBookWide =
+        SETTINGS.statusBarChapterPageCount == 2 && bookWideCurrentPage >= 0 && bookWideTotalPages > 0;
+    const int displayCurrentPage = useBookWide ? bookWideCurrentPage : currentPage;
+    const int displayPageCount = useBookWide ? bookWideTotalPages : pageCount;
+
     if (SETTINGS.statusBarBookProgressPercentage && SETTINGS.statusBarChapterPageCount) {
-      snprintf(progressStr, sizeof(progressStr), "%d/%d  %.0f%%", currentPage, pageCount, bookProgress);
+      snprintf(progressStr, sizeof(progressStr), "%d/%d  %.0f%%", displayCurrentPage, displayPageCount, bookProgress);
     } else if (SETTINGS.statusBarBookProgressPercentage) {
       snprintf(progressStr, sizeof(progressStr), "%.0f%%", bookProgress);
     } else {
-      snprintf(progressStr, sizeof(progressStr), "%d/%d", currentPage, pageCount);
+      snprintf(progressStr, sizeof(progressStr), "%d/%d", displayCurrentPage, displayPageCount);
     }
 
     progressTextWidth = renderer.getTextWidth(SMALL_FONT_ID, progressStr);

@@ -1,27 +1,104 @@
 #pragma once
 
 #include <HalStorage.h>
-#include <expat.h>
+#include <Print.h>
 
-#include <array>
-#include <climits>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
-// Streaming FB2 -> unpacked EPUB-package converter. The generated package is
-// consumed by Epub/EpubReaderActivity, so FB2 and EPUB share layout, images,
-// TOC, footnotes, bookmarks, progress, reader settings, and navigation.
-class Fb2 {
-  enum class ParsePass : uint8_t { None, Scan, Render };
+#include "native/Fb2Parser.h"
+#include "native/Fb2Types.h"
+#include "native/IByteReader.h"
 
-  struct ImageInfo {
+// FB2 -> EPUB-shaped package converter, built for lazy per-chapter rendering
+// instead of eagerly writing out every chapter's XHTML up front.
+//
+// load() only scans the FB2 once (metadata + flat section index), writes the
+// small OPF/NCX/container.xml/style.css files, and persists a compact
+// section index - it never renders chapter text. A real EPUB opens near-
+// instantly because its chapter XHTML already exists inside the file; this
+// mirrors that by not doing any chapter work until a chapter is actually
+// requested. renderChapterOnDemand() is that hook: Epub::readItemContentsToStream()
+// calls it (see lib/Epub/Epub.cpp) whenever it's asked for a spine item
+// inside a package that has our marker file, streaming that one section's
+// XHTML straight out - through the exact same ChapterHtmlSlimParser/Section
+// pagination pipeline a real EPUB's chapters go through, so there is only
+// ever one rendering engine, not two.
+class Fb2 {
+ public:
+  struct ImageInfoPublic {
     std::string id;
     std::string filename;
     std::string mediaType;
   };
 
+  using ProgressFn = std::function<void(int percent)>;
+
+  explicit Fb2(std::string path, std::string cacheBasePath);
+  ~Fb2() = default;
+
+  Fb2(const Fb2&) = delete;
+  Fb2& operator=(const Fb2&) = delete;
+
+  bool load(const ProgressFn& onProgress = nullptr);
+  bool clearCache() const;
+  void setupCacheDir() const;
+
+  [[nodiscard]] const std::string& getPath() const { return filepath; }
+  [[nodiscard]] const std::string& getCachePath() const { return cachePath; }
+  [[nodiscard]] const std::string& getPackagePath() const { return packagePath; }
+  [[nodiscard]] const std::string& getTitle() const { return title; }
+  [[nodiscard]] const std::string& getAuthor() const { return author; }
+  [[nodiscard]] const std::string& getLanguage() const { return language; }
+  [[nodiscard]] uint64_t getSourceSize() const { return sourceSize; }
+  [[nodiscard]] int getChapterCount() const { return chapterCount; }
+  [[nodiscard]] bool isLoaded() const { return loaded; }
+
+  // Renders one FB2 <section> (identified by its spine/chapter index, in the
+  // same document order scan() produced) straight to `out` as the chapter
+  // XHTML Section::createSectionFile() expects - called from
+  // Epub::readItemContentsToStream() for packages carrying our marker file.
+  // `packageCachePath` is the *.epub package directory's cache path (i.e.
+  // Fb2's own cachePath - the two were unified so a converted book doesn't
+  // leave a second orphaned cache folder behind).
+  static bool renderChapterOnDemand(const std::string& packageCachePath, int chapterIndex, Print& out);
+
+  // Decodes and writes the single image at `imagePath` (an absolute path
+  // like ".../fb2_<hash>/package.epub/OEBPS/images/image_7.png") from its
+  // FB2 source on first use - images are never decoded at load() time.
+  // Called from ImageBlock::render() right before it would otherwise report
+  // the file missing; a no-op (returns false) for any path that isn't
+  // inside an FB2-origin package, so it's safe to call unconditionally.
+  // Keeps only the last few (see native/Fb2Types.h-adjacent constant in
+  // Fb2.cpp) raw decoded images on disk, evicting older ones - once an
+  // image has been viewed, Epub's own .pxc pixel-cache (a much smaller,
+  // already screen-sized bitmap) is what every later view actually reads,
+  // so the raw source rarely needs to stick around.
+  static bool decodeImageOnDemand(const std::string& imagePath);
+
+  // Estimated decoded-text size of chapter `chapterIndex`, in bytes - not a
+  // real file size (the chapter isn't a real file until rendered), just
+  // scan()'s own approximation, persisted alongside the rest of the section
+  // index. BookMetadataCache's spine-size pass calls this as a fallback
+  // when a chapter file doesn't exist yet, so the book's cumulative-size
+  // (and therefore "% read") estimate isn't always 0 for an unopened FB2
+  // chapter. Returns 0 if this isn't an FB2-origin package, the index is
+  // missing/corrupt, or chapterIndex is out of range - all of which the
+  // caller already treats as "no size available" the same way it does for
+  // a real EPUB's own occasional missing-item case.
+  static uint32_t getApproxChapterSize(const std::string& packageCachePath, int chapterIndex);
+
+  // The marker file's name, relative to a package's cache dir. Its presence
+  // is what tells Epub::readItemContentsToStream() this package's chapters
+  // need to be rendered through renderChapterOnDemand() instead of read as
+  // plain files - checked with plain Storage.exists(), no Fb2 instance
+  // needed. Real EPUB/unpacked packages never have this file.
+  static constexpr char SOURCE_MARKER_FILE[] = "/.fb2_source";
+
+ private:
   std::string filepath;
   std::string sourcePath;
   std::string temporarySourcePath;
@@ -37,110 +114,23 @@ class Fb2 {
   uint64_t sourceSize = 0;
   bool loaded = false;
 
-  XML_Parser parser = nullptr;
-  ParsePass pass = ParsePass::None;
-  HalFile output;
-  HalFile tocRecords;
-  HalFile anchorRecords;
-  HalFile binaryOutput;
-
-  int depth = 0;
-  int titleInfoDepth = INT_MAX;
-  int authorDepth = INT_MAX;
-  int bodyDepth = INT_MAX;
-  int titleElementDepth = INT_MAX;
-  int binaryDepth = INT_MAX;
-  int sectionLevel = 0;
-  int sectionSerial = 0;
-  int titleSerial = 0;
-  int currentChapter = -1;
   int chapterCount = 0;
-  int nextRenderChapter = 0;
-  size_t chapterTextBytes = 0;
-  int titleParagraphCount = 0;
-  bool chapterOpen = false;
-  bool inBookTitle = false;
-  bool inFirstName = false;
-  bool inMiddleName = false;
-  bool inLastName = false;
-  bool inNickname = false;
-  bool inLanguage = false;
-  bool inCoverpage = false;
-  bool binaryWriteOk = true;
-  bool binaryOutputOpen = false;
+  std::vector<ImageInfoPublic> images;
 
-  std::string authorFirst;
-  std::string authorMiddle;
-  std::string authorLast;
-  std::string authorNickname;
-  std::string tocTitle;
-  std::string activeBinaryPath;
-  uint8_t tocLevel = 1;
-  uint16_t tocChapter = 0;
-  uint64_t tocAnchor = 0;
-  std::vector<uint64_t> sectionAnchors;
-  std::vector<ImageInfo> images;
-  std::array<uint8_t, 4> base64Quartet{};
-  uint8_t base64Count = 0;
-
-  static void XMLCALL startElement(void* userData, const XML_Char* name, const XML_Char** atts);
-  static void XMLCALL endElement(void* userData, const XML_Char* name);
-  static void XMLCALL characterData(void* userData, const XML_Char* text, int length);
-  static int XMLCALL unknownEncoding(void* userData, const XML_Char* name, XML_Encoding* info);
-
-  bool convertToPackage();
-  bool prepareSource();
+  bool convertToPackage(const ProgressFn& onProgress);
+  bool prepareSource(const ProgressFn& onProgress);
   bool isCompressedFb2() const;
-  bool parseSource(ParsePass parsePass);
   bool cacheIsCurrent();
   bool loadMetadataCache();
   void saveMetadataCache() const;
   void saveCacheSignature() const;
   void maintainCacheBudget() const;
-  void resetParserState(ParsePass parsePass);
-  void finishAuthor();
-  void postProcessMetadata();
 
-  int ensureScanChapter();
-  bool ensureRenderChapter();
-  bool openChapter(int index);
-  void closeChapter();
-  void writeEscaped(const char* text, size_t length, bool attribute = false);
-  void writeString(const std::string& value);
-  void writeLiteral(const char* value);
-  void writeElementId(const XML_Char** atts);
+  bool persistImageIndex(const Fb2ScanResult& scan);
+  const ImageInfoPublic* findImage(const std::string& id) const;
 
-  void recordAnchor(const std::string& id, uint16_t chapter);
-  bool findAnchorChapter(const std::string& id, uint16_t& chapter) const;
-  void writeTocRecord();
   bool writeContainerFile() const;
   bool writeStyleFile() const;
   bool writeOpfFile() const;
-  bool writeNcxFile() const;
-
-  void beginBinary(const XML_Char** atts);
-  void feedBase64(const char* text, size_t length);
-  void endBinary();
-  const ImageInfo* findImage(const std::string& id) const;
-
- public:
-  explicit Fb2(std::string path, std::string cacheBasePath);
-  ~Fb2();
-
-  Fb2(const Fb2&) = delete;
-  Fb2& operator=(const Fb2&) = delete;
-
-  bool load();
-  bool clearCache() const;
-  void setupCacheDir() const;
-
-  [[nodiscard]] const std::string& getPath() const { return filepath; }
-  [[nodiscard]] const std::string& getCachePath() const { return cachePath; }
-  [[nodiscard]] const std::string& getPackagePath() const { return packagePath; }
-  [[nodiscard]] const std::string& getTitle() const { return title; }
-  [[nodiscard]] const std::string& getAuthor() const { return author; }
-  [[nodiscard]] const std::string& getLanguage() const { return language; }
-  [[nodiscard]] uint64_t getSourceSize() const { return sourceSize; }
-  [[nodiscard]] int getChapterCount() const { return chapterCount; }
-  [[nodiscard]] bool isLoaded() const { return loaded; }
+  bool writeNcxFile(const Fb2ScanResult& scan, const std::vector<int>& sectionFirstChapterIndex) const;
 };

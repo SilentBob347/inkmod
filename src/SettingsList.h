@@ -2,9 +2,11 @@
 
 #include <HalClock.h>
 #include <HalGPIO.h>
+#include <HalPowerManager.h>
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <SdCardFontRegistry.h>
+#include <esp_timer.h>
 
 #include <algorithm>
 #include <cstring>
@@ -236,7 +238,8 @@ inline SettingInfo buildSleepScreenSetting() {
                         {StrId::STR_NONE_OPT, StrId::STR_DARK, StrId::STR_LIGHT, StrId::STR_CUSTOM, StrId::STR_COVER,
                          StrId::STR_COVER_CUSTOM, StrId::STR_PAGE_OVERLAY, StrId::STR_READING_STATS,
                          StrId::STR_THEME_MINIMAL, StrId::STR_THEME_MINIMAL_STATS, StrId::STR_QUICK_RESUME,
-                         StrId::STR_THEME_DASHBOARD, StrId::STR_THEME_CALENDAR, StrId::STR_THEME_CALENDAR_INVERTED},
+                         StrId::STR_THEME_DASHBOARD, StrId::STR_THEME_CALENDAR, StrId::STR_THEME_CALENDAR_INVERTED,
+                         StrId::STR_THEME_CALENDAR_LANDSCAPE, StrId::STR_THEME_CALENDAR_LANDSCAPE_INVERTED},
                         "sleepScreen", StrId::STR_CAT_DISPLAY);
   s.withEnumRawValues({
       static_cast<uint8_t>(InkMODSettings::BLANK),
@@ -253,6 +256,8 @@ inline SettingInfo buildSleepScreenSetting() {
       static_cast<uint8_t>(InkMODSettings::DASHBOARD_SLEEP),
       static_cast<uint8_t>(InkMODSettings::CALENDAR_SLEEP),
       static_cast<uint8_t>(InkMODSettings::CALENDAR_SLEEP_INVERTED),
+      static_cast<uint8_t>(InkMODSettings::CALENDAR_SLEEP_LANDSCAPE),
+      static_cast<uint8_t>(InkMODSettings::CALENDAR_SLEEP_LANDSCAPE_INVERTED),
   });
   return s;
 }
@@ -297,7 +302,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
       // entirely - no display, no boot-time WiFi join, no Calendar sleep
       // screen. X3 has a real RTC and doesn't need this, so it's not shown there.
       add(SettingInfo::Toggle(StrId::STR_CLOCK_DISABLED, &InkMODSettings::clockDisabled, "clockDisabled",
-                              StrId::STR_CAT_DISPLAY));
+                              StrId::STR_CAT_DISPLAY, /*invertedToggleDisplay=*/true));
     }
     add(SettingInfo::Enum(
         StrId::STR_REFRESH_FREQ, &InkMODSettings::refreshFrequency,
@@ -670,6 +675,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     if (sleepScreenIt != v.end()) {
       removeEnumRawValue(*sleepScreenIt, static_cast<uint8_t>(InkMODSettings::CALENDAR_SLEEP));
       removeEnumRawValue(*sleepScreenIt, static_cast<uint8_t>(InkMODSettings::CALENDAR_SLEEP_INVERTED));
+      removeEnumRawValue(*sleepScreenIt, static_cast<uint8_t>(InkMODSettings::CALENDAR_SLEEP_LANDSCAPE));
+      removeEnumRawValue(*sleepScreenIt, static_cast<uint8_t>(InkMODSettings::CALENDAR_SLEEP_LANDSCAPE_INVERTED));
     }
   }
   return v;
@@ -889,9 +896,62 @@ inline std::vector<SettingInfo> buildSystemSettingsParentList(const std::vector<
   return systemSettings;
 }
 
+namespace StorageUsageCalc {
+// inline functions defining function-local statics, included from both
+// SettingsList.h (the display side) and SettingsActivity.cpp (the "user
+// pressed Select" side) - the one-definition rule merges these across
+// translation units, so both sides see the same started/ready/cachedUsed
+// state without needing a dedicated .cpp file just for three variables.
+inline bool& started() { static bool v = false; return v; }
+inline bool& ready() { static bool v = false; return v; }
+inline uint64_t& cachedUsedBytes() { static uint64_t v = 0; return v; }
+
+// Called when the user selects the "Внутренняя память" row. Idempotent -
+// later presses while already running/done do nothing.
+inline void start() {
+  if (started()) return;
+  started() = true;
+  xTaskCreate(
+      [](void*) {
+        // The scan needs HalStorage's lock for correctness (SD and the
+        // e-ink display share one SPI bus - see HalSpiBus), and there's no
+        // way to make that shorter without touching the scan itself. A
+        // short delay first lets whatever redraw the button press itself
+        // triggers (e.g. the row's own highlight/"Загрузка..." text) go
+        // out before this grabs the bus for the ~12s the real scan takes.
+        vTaskDelay(pdMS_TO_TICKS(500));
+        cachedUsedBytes() = Storage.getCardUsedBytes();
+        ready() = true;
+        vTaskDelete(nullptr);
+      },
+      "SdUsageScan", 4096, nullptr, 1, nullptr);
+}
+
+inline std::string display() {
+  const uint64_t total = Storage.getCardTotalBytes();
+  if (total == 0) return std::string("-");
+  if (!started()) return std::string(tr(STR_TAP_TO_CALCULATE));
+  if (!ready()) return tr(STR_LOADING_POPUP) + std::string("...");
+  const uint64_t used = cachedUsedBytes();
+  char buf[32];
+  if (used < 1073741824ULL) {
+    // Under 1GB used on a card this size is worth saying in MB - "0 ГБ"
+    // (the whole-GB rounding this used before) reads as "couldn't tell",
+    // not "barely anything's on here yet".
+    snprintf(buf, sizeof(buf), "%.0f %s / %.0f %s", used / 1048576.0, tr(STR_UNIT_MB_SHORT), total / 1073741824.0,
+             tr(STR_UNIT_GB_SHORT));
+  } else {
+    // "%.0f" rather than an integer divide: rounds 1.98GB up to "2 ГБ"
+    // instead of truncating to "1 ГБ".
+    snprintf(buf, sizeof(buf), "%.0f / %.0f %s", used / 1073741824.0, total / 1073741824.0, tr(STR_UNIT_GB_SHORT));
+  }
+  return std::string(buf);
+}
+}  // namespace StorageUsageCalc
+
 inline std::vector<SettingInfo> buildSystemDeviceSettingsList(const std::vector<SettingInfo>& allSettings) {
   std::vector<SettingInfo> settings;
-  settings.reserve(7);
+  settings.reserve(9);
   addSettingByName(settings, allSettings, StrId::STR_DEVICE_NAME);
   addSettingByName(settings, allSettings, StrId::STR_TIME_TO_SLEEP);
   settings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
@@ -900,6 +960,32 @@ inline std::vector<SettingInfo> buildSystemDeviceSettingsList(const std::vector<
     addSettingByName(settings, allSettings, StrId::STR_CLOCK_UTC_OFFSET);
     settings.push_back(SettingInfo::Action(StrId::STR_CLOCK_SYNC_NOW, SettingAction::ClockSync));
   }
+
+  {
+    SettingInfo storageRow = SettingInfo::Action(StrId::STR_INTERNAL_STORAGE, SettingAction::CalculateStorageUsage);
+    storageRow.stringGetter = [] { return StorageUsageCalc::display(); };
+    settings.push_back(storageRow);
+  }
+  settings.push_back(SettingInfo::Info(StrId::STR_SINCE_LAST_CHARGE, [] {
+    const uint64_t lastChargeUs = powerManager.getLastChargeMonotonicUs();
+    const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
+    // lastChargeUs > nowUs is only possible if a hard reset happened since
+    // it was recorded (esp_timer_get_time() restarts at 0 on those, but
+    // not across deep sleep - see HalPowerManager.cpp), which makes the
+    // stored value meaningless for this boot. Showing "-" beats a negative
+    // or wildly wrong duration.
+    if (lastChargeUs == 0 || lastChargeUs > nowUs) return std::string("-");
+    const uint64_t elapsedSeconds = (nowUs - lastChargeUs) / 1000000ULL;
+    const uint32_t days = static_cast<uint32_t>(elapsedSeconds / 86400ULL);
+    const uint32_t hours = static_cast<uint32_t>((elapsedSeconds % 86400ULL) / 3600ULL);
+    char buf[32];
+    if (days > 0) {
+      snprintf(buf, sizeof(buf), "%u %s %u %s", days, tr(STR_STATS_DAYS), hours, tr(STR_UNIT_HOUR_SHORT));
+    } else {
+      snprintf(buf, sizeof(buf), "%u %s", hours, tr(STR_UNIT_HOUR_SHORT));
+    }
+    return std::string(buf);
+  }));
   return settings;
 }
 

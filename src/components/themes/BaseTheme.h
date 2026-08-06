@@ -223,7 +223,8 @@ class BaseTheme {
   virtual void drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage,
                              const int pageCount, std::string title, const int paddingBottom = 0,
                              const int textYOffset = 0, const bool isPageBookmarked = false,
-                             const char* timeLeftLabel = nullptr, bool darkMode = false) const;
+                             const char* timeLeftLabel = nullptr, bool darkMode = false,
+                             const int bookWideCurrentPage = -1, const int bookWideTotalPages = -1) const;
   // anchorRightX: when >= 0, the clock text is right-aligned so it ends at this x coordinate
   // (used to pin the clock immediately to the left of the battery cluster in the header).
   // When -1 (default), the clock is horizontally centered on the screen, as in the reader's top bar.

@@ -3,10 +3,22 @@
 #include <Logging.h>
 #include <WiFi.h>
 #include <esp_sleep.h>
+#include <esp_timer.h>
 
 #include <cassert>
 
 #include "HalGPIO.h"
+
+namespace {
+// esp_timer_get_time() value (microseconds since boot) at the last time USB
+// charging was observed. RTC_DATA_ATTR keeps this in the small block of RAM
+// that survives deep sleep - same reset domain as esp_timer_get_time()
+// itself (both keep counting across deep sleep, both reset to 0/default on
+// a hard reset), so the two stay consistent with each other without ever
+// needing to touch the SD card. Declared here rather than as a class member
+// specifically so the RTC_DATA_ATTR placement applies correctly.
+RTC_DATA_ATTR uint64_t lastChargeMonotonicUs = 0;
+}  // namespace
 
 HalPowerManager powerManager;  // Singleton instance
 
@@ -116,7 +128,28 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
   esp_deep_sleep_start();
 }
 
+void HalPowerManager::trackChargingState() const {
+  const unsigned long now = millis();
+  if (_chargeCheckLastPollMs != 0 && (now - _chargeCheckLastPollMs) < BATTERY_POLL_MS) return;
+  _chargeCheckLastPollMs = now;
+
+  if (gpio.isUsbConnected()) {
+    // RTC memory, not SD - cheap enough to update on every poll while
+    // charging, no transition-detection/debounce needed to avoid wear.
+    lastChargeMonotonicUs = static_cast<uint64_t>(esp_timer_get_time());
+  }
+}
+
+uint64_t HalPowerManager::getLastChargeMonotonicUs() const { return lastChargeMonotonicUs; }
+
+void HalPowerManager::seedLastChargeMonotonicUs(const uint64_t persistedValue) {
+  if (lastChargeMonotonicUs == 0) {
+    lastChargeMonotonicUs = persistedValue;
+  }
+}
+
 uint16_t HalPowerManager::getBatteryPercentage() const {
+  trackChargingState();
   if (_batteryUseI2C) {
     const unsigned long now = millis();
     if (_batteryLastPollMs != 0 && (now - _batteryLastPollMs) < BATTERY_POLL_MS) {

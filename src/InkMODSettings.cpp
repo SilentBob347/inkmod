@@ -49,6 +49,8 @@ constexpr uint8_t SLEEP_SCREEN_STORAGE_ORDER[] = {
     static_cast<uint8_t>(InkMODSettings::DASHBOARD_SLEEP),
     static_cast<uint8_t>(InkMODSettings::CALENDAR_SLEEP),
     static_cast<uint8_t>(InkMODSettings::CALENDAR_SLEEP_INVERTED),
+    static_cast<uint8_t>(InkMODSettings::CALENDAR_SLEEP_LANDSCAPE),
+    static_cast<uint8_t>(InkMODSettings::CALENDAR_SLEEP_LANDSCAPE_INVERTED),
 };
 constexpr uint8_t SLEEP_SCREEN_STORAGE_ORDER_COUNT =
     sizeof(SLEEP_SCREEN_STORAGE_ORDER) / sizeof(SLEEP_SCREEN_STORAGE_ORDER[0]);

@@ -163,7 +163,7 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
         underlineWidth = visibleWidth;
       }
 
-      if ((currentStyle & (EpdFontFamily::SUP | EpdFontFamily::SUB)) != 0) {
+      if ((currentStyle & (EpdFontFamily::SUP | EpdFontFamily::SUB | EpdFontFamily::SMALL_CAPS)) != 0) {
         underlineWidth = (underlineWidth + 1) / 2;
       }
 
@@ -192,7 +192,7 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
         strikeWidth = visibleWidth;
       }
 
-      if ((currentStyle & (EpdFontFamily::SUP | EpdFontFamily::SUB)) != 0) {
+      if ((currentStyle & (EpdFontFamily::SUP | EpdFontFamily::SUB | EpdFontFamily::SMALL_CAPS)) != 0) {
         strikeWidth = (strikeWidth + 1) / 2;
       }
 

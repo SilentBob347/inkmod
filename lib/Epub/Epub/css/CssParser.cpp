@@ -379,6 +379,12 @@ void CssParser::parseDeclarationIntoStyle(std::string_view decl, CssStyle& style
   } else if (iequalsAscii(name, "font-weight")) {
     style.fontWeight = interpretFontWeight(value);
     style.defined.fontWeight = 1;
+  } else if (iequalsAscii(name, "font-variant")) {
+    // Only the small-caps keyword is handled - "normal", "all-small-caps"
+    // etc. fall through to false (regular text), same as an unrecognized
+    // value would for any other property here.
+    style.smallCaps = iequalsAscii(value, "small-caps");
+    style.defined.smallCaps = 1;
   } else if (iequalsAscii(name, "text-decoration") || iequalsAscii(name, "text-decoration-line")) {
     style.textDecoration = interpretDecoration(value);
     style.defined.textDecoration = 1;

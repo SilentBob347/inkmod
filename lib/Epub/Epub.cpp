@@ -1,5 +1,6 @@
 #include "Epub.h"
 
+#include <Fb2.h>
 #include <FsHelpers.h>
 #include <HalStorage.h>
 #include <JpegToBmpConverter.h>
@@ -86,6 +87,7 @@ Epub::Epub(std::string filepath, const std::string& cacheDir) : filepath(std::mo
     source.close();
   }
   cachePath = cachePathForFilePath(this->filepath, cacheDir);
+  isFb2Origin = unpackedPackage && Storage.exists((cachePath + Fb2::SOURCE_MARKER_FILE).c_str());
   migrateLegacyCachePath(cacheDir);
 }
 
@@ -95,6 +97,29 @@ std::string Epub::itemPath(const std::string& itemHref) const {
 }
 
 std::string Epub::cachePathForFilePath(const std::string& filepath, const std::string& cacheDir) {
+  // A converter that builds an already-unpacked EPUB package (e.g. Fb2)
+  // writes it straight into ITS OWN cache directory as
+  // <cacheDir>/<its-own-prefix>_<hash>/package.epub. Without this check we'd
+  // hash-derive a second, unrelated "epub_..." cache folder here just to
+  // hold this reader's own progress/bookmarks/pagination state for that
+  // same book - so opening one converted book would leave two cache folders
+  // behind. Reuse the converter's own folder instead whenever the path
+  // clearly is one (ends in "/package.epub", sits under our cache dir, and
+  // has a container.xml right where Fb2/etc. always put one).
+  constexpr char kPackageSuffix[] = "/package.epub";
+  constexpr size_t kSuffixLen = sizeof(kPackageSuffix) - 1;
+  if (filepath.size() > kSuffixLen && filepath.compare(filepath.size() - kSuffixLen, kSuffixLen, kPackageSuffix) == 0) {
+    const std::string parentDir = filepath.substr(0, filepath.size() - kSuffixLen);
+    const std::string prefix = cacheDir + "/";
+    // container.xml lives inside the package directory itself (filepath,
+    // which still ends in "/package.epub" here) - not one level up in
+    // parentDir. Checking the wrong location always returns false, which
+    // silently disables this whole special case.
+    if (parentDir.compare(0, prefix.size(), prefix) == 0 &&
+        Storage.exists((filepath + "/META-INF/container.xml").c_str())) {
+      return parentDir;
+    }
+  }
   // Keep on-disk EPUB cache keys stable across standard library/toolchain changes.
   return cacheDir + "/epub_" + std::to_string(ZipFile::fnvHash64(filepath.c_str(), filepath.size()));
 }
@@ -1040,6 +1065,38 @@ bool Epub::readItemContentsToStream(const std::string& itemHref, Print& out, con
   }
 
   const std::string path = itemPath(itemHref);
+
+  // FB2-origin packages (see lib/Fb2/Fb2.cpp) don't have real chapter files
+  // on disk - Fb2::load() only scans + indexes the source, deferring actual
+  // chapter rendering to first use, the same way a real EPUB's chapters
+  // aren't "converted" until Section::createSectionFile() asks for them.
+  // The marker file's presence is the only signal needed; it's never
+  // written for a real EPUB, so this can't misfire on one.
+  if (isFb2Origin) {
+    int chapterIndex = -1;
+    const size_t prefixPos = itemHref.rfind("chapter_");
+    if (prefixPos != std::string::npos) {
+      chapterIndex = std::atoi(itemHref.c_str() + prefixPos + 8);
+    }
+    if (chapterIndex >= 0) {
+      return Fb2::renderChapterOnDemand(cachePath, chapterIndex, out);
+    }
+    // Not a chapter item. container.xml/content.opf/toc.ncx/style.css exist
+    // already (written eagerly by Fb2::load()); an image under OEBPS/images/
+    // may not, since those are decoded lazily too (Fb2::persistImageIndex()
+    // only records where each one lives in the FB2 source, never decodes at
+    // load time - ChapterHtmlSlimParser calls in here for an image's real
+    // pixel dimensions the first time its containing chapter is parsed, well
+    // before anything asks to actually display it, so this has to happen
+    // here rather than waiting for ImageBlock::render()). A no-op for
+    // anything that isn't one of our images, so falling through to the
+    // normal read below is always correct - decodeImageOnDemand() either
+    // materialized the file just now, or the path was never one of ours.
+    if (!Storage.exists(path.c_str())) {
+      Fb2::decodeImageOnDemand(path);
+    }
+  }
+
   if (unpackedPackage) {
     HalFile file;
     if (!Storage.openFileForRead("EBP", path, file) || file.isDirectory()) return false;

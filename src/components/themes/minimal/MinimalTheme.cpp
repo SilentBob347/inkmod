@@ -712,8 +712,8 @@ void MinimalTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, cons
   constexpr int buttonHeight = MinimalMetrics::values.buttonHintsHeight;
   constexpr int buttonY = MinimalMetrics::values.buttonHintsHeight;
   constexpr int textYOffset = 8;
-  constexpr int x4ButtonPositions[] = {56, 144, 256, 344};
-  constexpr int x3ButtonPositions[] = {64, 156, 292, 384};
+  constexpr int x4ButtonPositions[] = {54, 142, 254, 342};
+  constexpr int x3ButtonPositions[] = {62, 154, 290, 382};
   const int* buttonPositions = screenWidth > 500 ? x3ButtonPositions : x4ButtonPositions;
   const char* labels[] = {btn1, btn2, btn3, btn4};
   const int selectedIndex = homeButtonHintSelection;

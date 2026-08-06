@@ -835,7 +835,7 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
     lastBaseTop = glyph->top;
     prevAdvanceFP = glyph->advanceX;  // 12.4 fixed-point
 
-    const bool isSupSub = (style & (EpdFontFamily::SUP | EpdFontFamily::SUB)) != 0;
+    const bool isSupSub = (style & (EpdFontFamily::SUP | EpdFontFamily::SUB | EpdFontFamily::SMALL_CAPS)) != 0;
     if (isSupSub) {
       // Halve the advance so the cursor advances by the same amount the scaled glyph
       // actually occupies, keeping spacing correct without needing a separate smaller font.
@@ -2002,7 +2002,7 @@ int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFami
   auto sdIt = sdCardFonts_.find(fontId);
   if (sdIt != sdCardFonts_.end() && sdIt->second->hasAdvanceTable()) {
     int32_t widthFP = 0;
-    const bool isSupSub = (style & (EpdFontFamily::SUP | EpdFontFamily::SUB)) != 0;
+    const bool isSupSub = (style & (EpdFontFamily::SUP | EpdFontFamily::SUB | EpdFontFamily::SMALL_CAPS)) != 0;
     const uint8_t styleIdx = resolveSdCardStyle(*sdIt->second, style);
     while (uint32_t cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text))) {
       int32_t advFP = sdIt->second->getAdvance(cp, styleIdx);
@@ -2063,7 +2063,7 @@ int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFami
 
     const EpdGlyph* glyph = font.getGlyph(cp, style);
     prevAdvanceFP = glyph ? glyph->advanceX : 0;
-    if ((style & (EpdFontFamily::SUP | EpdFontFamily::SUB)) != 0) {
+    if ((style & (EpdFontFamily::SUP | EpdFontFamily::SUB | EpdFontFamily::SMALL_CAPS)) != 0) {
       prevAdvanceFP = (prevAdvanceFP + 1) / 2;
     }
     prevCp = cp;

@@ -1,5 +1,6 @@
 #include "BookMetadataCache.h"
 
+#include <Fb2.h>
 #include <Logging.h>
 #include <Serialization.h>
 #include <ZipFile.h>
@@ -251,15 +252,34 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
 
     size_t itemSize = 0;
     if (unpackedPackage) {
-      // Unpacked (FB2-converted) package: items live directly on disk under epubPath,
-      // matching Epub::itemPath's "filepath + '/' + normalisedHref" layout.
+      // Unpacked (FB2-converted, or a real unpacked EPUB) package: items
+      // live directly on disk under epubPath, matching Epub::itemPath's
+      // "filepath + '/' + normalisedHref" layout - except an FB2-origin
+      // package's own chapter text, which is rendered lazily on first
+      // visit (see lib/Fb2/Fb2.cpp) and so may not exist yet; that's
+      // handled in the fallback below instead of being an error.
       const std::string path = epubPath + "/" + FsHelpers::normalisePath(spineEntry.href);
       HalFile file;
       if (Storage.openFileForRead("BMC", path, file) && !file.isDirectory()) {
         itemSize = static_cast<size_t>(file.fileSize64());
         file.close();
       } else {
-        LOG_ERR("BMC", "Warning: Could not get size for spine item: %s", path.c_str());
+        // FB2-origin package: chapters aren't real files until a chapter is
+        // actually opened once (see lib/Fb2/Fb2.cpp), so this is the
+        // expected case for every not-yet-visited chapter, not an error.
+        // Fall back to scan()'s own decoded-text size estimate, persisted
+        // for exactly this - without it every FB2 book's cumulative size
+        // (and so "% read") reads as 0 until every chapter has been opened.
+        // Fb2's cache dir is epubPath with the trailing "/package.epub"
+        // (epubPath == Epub::filepath == Fb2::packagePath) stripped back off.
+        constexpr char kPackageSuffix[] = "/package.epub";
+        constexpr size_t kSuffixLen = sizeof(kPackageSuffix) - 1;
+        if (epubPath.size() > kSuffixLen && epubPath.compare(epubPath.size() - kSuffixLen, kSuffixLen, kPackageSuffix) == 0) {
+          itemSize = Fb2::getApproxChapterSize(epubPath.substr(0, epubPath.size() - kSuffixLen), i);
+        }
+        if (itemSize == 0) {
+          LOG_ERR("BMC", "Warning: Could not get size for spine item: %s", path.c_str());
+        }
       }
     } else if (useBatchSizes) {
       itemSize = spineSizes[i];

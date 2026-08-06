@@ -1,5 +1,6 @@
 #include "ImageBlock.h"
 
+#include <Fb2.h>
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <Logging.h>
@@ -188,6 +189,15 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   }
 
   // No cache - need to decode the image
+  // FB2-origin packages don't decode images at load time either (see
+  // Fb2::persistImageIndex()/decodeImageOnDemand()) - the raw file below
+  // may not exist yet the first time this image is actually rendered. A
+  // no-op for any path outside an FB2-origin package (checked internally
+  // via a marker file), so this is safe to call unconditionally.
+  if (!Storage.exists(imagePath.c_str())) {
+    Fb2::decodeImageOnDemand(imagePath);
+  }
+
   // Check if image file exists
   FsFile file;
   if (!Storage.openFileForRead("IMG", imagePath, file)) {

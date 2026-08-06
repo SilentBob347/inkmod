@@ -6,6 +6,7 @@
 
 #include "InkMODSettings.h"
 #include "Epub.h"
+#include "Epub/split/EpubChapterSplitter.h"
 #include "EpubReaderActivity.h"
 #include "SdCardFontSystem.h"
 #include "Txt.h"
@@ -45,7 +46,14 @@ std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path) {
     return nullptr;
   }
 
-  auto epub = std::unique_ptr<Epub>(new Epub(path, "/.inkmod"));
+  // A no-op for the overwhelming majority of books (one cheap content.opf
+  // read plus a batched zip size check) - only for the rare book with a
+  // single spine item too large for this device to lay out in one pass
+  // does this redirect to a cached, pre-split unpacked copy instead of
+  // opening `path` directly. See EpubChapterSplitter's own header for why.
+  const std::string readPath = EpubChapterSplitter::resolveReadPath(path, "/.inkmod");
+
+  auto epub = std::unique_ptr<Epub>(new Epub(readPath, "/.inkmod"));
   if (epub->load(true, SETTINGS.embeddedStyle == 0)) {
     return epub;
   }

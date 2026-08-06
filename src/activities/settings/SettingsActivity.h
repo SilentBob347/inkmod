@@ -11,7 +11,7 @@
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
 
-enum class SettingType { TOGGLE, ENUM, ACTION, VALUE, STRING, SECTION_HEADER, SUBMENU };
+enum class SettingType { TOGGLE, ENUM, ACTION, VALUE, STRING, SECTION_HEADER, SUBMENU, INFO };
 
 enum class SettingAction {
   None,
@@ -39,6 +39,7 @@ enum class SettingAction {
   Language,
   DownloadFonts,
   ClockSync,
+  CalculateStorageUsage,
 };
 
 struct SettingInfo {
@@ -49,6 +50,14 @@ struct SettingInfo {
   std::vector<uint8_t> enumRawValues;
   std::vector<std::string> enumStringValues;  // runtime alternative to StrId enumValues (for SD card fonts etc.)
   SettingAction action = SettingAction::None;
+  // TOGGLE only: the stored field's own sense is the opposite of what the
+  // row should say - e.g. InkMODSettings::clockDisabled is true when the
+  // clock is OFF, so showing "ВКЛ"/"ВЫКЛ" straight off that value reads
+  // backwards. Flips which label the ON/OFF text uses without touching
+  // the field's actual stored meaning (renaming/inverting the field
+  // itself would also flip its JSON key, silently changing what an
+  // existing saved settings file means).
+  bool invertedToggleDisplay = false;
 
   struct ValueRange {
     uint8_t min;
@@ -77,12 +86,30 @@ struct SettingInfo {
   }
 
   static SettingInfo Toggle(StrId nameId, uint8_t InkMODSettings::* ptr, const char* key = nullptr,
-                            StrId category = StrId::STR_NONE_OPT) {
+                            StrId category = StrId::STR_NONE_OPT, bool invertedToggleDisplay = false) {
     SettingInfo s;
     s.nameId = nameId;
     s.type = SettingType::TOGGLE;
     s.valuePtr = ptr;
     s.key = key;
+    s.category = category;
+    s.invertedToggleDisplay = invertedToggleDisplay;
+    return s;
+  }
+
+  // Non-interactive row: shows nameId's localized label on the left and
+  // getter()'s current value on the right, same visual row style as any
+  // other setting, but never enters an edit/toggle/enum interaction and is
+  // skipped over by up/down navigation - same treatment as SECTION_HEADER
+  // (see the loops in SettingsActivity.cpp that check for that type).
+  // For things like storage usage or "time since last charge" that are
+  // computed live from hardware/state rather than stored in InkMODSettings.
+  static SettingInfo Info(StrId nameId, std::function<std::string()> getter,
+                          StrId category = StrId::STR_NONE_OPT) {
+    SettingInfo s;
+    s.nameId = nameId;
+    s.type = SettingType::INFO;
+    s.stringGetter = std::move(getter);
     s.category = category;
     return s;
   }

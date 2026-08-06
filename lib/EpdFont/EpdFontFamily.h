@@ -14,6 +14,7 @@ class EpdFontFamily {
     STRIKETHROUGH = 8,
     SUP = 16,
     SUB = 32,
+    SMALL_CAPS = 64,
   };
   struct GlyphData {
     const EpdFontData* fontData;

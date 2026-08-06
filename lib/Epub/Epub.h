@@ -23,6 +23,10 @@ class Epub {
   // FB2 is converted to an unpacked EPUB package.  Normal EPUBs remain ZIP
   // archives, but all item access also supports this directory form.
   bool unpackedPackage = false;
+  // Set once in the constructor (see Epub.cpp) rather than re-checked with
+  // Storage.exists() on every readItemContentsToStream() call, since that
+  // runs for every chapter/image/CSS read of every book, FB2-origin or not.
+  bool isFb2Origin = false;
   // the base path for items in the EPUB file
   std::string contentBasePath;
   // Stable cache path based on filepath

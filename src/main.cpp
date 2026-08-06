@@ -749,6 +749,7 @@ void setup() {
 
   SETTINGS.loadFromFile();
   APP_STATE.loadFromFile();
+  powerManager.seedLastChargeMonotonicUs(APP_STATE.lastChargeMonotonicUs);
   RECENT_BOOKS.loadFromFile();
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   KOREADER_STORE.loadFromFile();
@@ -919,6 +920,54 @@ void loop() {
     LOG_INF("MEM", "Free: %d bytes, Total: %d bytes, Min Free: %d bytes, MaxAlloc: %d bytes", ESP.getFreeHeap(),
             ESP.getHeapSize(), ESP.getMinFreeHeap(), ESP.getMaxAllocHeap());
     lastMemPrint = millis();
+  }
+
+  // Persist "since last charge" so it survives a sleep cycle or a
+  // reflash/reset, not just staying valid within one awake session. Two
+  // triggers, for two different reasons:
+  //
+  // - Immediately, the moment charging stops (USB was connected, now
+  //   isn't): on battery, this device's deep sleep fully cuts power to
+  //   the MCU - RTC memory included (see HalPowerManager::startDeepSleep()'s
+  //   own comment) - and there's no USB-connect wake source configured
+  //   either, so the very next sleep (which can happen within seconds of
+  //   unplugging) would otherwise wipe the in-RAM value before it's ever
+  //   written anywhere durable. This is a rare event (once per unplug),
+  //   so writing to SD right when it happens isn't a wear concern.
+  // - Every 5 minutes as a fallback, for the rarer case of a reflash/reset
+  //   happening in the middle of an still-ongoing charge session, before
+  //   any "stopped charging" transition has occurred yet.
+  {
+    static bool wasUsbConnected = false;
+    const bool isUsbConnected = gpio.isUsbConnected();
+    const bool chargingJustStopped = wasUsbConnected && !isUsbConnected;
+    wasUsbConnected = isUsbConnected;
+
+    // getBatteryPercentage() is what actually calls trackChargingState()
+    // (the thing that updates lastChargeMonotonicUs while charging) -
+    // normally that only happens whenever something else asks for the
+    // battery percentage, e.g. redrawing the status bar, which on an
+    // e-ink screen doesn't happen constantly. A quick plug-in/unplug
+    // could pass entirely between two of those redraws, meaning nothing
+    // observed the charge at all in time for chargingJustStopped above to
+    // have anything real to persist. Calling it here directly guarantees
+    // at least one observation per BATTERY_POLL_MS regardless of what the
+    // UI happens to be doing - it's cheap to call this often since the
+    // function caches its own result internally.
+    powerManager.getBatteryPercentage();
+
+    static unsigned long lastChargePersistCheck = 0;
+    constexpr unsigned long kChargePersistIntervalMs = 5 * 60 * 1000;
+    const bool periodicCheckDue = millis() - lastChargePersistCheck >= kChargePersistIntervalMs;
+
+    if (chargingJustStopped || periodicCheckDue) {
+      lastChargePersistCheck = millis();
+      const uint64_t currentLastCharge = powerManager.getLastChargeMonotonicUs();
+      if (currentLastCharge != APP_STATE.lastChargeMonotonicUs) {
+        APP_STATE.lastChargeMonotonicUs = currentLastCharge;
+        APP_STATE.saveToFile();
+      }
+    }
   }
 
   // Handle incoming serial commands,

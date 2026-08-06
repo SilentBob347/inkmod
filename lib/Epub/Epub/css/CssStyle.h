@@ -51,7 +51,6 @@ enum class CssFontStyle : uint8_t { Normal = 0, Italic = 1 };
 
 // Font weight options - CSS supports 100-900, we simplify to normal/bold
 enum class CssFontWeight : uint8_t { Normal = 0, Bold = 1 };
-
 // Text decoration options
 enum class CssTextDecoration : uint8_t { None = 0, Underline = 1, LineThrough = 2 };
 
@@ -82,6 +81,7 @@ struct CssPropertyFlags {
   uint32_t backgroundBlack : 1;
   uint32_t verticalAlign : 1;
   uint32_t direction : 1;
+  uint32_t smallCaps : 1;
 
   CssPropertyFlags()
       : textAlign(0),
@@ -102,19 +102,20 @@ struct CssPropertyFlags {
         display(0),
         backgroundBlack(0),
         verticalAlign(0),
-        direction(0) {}
+        direction(0),
+        smallCaps(0) {}
 
   [[nodiscard]] bool anySet() const {
     return textAlign || fontStyle || fontWeight || textDecoration || textIndent || marginTop || marginBottom ||
            marginLeft || marginRight || paddingTop || paddingBottom || paddingLeft || paddingRight || imageHeight ||
-           imageWidth || display || backgroundBlack || verticalAlign || direction;
+           imageWidth || display || backgroundBlack || verticalAlign || direction || smallCaps;
   }
 
   void clearAll() {
     textAlign = fontStyle = fontWeight = textDecoration = textIndent = 0;
     marginTop = marginBottom = marginLeft = marginRight = 0;
     paddingTop = paddingBottom = paddingLeft = paddingRight = 0;
-    imageHeight = imageWidth = display = backgroundBlack = verticalAlign = direction = 0;
+    imageHeight = imageWidth = display = backgroundBlack = verticalAlign = direction = smallCaps = 0;
   }
 };
 
@@ -145,6 +146,7 @@ struct CssStyle {
   CssDisplay display = CssDisplay::Block;                       // display property (Block or None)
   bool backgroundBlack = false;                                 // Simple black inline/block background support
   CssVerticalAlign verticalAlign = CssVerticalAlign::Baseline;  // vertical-align (super/sub positioning)
+  bool smallCaps = false;  // font-variant: small-caps - rendered as uppercase (see hasSmallCaps() callers)
 
   CssPropertyFlags defined;  // Tracks which properties were explicitly set
 
@@ -227,6 +229,10 @@ struct CssStyle {
       verticalAlign = base.verticalAlign;
       defined.verticalAlign = 1;
     }
+    if (base.hasSmallCaps()) {
+      smallCaps = base.smallCaps;
+      defined.smallCaps = 1;
+    }
   }
 
   [[nodiscard]] bool hasTextAlign() const { return defined.textAlign; }
@@ -248,6 +254,7 @@ struct CssStyle {
   [[nodiscard]] bool hasBackgroundBlack() const { return defined.backgroundBlack; }
   [[nodiscard]] bool hasVerticalAlign() const { return defined.verticalAlign; }
   [[nodiscard]] bool hasDirection() const { return defined.direction; }
+  [[nodiscard]] bool hasSmallCaps() const { return defined.smallCaps; }
 
   void reset() {
     textAlign = CssTextAlign::Left;
@@ -262,6 +269,7 @@ struct CssStyle {
     display = CssDisplay::Block;
     backgroundBlack = false;
     verticalAlign = CssVerticalAlign::Baseline;
+    smallCaps = false;
     defined.clearAll();
   }
 };

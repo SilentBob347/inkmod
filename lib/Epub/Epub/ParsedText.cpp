@@ -806,9 +806,24 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
 
   // For justified text, compute per-gap extra to distribute remaining space evenly
   const int spareSpace = effectivePageWidth - lineWordWidthSum - totalNaturalGaps;
-  const int justifyExtra = (effectiveAlignment == CssTextAlign::Justify && !isLastLine && actualGapCount >= 1)
-                               ? spareSpace / static_cast<int>(actualGapCount)
-                               : 0;
+  int justifyExtra = (effectiveAlignment == CssTextAlign::Justify && !isLastLine && actualGapCount >= 1)
+                          ? spareSpace / static_cast<int>(actualGapCount)
+                          : 0;
+  // A line with very few words - common on a narrow e-reader column,
+  // especially with a short one-letter Russian preposition ("и", "с", "в")
+  // taking up its own gap - can end up needing to stretch each of its few
+  // gaps a lot to fill the line evenly. Splitting that stretch equally is
+  // the right idea, but with only one or two gaps to absorb it, the result
+  // reads as a single oversized gap "floating" around a tiny word rather
+  // than evenly-justified text. Professional typesetting caps per-space
+  // stretch at roughly double a space's natural width for exactly this
+  // reason; past that, this line is better left a little short of full
+  // justification (effectively ragged-right for just this line) than
+  // stretched into something that reads as broken.
+  if (justifyExtra > 0 && actualGapCount >= 1) {
+    const int averageNaturalGap = std::max(1, totalNaturalGaps / static_cast<int>(actualGapCount));
+    justifyExtra = std::min(justifyExtra, averageNaturalGap * 2);
+  }
 
   visualOrderScratch.clear();
   visualOrderScratch.reserve(lineWordCount);
@@ -881,10 +896,16 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
     }
 
     const int reorderedSpare = effectivePageWidth - reorderedWordWidthSum - reorderedNaturalGaps;
-    const int reorderedJustifyExtra =
+    int reorderedJustifyExtra =
         (effectiveAlignment == CssTextAlign::Justify && !isLastLine && reorderedGapCount >= 1)
             ? reorderedSpare / static_cast<int>(reorderedGapCount)
             : 0;
+    // Same cap as the non-reordered path above, for the same reason - see
+    // its comment for why.
+    if (reorderedJustifyExtra > 0 && reorderedGapCount >= 1) {
+      const int averageNaturalGap = std::max(1, reorderedNaturalGaps / static_cast<int>(reorderedGapCount));
+      reorderedJustifyExtra = std::min(reorderedJustifyExtra, averageNaturalGap * 2);
+    }
     const int justifyContribution = (effectiveAlignment == CssTextAlign::Justify && !isLastLine)
                                         ? reorderedJustifyExtra * static_cast<int>(reorderedGapCount)
                                         : 0;

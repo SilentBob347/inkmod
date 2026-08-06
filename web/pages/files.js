@@ -333,18 +333,30 @@
     if (overlapRow) overlapRow.style.display = isBatch ? 'none' : '';
   }
 
-  function toggleConvertOptions() {
-    const checked = document.getElementById('convertBeforeUpload').checked;
+  function updateUploadBtnLabel() {
+    const optimizeChecked = document.getElementById('convertBeforeUpload').checked;
+    const fb2El = document.getElementById('fb2ToEpubCheckbox');
+    const fb2Checked = !!(fb2El && fb2El.checked);
     const uploadBtn = document.getElementById('uploadBtn');
-    document.getElementById('convertWarning').style.display = checked ? 'block' : 'none';
-    document.getElementById('convertInfo').style.display = checked ? 'block' : 'none';
-    // Update button text and style
-    if (checked) {
+    if (optimizeChecked) {
       uploadBtn.textContent = 'Optimize & Upload';
+      uploadBtn.classList.add('optimize');
+    } else if (fb2Checked) {
+      uploadBtn.textContent = 'Convert & Upload';
       uploadBtn.classList.add('optimize');
     } else {
       uploadBtn.textContent = t('files.upload_btn_plain');
       uploadBtn.classList.remove('optimize');
+    }
+  }
+
+  function toggleConvertOptions() {
+    const checked = document.getElementById('convertBeforeUpload').checked;
+    document.getElementById('convertWarning').style.display = checked ? 'block' : 'none';
+    document.getElementById('convertInfo').style.display = checked ? 'block' : 'none';
+    // Update button text and style
+    updateUploadBtnLabel();
+    if (!checked) {
       // Clear image picker when unchecking
       clearImagePicker();
     }
@@ -1262,6 +1274,7 @@
       fb2ToEpubRow.style.display = 'none';
       const fb2Cb = document.getElementById('fb2ToEpubCheckbox');
       if (fb2Cb) fb2Cb.checked = false;
+      updateUploadBtnLabel();
     }
     if (files.length > 0 && hasConvertible) {
       convertOptions.style.display = 'block';
@@ -2946,7 +2959,15 @@ async function resizeImageToScreen(base64, contentType) {
   const blob = base64ToBlob(base64, contentType);
   const { img, width: origW, height: origH, url } = await loadImageFromBlob(blob);
 
-  if (origW <= MAX_WIDTH && origH <= MAX_HEIGHT) {
+  // Covers specifically (this function isn't used for the book's other
+  // illustrations) always get scaled to fit MAX_WIDTH×MAX_HEIGHT, in both
+  // directions - a cover left smaller than the screen gets upscaled by the
+  // *device* at display time instead, and that on-device scaling produces
+  // a visibly blurrier result than doing it here with proper interpolation
+  // (imageSmoothingQuality below). Skip only when it's already exactly the
+  // target size, so a cover that's already right doesn't get needlessly
+  // re-encoded.
+  if (origW === MAX_WIDTH && origH === MAX_HEIGHT) {
     URL.revokeObjectURL(url);
     return { base64, contentType, resized: false, width: origW, height: origH };
   }
@@ -3629,9 +3650,211 @@ ${navLis}
   return blob;
 }
 
+// --- Oversized-chapter splitting (runs as part of EPUB optimization) ---
+//
+// Some EPUBs (an entire short-story collection as one multi-megabyte
+// chapter is a real example, not hypothetical) ship a single spine item
+// too large for the device to lay out - it either hangs for minutes
+// retrying or gets refused outright by the device's own size guard. An
+// on-device splitter exists too, but splitting a multi-MB file needs to
+// unpack the whole zip archive first, which has already failed silently
+// on-device for exactly this kind of file (not enough free heap for a
+// multi-MB decompression buffer on hardware with ~275KB of RAM total).
+// Doing the same split here instead - at upload time, in the browser,
+// where memory isn't a real constraint - means the device never has to
+// attempt the risky part at all; it just receives a book that was never
+// oversized to begin with.
+const OVERSIZED_XHTML_BYTES = 700 * 1024; // above this, split into parts
+const SPLIT_CHUNK_TARGET_BYTES = 250 * 1024;
+
+// Collect every id="..." in a chunk of HTML text (used to know which
+// split part a given anchor ended up in).
+function collectHtmlIds(html) {
+  const ids = new Set();
+  const re = /\bid\s*=\s*["']([^"']+)["']/g;
+  let m;
+  while ((m = re.exec(html)) !== null) ids.add(m[1]);
+  return ids;
+}
+
+function isVoidHtmlElement(name) {
+  return ['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source',
+    'track', 'wbr'].includes(name.toLowerCase());
+}
+
+// Walks `bodyInner` (the content between <body> and </body>) tracking tag
+// nesting depth, and returns every byte offset where depth is back to 0
+// (i.e. a point between two top-level elements/text runs) - the only
+// positions it's safe to cut the HTML without splitting a tag in half or
+// separating an element from its own closing tag. Comments, CDATA, and
+// <script>/<style> content are treated as opaque (never scanned for tags
+// inside them), matching how a real HTML parser would.
+function collectDepthZeroBoundaries(bodyInner) {
+  const boundaries = [];
+  let depth = 0;
+  let i = 0;
+  const n = bodyInner.length;
+
+  while (i < n) {
+    const c = bodyInner[i];
+    if (c === '<') {
+      if (bodyInner.startsWith('<!--', i)) {
+        const end = bodyInner.indexOf('-->', i + 4);
+        i = end === -1 ? n : end + 3;
+        if (depth === 0) boundaries.push(i);
+        continue;
+      }
+      if (bodyInner.startsWith('<![CDATA[', i)) {
+        const end = bodyInner.indexOf(']]>', i + 9);
+        i = end === -1 ? n : end + 3;
+        if (depth === 0) boundaries.push(i);
+        continue;
+      }
+      if (bodyInner[i + 1] === '!' || bodyInner[i + 1] === '?') {
+        const end = bodyInner.indexOf('>', i);
+        i = end === -1 ? n : end + 1;
+        if (depth === 0) boundaries.push(i);
+        continue;
+      }
+      const isClose = bodyInner[i + 1] === '/';
+      const tagStart = i + (isClose ? 2 : 1);
+      const tagNameMatch = /^[a-zA-Z][a-zA-Z0-9:-]*/.exec(bodyInner.slice(tagStart));
+      if (!tagNameMatch) { i++; continue; }
+      const tagName = tagNameMatch[0];
+      let j = tagStart + tagName.length;
+      let inQuote = null;
+      while (j < n) {
+        const cj = bodyInner[j];
+        if (inQuote) { if (cj === inQuote) inQuote = null; }
+        else if (cj === '"' || cj === "'") { inQuote = cj; }
+        else if (cj === '>') { break; }
+        j++;
+      }
+      const tagEnd = j < n ? j + 1 : n;
+      const selfClosing = bodyInner[j - 1] === '/';
+
+      if (!isClose && !selfClosing && (tagName.toLowerCase() === 'script' || tagName.toLowerCase() === 'style')) {
+        const closeTag = `</${tagName}>`;
+        const closeIdx = bodyInner.toLowerCase().indexOf(closeTag.toLowerCase(), tagEnd);
+        i = closeIdx === -1 ? n : closeIdx + closeTag.length;
+        if (depth === 0) boundaries.push(i);
+        continue;
+      }
+
+      if (isClose) depth = Math.max(0, depth - 1);
+      else if (!selfClosing && !isVoidHtmlElement(tagName)) depth++;
+      i = tagEnd;
+      if (depth === 0) boundaries.push(i);
+      continue;
+    }
+    i++;
+  }
+  return boundaries;
+}
+
+// Splits `bodyInner` into chunks, each as close to targetSize as possible
+// without ever cutting through the middle of a tag - each returned chunk
+// boundary sits exactly on one of collectDepthZeroBoundaries()'s offsets.
+function splitHtmlBody(bodyInner, targetSize) {
+  const boundaries = collectDepthZeroBoundaries(bodyInner);
+  const chunks = [];
+  let start = 0;
+  let prevBoundary = 0;
+  for (const b of boundaries) {
+    if (b - start >= targetSize && prevBoundary > start) {
+      chunks.push(bodyInner.slice(start, prevBoundary));
+      start = prevBoundary;
+    }
+    prevBoundary = b;
+  }
+  chunks.push(bodyInner.slice(start));
+  return chunks.filter(c => c.length > 0);
+}
+
+// Splits one oversized XHTML document's content into N self-contained
+// XHTML documents (same <head>, a slice of the original <body> each).
+// Returns null if the document doesn't look splittable (no <body>) or
+// isn't actually big enough to need it.
+function splitXhtmlDocument(originalHtml, baseName) {
+  const bodyOpenMatch = /<body[^>]*>/i.exec(originalHtml);
+  const bodyCloseMatch = /<\/body>/i.exec(originalHtml);
+  if (!bodyOpenMatch || !bodyCloseMatch) return null;
+  const bodyOpenTag = bodyOpenMatch[0];
+  const bodyStart = bodyOpenMatch.index + bodyOpenTag.length;
+  const bodyEnd = bodyCloseMatch.index;
+  const head = originalHtml.slice(0, bodyStart);
+  const tail = originalHtml.slice(bodyEnd);
+  const bodyInner = originalHtml.slice(bodyStart, bodyEnd);
+
+  const chunks = splitHtmlBody(bodyInner, SPLIT_CHUNK_TARGET_BYTES);
+  if (chunks.length <= 1) return null;
+
+  const parts = [];
+  const idToPart = new Map();
+  chunks.forEach((chunk, idx) => {
+    const partName = `${baseName}_part${idx}.html`;
+    parts.push({ name: partName, html: head + chunk + tail });
+    for (const id of collectHtmlIds(chunk)) idToPart.set(id, idx);
+  });
+  return { parts, idToPart };
+}
+
+function escapeRegExpLiteral(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Replaces the single manifest <item> (and its one <itemref> in the
+// spine) for the file being split with one item/itemref per part, in
+// order, so reading order is preserved. Returns null if the manifest
+// entry or spine reference couldn't be found (caller should then leave
+// the file unsplit rather than produce a manifest that doesn't match
+// what's actually in the zip).
+function rewriteOpfForSplitFile(opfText, originalHref, originalDir, parts) {
+  const itemRe = new RegExp(`<item\\b[^>]*href=["'][^"']*${escapeRegExpLiteral(originalHref)}["'][^>]*/>`, 'i');
+  const itemMatch = itemRe.exec(opfText);
+  if (!itemMatch) return null;
+  const originalItemTag = itemMatch[0];
+  const idMatch = /\bid=["']([^"']+)["']/.exec(originalItemTag);
+  const mediaTypeMatch = /\bmedia-type=["']([^"']+)["']/.exec(originalItemTag);
+  if (!idMatch || !mediaTypeMatch) return null;
+  const originalId = idMatch[1];
+  const mediaType = mediaTypeMatch[1];
+
+  const newIds = parts.map((_, idx) => `${originalId}_part${idx}`);
+  const newItems = parts.map((p, idx) =>
+    `<item id="${newIds[idx]}" media-type="${mediaType}" href="${originalDir}${p.name}"/>`).join('');
+  let out = opfText.replace(originalItemTag, newItems);
+
+  const itemrefRe = new RegExp(`<itemref\\b[^>]*idref=["']${escapeRegExpLiteral(originalId)}["'][^>]*/>`, 'i');
+  const itemrefMatch = itemrefRe.exec(out);
+  if (!itemrefMatch) return null;
+  out = out.replace(itemrefMatch[0], newIds.map(id => `<itemref idref="${id}"/>`).join(''));
+
+  return { opfText: out, originalId, newIds };
+}
+
+// Rewrites every href="<originalHref>" or href="<originalHref>#<anchor>"
+// found in `html` to point at whichever split part actually contains
+// that anchor (an unrecognized or missing anchor falls back to part 0 -
+// better to land at the top of the right file than at a broken link).
+// Used both for the NCX/nav table of contents and for any other chapter
+// that happens to link into the file that got split (e.g. a footnote
+// backlink), not just the file's own manifest entry.
+function rewriteLinksToSplitFile(html, originalHref, idToPart, partNames) {
+  const escaped = escapeRegExpLiteral(originalHref);
+  const re = new RegExp(`(["'])${escaped}(#[^"']*)?\\1`, 'g');
+  return html.replace(re, (full, quote, fragment) => {
+    if (!fragment) return `${quote}${partNames[0]}${quote}`;
+    const anchor = fragment.slice(1);
+    const partIdx = idToPart.has(anchor) ? idToPart.get(anchor) : 0;
+    return `${quote}${partNames[partIdx]}${fragment}${quote}`;
+  });
+}
+
 // Convert EPUB file - returns converted blob
 async function convertEpubFile(file, progressCallback) {
   const startTime = Date.now();
+
   const originalSize = file.size;
 
   // Initialize logging
@@ -3752,6 +3975,28 @@ async function convertEpubFile(file, progressCallback) {
     }
 
     if (progressCallback) progressCallback((i / entries.length) * 60);
+  }
+
+  // Split any oversized XHTML chapter into several smaller files - see
+  // this function's own comment block above for why. Runs right after
+  // xhtmlFiles is fully populated and before anything else touches it,
+  // so every later pass (image src rewrites, the DEFENSIVE_STYLE
+  // injection, OPF/NCX handling) sees the split parts as ordinary
+  // documents rather than needing its own special case for them.
+  const splitFileInfo = {}; // originalPath -> { dir, parts, idToPart }
+  for (const [xhtmlPath, content] of Object.entries(xhtmlFiles)) {
+    if (content.length < OVERSIZED_XHTML_BYTES) continue;
+    const dir = xhtmlPath.includes('/') ? xhtmlPath.substring(0, xhtmlPath.lastIndexOf('/') + 1) : '';
+    const baseName = xhtmlPath.split('/').pop().replace(/\.[^.]+$/, '');
+    const splitResult = splitXhtmlDocument(content, baseName);
+    if (!splitResult) continue; // not splittable (no <body>) or not actually oversized once parsed
+
+    delete xhtmlFiles[xhtmlPath];
+    for (const part of splitResult.parts) {
+      xhtmlFiles[dir + part.name] = part.html;
+    }
+    splitFileInfo[xhtmlPath] = { dir, parts: splitResult.parts, idToPart: splitResult.idToPart };
+    log(`Split oversized chapter ${xhtmlPath.split('/').pop()} (${formatBytes(content.length)}) into ${splitResult.parts.length} parts`, '', 'INFO');
   }
 
   // Second pass: update XHTML using DOMParser
@@ -3928,6 +4173,22 @@ async function convertEpubFile(file, progressCallback) {
       console.warn('DOMParser error for', xhtmlPath, e.message);
     }
 
+    // Repoint any link into a file that got split above (its own manifest
+    // entry's links were already rewound to point at itself via the split,
+    // but OTHER chapters/footnotes can also reference into a chapter that
+    // used to be one file and is now several) - matched by basename rather
+    // than full path, since that's how these href values are written in
+    // practice (relative to the file's own directory, which for a book
+    // this large is essentially always the same directory as the file
+    // itself); a reference via a different relative path (e.g. into a
+    // sibling subdirectory) wouldn't be caught by this.
+    for (const [originalPath, info] of Object.entries(splitFileInfo)) {
+      const originalBase = originalPath.split('/').pop();
+      if (!t.includes(originalBase)) continue;
+      const partNames = info.parts.map(p => p.name);
+      t = rewriteLinksToSplitFile(t, originalBase, info.idToPart, partNames);
+    }
+
     // Inject universal image constraint — prevents overflow on e-ink displays
     if (t.includes('</head>')) {
       t = t.replace('</head>', DEFENSIVE_STYLE + '</head>');
@@ -3949,6 +4210,25 @@ async function convertEpubFile(file, progressCallback) {
     }
     const opfDir = opfPath.includes('/') ? opfPath.substring(0, opfPath.lastIndexOf('/')) : '';
     t = fixOPF(t, opfContent, opfDir, splitImages);
+
+    // Manifest/spine entries for a chapter that got split above - same
+    // basename-matching caveat as the cross-link rewrite: this assumes
+    // the split file sits in the same directory as (or a computable
+    // relative path from) the OPF, which covers real-world EPUBs where
+    // content generally lives alongside the .opf.
+    const opfDirPrefix = opfDir ? opfDir + '/' : '';
+    for (const [originalPath, info] of Object.entries(splitFileInfo)) {
+      const originalBase = originalPath.split('/').pop();
+      const relativeDir = info.dir.startsWith(opfDirPrefix) ? info.dir.slice(opfDirPrefix.length) : info.dir;
+      const rewritten = rewriteOpfForSplitFile(t, originalBase, relativeDir, info.parts);
+      if (rewritten) {
+        t = rewritten.opfText;
+        log(`OPF manifest/spine updated for split chapter ${originalBase} (${info.parts.length} parts)`, '', 'INFO');
+      } else {
+        log(`Could not update OPF for split chapter ${originalBase} - manifest entry not found as expected`, 'warning', 'WARN');
+      }
+    }
+
     if (t !== opfContent) logFix('OPF', 'manifest updated');
     out.file(opfPath, t, { compression: 'DEFLATE', compressionOptions: { level: 8 }, createFolders: false });
   }
@@ -3975,6 +4255,21 @@ async function convertEpubFile(file, progressCallback) {
       const oldT = t;
       t = syncNCXIdentifier(t, mainIdentifier);
       if (t !== oldT) logFix('NCX identifier', 'Synced with OPF');
+
+      // Table-of-contents entries that used to point into a chapter that
+      // got split above need the same repointing as any other cross-link -
+      // otherwise every TOC entry for stories after the first would jump
+      // to the wrong place (or nowhere) once that one big file became
+      // several smaller ones.
+      for (const [originalPath, info] of Object.entries(splitFileInfo)) {
+        const originalBase = originalPath.split('/').pop();
+        if (!t.includes(originalBase)) continue;
+        const partNames = info.parts.map(p => p.name);
+        const beforeNcxSplit = t;
+        t = rewriteLinksToSplitFile(t, originalBase, info.idToPart, partNames);
+        if (t !== beforeNcxSplit) logFix('NCX', `repointed links into split chapter ${originalBase}`);
+      }
+
       data = new TextEncoder().encode(t);
     }
     out.file(path, data, { compression: 'DEFLATE', compressionOptions: { level: 8 }, createFolders: false });
@@ -4320,8 +4615,14 @@ function uploadFile() {
     const isEpub = lowerFileName.endsWith('.epub');
     const isFb2 = isFb2Name(lowerFileName);
     const isImage = isImageName(lowerFileName);
-    const convertFb2ToRealEpub = isFb2 && convertEnabled && fb2ToEpubEnabled;
-    const needsConversion = (isEpub || isFb2 || isImage) && convertEnabled;
+    // fb2ToEpubEnabled must work on its own here: the checkbox is reachable
+    // and checkable in the UI without first checking convertEnabled (the
+    // "Оптимизация" parent), so requiring both silently no-ops the whole
+    // conversion for anyone who only ticks "Convert FB2 → EPUB" - the file
+    // just uploads unconverted with no error or indication anything was
+    // skipped.
+    const convertFb2ToRealEpub = isFb2 && fb2ToEpubEnabled;
+    const needsConversion = (isEpub || isFb2 || isImage) && convertEnabled || convertFb2ToRealEpub;
     let conversionSucceeded = false;
     let conversionFailed = false;  // Track if conversion actually failed
     let convOriginalSize = 0;      // Picked-file size; 0 unless conversion succeeded

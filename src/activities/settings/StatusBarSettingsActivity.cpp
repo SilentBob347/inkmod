@@ -166,7 +166,10 @@ void setOptionIndexForItem(const int item, const uint8_t optionIndex) {
 std::string valueTextForItem(const int item) {
   switch (item) {
     case ITEM_CHAPTER_PAGE_COUNT:
-      return SETTINGS.statusBarChapterPageCount ? tr(STR_SHOW) : tr(STR_HIDE);
+      // 0=hide, 1=chapter-relative "X/Y" (existing), 2=whole-book estimate.
+      return SETTINGS.statusBarChapterPageCount == 0   ? tr(STR_HIDE)
+             : SETTINGS.statusBarChapterPageCount == 1 ? tr(STR_PAGE_COUNT_MODE_CHAPTER)
+                                                        : tr(STR_PAGE_COUNT_MODE_BOOK);
     case ITEM_BOOK_PROGRESS_PERCENTAGE:
       return SETTINGS.statusBarBookProgressPercentage ? tr(STR_SHOW) : tr(STR_HIDE);
     case ITEM_BATTERY:
@@ -258,7 +261,7 @@ void StatusBarSettingsActivity::handleSelection() {
 
   switch (selectedIndex) {
     case ITEM_CHAPTER_PAGE_COUNT:
-      SETTINGS.statusBarChapterPageCount = (SETTINGS.statusBarChapterPageCount + 1) % 2;
+      SETTINGS.statusBarChapterPageCount = (SETTINGS.statusBarChapterPageCount + 1) % 3;
       break;
     case ITEM_BOOK_PROGRESS_PERCENTAGE:
       SETTINGS.statusBarBookProgressPercentage = (SETTINGS.statusBarBookProgressPercentage + 1) % 2;
@@ -354,10 +357,20 @@ void StatusBarSettingsActivity::render(RenderLock&&) {
   }
 
   const char* timeLeftPreview = nullptr;
+  char timeLeftPreviewBuf[24];
   if (SETTINGS.statusBarTimeLeft == InkMODSettings::STATUS_BAR_TIME_LEFT::TIME_LEFT_CHAPTER) {
-    timeLeftPreview = "1h 20m";
+    // Preview values only, not read from any real progress data - "1h20m"/
+    // "3h40m" worth of reading, formatted the same way the real time-left
+    // label is (tr(STR_UNIT_HOUR_SHORT)/STR_UNIT_MIN_SHORT), so the preview
+    // actually shows what the user will see rather than a hardcoded
+    // English string regardless of the app's language.
+    snprintf(timeLeftPreviewBuf, sizeof(timeLeftPreviewBuf), "1%s 20 %s", tr(STR_UNIT_HOUR_SHORT),
+             tr(STR_UNIT_MIN_SHORT));
+    timeLeftPreview = timeLeftPreviewBuf;
   } else if (SETTINGS.statusBarTimeLeft == InkMODSettings::STATUS_BAR_TIME_LEFT::TIME_LEFT_BOOK) {
-    timeLeftPreview = "3h 40m";
+    snprintf(timeLeftPreviewBuf, sizeof(timeLeftPreviewBuf), "3%s 40 %s", tr(STR_UNIT_HOUR_SHORT),
+             tr(STR_UNIT_MIN_SHORT));
+    timeLeftPreview = timeLeftPreviewBuf;
   }
   const int previewX = contentX + metrics.contentSidePadding;
   const int bottomPreviewTop = pageHeight - UITheme::getStatusBarHeight() - bottomPreviewPadding;
