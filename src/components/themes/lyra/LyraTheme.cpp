@@ -346,7 +346,22 @@ void LyraTheme::drawListWithMetrics(const GfxRenderer& renderer, Rect rect, int 
                                     const std::function<bool(int index)>& rowDimmed,
                                     const std::function<bool(int index)>& isHeader, const ThemeMetrics& metrics,
                                     const bool invertSelectedRows) const {
+  // Row height and the subtitle's offset (itemY + 30 below) were both
+  // fixed constants sized for the normal 10pt UI font - see BaseTheme.cpp's
+  // matching fix for why Accessibility's "Increase interface text" setting
+  // (swaps UI_10_FONT_ID for a taller 12pt family) broke that assumption.
+  // titleLineHeight is normally computed further down in this function;
+  // pulled up here since rowHeight needs it too.
+  const int titleLineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  constexpr int kSubtitleTopOffset = 7;  // matches titleY's own itemY+7 when a subtitle is present
+  constexpr int kTitleSubtitleGap = 4;
+  constexpr int kSubtitleBottomPadding = 6;
+  const int subtitleOffsetY = kSubtitleTopOffset + titleLineHeight + kTitleSubtitleGap;
   int rowHeight = (rowSubtitle != nullptr) ? metrics.listWithSubtitleRowHeight : metrics.listRowHeight;
+  if (rowSubtitle != nullptr) {
+    const int subtitleLineHeight = renderer.getLineHeight(SMALL_FONT_ID);
+    rowHeight = std::max(rowHeight, subtitleOffsetY + subtitleLineHeight + kSubtitleBottomPadding);
+  }
   if (itemCount <= 0) return;
   const auto isHeaderRow = [&isHeader](int index) { return isHeader != nullptr && isHeader(index); };
   const int sectionHeaderTopPadding = halTiltSensor.isAvailable() ? 10 : 20;
@@ -398,8 +413,6 @@ void LyraTheme::drawListWithMetrics(const GfxRenderer& renderer, Rect rect, int 
     textX += iconSize + hPaddingInSelection;
     textWidth -= iconSize + hPaddingInSelection;
   }
-
-  const int titleLineHeight = renderer.getLineHeight(UI_10_FONT_ID);
 
   // Draw all items using a running Y to accommodate variable-height section headers.
   int currentY = rect.y;
@@ -472,7 +485,7 @@ void LyraTheme::drawListWithMetrics(const GfxRenderer& renderer, Rect rect, int 
       // Draw subtitle
       std::string subtitleText = rowSubtitle(i);
       auto subtitle = renderer.truncatedText(SMALL_FONT_ID, subtitleText.c_str(), rowTextWidth);
-      renderer.drawText(SMALL_FONT_ID, textX, itemY + 30, subtitle.c_str(), foreground);
+      renderer.drawText(SMALL_FONT_ID, textX, itemY + subtitleOffsetY, subtitle.c_str(), foreground);
     }
 
     // Draw value

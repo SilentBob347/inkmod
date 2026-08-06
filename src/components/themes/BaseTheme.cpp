@@ -272,8 +272,25 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
                          const std::function<std::string(int index)>& rowValue, bool highlightValue,
                          const std::function<bool(int index)>& rowDimmed,
                          const std::function<bool(int index)>& isHeader) const {
-  int rowHeight =
-      (rowSubtitle != nullptr) ? BaseMetrics::values.listWithSubtitleRowHeight : BaseMetrics::values.listRowHeight;
+  // Row height and the subtitle's vertical offset both used to be fixed
+  // constants (BaseMetrics::values.listWithSubtitleRowHeight, and a bare
+  // "itemY + 22" below) sized for the normal 10pt UI font. Accessibility's
+  // "Increase interface text" setting (see main.cpp's applyUiTextSize())
+  // swaps UI_10_FONT_ID for a taller 12pt family without touching either
+  // of those constants, so the title text itself grew past where the
+  // subtitle started drawing, and two-line rows grew past the row height
+  // reserved for them - both showing up as the next row's text overlapping
+  // this one. Deriving both from the font's own actual line height instead
+  // means this stays correct at whichever size is currently loaded.
+  const int titleLineH = renderer.getLineHeight(UI_10_FONT_ID);
+  constexpr int kTitleSubtitleGap = 4;
+  constexpr int kSubtitleBottomPadding = 6;
+  const int subtitleLineH = (rowSubtitle != nullptr) ? renderer.getLineHeight(SMALL_FONT_ID) : 0;
+  const int subtitleOffsetY = titleLineH + kTitleSubtitleGap;
+  const int dynamicSubtitleRowHeight = subtitleOffsetY + subtitleLineH + kSubtitleBottomPadding;
+  int rowHeight = (rowSubtitle != nullptr)
+                      ? std::max(BaseMetrics::values.listWithSubtitleRowHeight, dynamicSubtitleRowHeight)
+                      : BaseMetrics::values.listRowHeight;
   int pageItems = rect.height / rowHeight;
   constexpr int sectionHeaderTopPadding = 15;
 
@@ -365,8 +382,8 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
       std::string subtitleText = rowSubtitle(i);
       if (!subtitleText.empty()) {
         auto subtitle = renderer.truncatedText(SMALL_FONT_ID, subtitleText.c_str(), rowTextWidth);
-        renderer.drawText(SMALL_FONT_ID, rect.x + BaseMetrics::values.contentSidePadding, itemY + 22, subtitle.c_str(),
-                          i != selectedIndex);
+        renderer.drawText(SMALL_FONT_ID, rect.x + BaseMetrics::values.contentSidePadding, itemY + subtitleOffsetY,
+                          subtitle.c_str(), i != selectedIndex);
       }
     }
 

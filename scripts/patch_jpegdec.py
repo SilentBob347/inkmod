@@ -4,8 +4,14 @@ PlatformIO pre-build script: apply InkMOD's JPEGDEC patches via `git apply`.
 The upstream JPEGDEC pin still has the wild-pointer + DC-write bugs in
 JPEGDecodeMCU_P that surface when EIGHT_BIT_GRAYSCALE decodes a 3-component
 progressive JPEG (each Y MCU drags two MCU_SKIP calls behind it for Cb/Cr).
-The patches in `scripts/jpegdec_patches/` carry the fix; this script applies
-each one against the libdep working tree.
+It also has a separate, unrelated bug in the same function: the first-scan
+AC coefficient loop writes pMCU[iIndex] without checking iIndex against the
+63-coefficient limit, even though the equivalent write in the successive-
+approximation branch a few lines above it already has that check - a
+large enough Huffman-coded skip run near the end of a block pushes iIndex
+past 63 and overflows into whatever follows that MCU's slot in memory.
+The patches in `scripts/jpegdec_patches/` carry the fixes; this script
+applies each one against the libdep working tree.
 
 Each patch's idempotency is decided by git itself:
   * `git apply --check --reverse` succeeds  -> already applied, skip
