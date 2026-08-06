@@ -540,8 +540,11 @@ void ChapterHtmlSlimParser::emitBufferedTableAsParagraphs(BufferedTable& table) 
   }
 
   const int lineHeight = renderer.getLineHeight(fontId) * lineCompression;
+  // A third of a line, not half - half read as too generous a gap once
+  // measured against how much text it cost per page (the actual, direct
+  // complaint this was tuned down in response to).
   if (extraParagraphSpacing) {
-    currentPageNextY += lineHeight / 2;
+    currentPageNextY += lineHeight / 3;
   }
 }
 
@@ -740,8 +743,11 @@ void ChapterHtmlSlimParser::emitBufferedTableAsFragments(BufferedTable& table) {
     currentPageNextY += table.blockStyle.paddingBottom;
   }
 
+  // A third of a line, not half - half read as too generous a gap once
+  // measured against how much text it cost per page (the actual, direct
+  // complaint this was tuned down in response to).
   if (extraParagraphSpacing) {
-    currentPageNextY += lineHeight / 2;
+    currentPageNextY += lineHeight / 3;
   }
 }
 
@@ -2269,7 +2275,10 @@ void ChapterHtmlSlimParser::makePages() {
   }
 
   // Extra paragraph spacing if enabled (default behavior)
+  // A third of a line, not half - half read as too generous a gap once
+  // measured against how much text it cost per page (the actual, direct
+  // complaint this was tuned down in response to).
   if (extraParagraphSpacing) {
-    currentPageNextY += lineHeight / 2;
+    currentPageNextY += lineHeight / 3;
   }
 }

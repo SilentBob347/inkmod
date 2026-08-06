@@ -280,7 +280,19 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
       .buffer_size_tx = 1024,
       .skip_cert_common_name_check = true,
       .crt_bundle_attach = esp_crt_bundle_attach,
-      .keep_alive_enable = true,
+      // Was keep_alive_enable = true. ESP-IDF has a known, open bug
+      // (espressif/esp-idf#14463) where esp_http_client's internal
+      // "location" string isn't cleared between requests on a reused
+      // client/connection, and a later request with a stale-but-non-null
+      // old_str hits an assert in http_utils_append_string() - a hard
+      // abort, not a recoverable error. Keeping the connection alive
+      // across the redirect GitHub's asset URLs always involve (and any
+      // retry after a transient failure, like the cert issue this method
+      // has already hit once) is exactly the kind of client reuse that
+      // can trigger it. A fresh connection per request costs a bit of
+      // extra TLS handshake overhead, but avoids reusing that internal
+      // state at all.
+      .keep_alive_enable = false,
   };
 
   esp_https_ota_config_t ota_config = {

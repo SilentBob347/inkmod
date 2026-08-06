@@ -334,6 +334,13 @@ class InkMODSettings {
   uint8_t clockUtcOffsetQ = 48;
   // Clock display format: 0 = 24-hour, 1 = 12-hour
   uint8_t clockFormat = 0;
+  // Where the reader's own clock (see shouldShowClockInReader()) is drawn:
+  // 0 = top of the screen (its own row, alongside chapter/book progress
+  // if that's shown there too), 1 = bottom, folded into the same left
+  // cluster as the battery/time-left indicators. Reader-specific - the
+  // clock outside the reader (home screen, settings, etc.) always stays
+  // at the top regardless of this.
+  uint8_t readerClockAtBottom = 0;
   // Set once an NTP sync succeeds. Used to skip re-syncing on every WiFi connect.
   // Resetting to 0 (e.g. via the web UI) forces a re-sync on next WiFi connect.
   uint8_t clockHasBeenSynced = 0;

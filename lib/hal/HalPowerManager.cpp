@@ -6,6 +6,7 @@
 #include <esp_timer.h>
 
 #include <cassert>
+#include <ctime>
 
 #include "HalGPIO.h"
 
@@ -17,7 +18,7 @@ namespace {
 // a hard reset), so the two stay consistent with each other without ever
 // needing to touch the SD card. Declared here rather than as a class member
 // specifically so the RTC_DATA_ATTR placement applies correctly.
-RTC_DATA_ATTR uint64_t lastChargeMonotonicUs = 0;
+RTC_DATA_ATTR uint64_t lastChargeEpochSeconds = 0;
 }  // namespace
 
 HalPowerManager powerManager;  // Singleton instance
@@ -134,17 +135,29 @@ void HalPowerManager::trackChargingState() const {
   _chargeCheckLastPollMs = now;
 
   if (gpio.isUsbConnected()) {
+    // Wall-clock epoch seconds, not esp_timer_get_time() (monotonic
+    // microseconds since boot) - this device fully powers the MCU off on
+    // battery-only deep sleep (see startDeepSleep()'s own comment), which
+    // resets that boot-relative counter to ~0 on every wake. A value
+    // stored from a previous session would then almost always look
+    // "later than now", making every stored timestamp appear invalid
+    // after the very next sleep cycle - which is exactly what happened
+    // before this fix (the setting permanently showed "-"). Wall-clock
+    // time doesn't have that problem: the device's clock (HalClock) is
+    // specifically designed to keep reading correctly across sleep/reboot
+    // (that's what makes the status bar's own time-of-day display correct
+    // after waking up), so comparing against it stays meaningful.
     // RTC memory, not SD - cheap enough to update on every poll while
     // charging, no transition-detection/debounce needed to avoid wear.
-    lastChargeMonotonicUs = static_cast<uint64_t>(esp_timer_get_time());
+    lastChargeEpochSeconds = static_cast<uint64_t>(time(nullptr));
   }
 }
 
-uint64_t HalPowerManager::getLastChargeMonotonicUs() const { return lastChargeMonotonicUs; }
+uint64_t HalPowerManager::getLastChargeEpochSeconds() const { return lastChargeEpochSeconds; }
 
-void HalPowerManager::seedLastChargeMonotonicUs(const uint64_t persistedValue) {
-  if (lastChargeMonotonicUs == 0) {
-    lastChargeMonotonicUs = persistedValue;
+void HalPowerManager::seedLastChargeEpochSeconds(const uint64_t persistedValue) {
+  if (lastChargeEpochSeconds == 0) {
+    lastChargeEpochSeconds = persistedValue;
   }
 }
 

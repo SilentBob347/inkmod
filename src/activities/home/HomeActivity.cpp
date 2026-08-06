@@ -30,6 +30,7 @@
 #include "RecentBookProgress.h"
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
+#include "components/themes/lyra/Lyra3CoversTheme.h"
 #include "components/themes/lyra/LyraCarouselTheme.h"
 #include "components/themes/minimal/MinimalTheme.h"
 #include "fontIds.h"
@@ -1664,7 +1665,21 @@ void HomeActivity::render(RenderLock&&) {
   auto menuItems = buildSelectableHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks,
                                                 metrics.homeContinueReadingInMenu && !recentBooks.empty());
 
-  const int menuStartY = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
+  // Lyra Extended (LYRA_3_COVERS) stacks each cover's title text directly
+  // beneath it, wrapped to as many as 4 lines for a long title (see
+  // Lyra3CoversTheme::drawRecentBookCover) - the fixed homeCoverTileHeight
+  // metric assumes a shorter, more typical title, so a long one could grow
+  // taller than that reserved space and run into the menu drawn right
+  // below it. Only this theme needs the taller, actually-measured value;
+  // every other theme's cover area doesn't grow with title length the
+  // same way, so they keep using the plain metric.
+  const bool isLyra3Covers =
+      static_cast<InkMODSettings::UI_THEME>(SETTINGS.uiTheme) == InkMODSettings::UI_THEME::LYRA_3_COVERS;
+  const int coverTileHeight = isLyra3Covers
+                                  ? Lyra3CoversTheme::computeCoverTileHeight(renderer, pageWidth, recentBooks)
+                                  : metrics.homeCoverTileHeight;
+
+  const int menuStartY = metrics.homeTopPadding + coverTileHeight + metrics.homeMenuTopOffset;
   const int menuEndY = pageHeight - metrics.buttonHintsHeight;
   const int menuHeight = std::max(0, menuEndY - menuStartY);
 

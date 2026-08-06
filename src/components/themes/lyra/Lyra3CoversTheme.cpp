@@ -3,6 +3,7 @@
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -130,4 +131,37 @@ void Lyra3CoversTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, con
   } else {
     drawEmptyRecents(renderer, rect);
   }
+}
+
+int Lyra3CoversTheme::computeCoverTileHeight(const GfxRenderer& renderer, int pageWidth,
+                                             const std::vector<RecentBook>& recentBooks) {
+  const int baseHeight = Lyra3CoversMetrics::values.homeCoverTileHeight;
+  if (recentBooks.empty()) return baseHeight;
+
+  const int tileWidth = (pageWidth - 2 * Lyra3CoversMetrics::values.contentSidePadding) / 3;
+  const int maxLineWidth = tileWidth - hPaddingInSelection * 2;
+  int tallestNeeded = baseHeight;
+
+  for (int i = 0; i < std::min(static_cast<int>(recentBooks.size()), Lyra3CoversMetrics::values.homeRecentBooksCount);
+       i++) {
+    // Mirrors drawRecentBookCover()'s own font/line-count selection - kept
+    // in sync manually since duplicating a few lines here is simpler than
+    // restructuring drawRecentBookCover() (a const override on the base
+    // class's virtual signature) to expose this as a byproduct of drawing.
+    int fontId = SMALL_FONT_ID;
+    int maxLines = 3;
+    int titleWidth = renderer.getTextWidth(SMALL_FONT_ID, recentBooks[i].title.c_str());
+    if (titleWidth > maxLineWidth * 2) {
+      fontId = UI_10_FONT_ID;
+      maxLines = 4;
+    }
+    auto titleLines = renderer.wrappedText(fontId, recentBooks[i].title.c_str(), maxLineWidth, maxLines);
+    const int titleLineHeight = renderer.getLineHeight(fontId);
+    const int dynamicTitleBoxHeight =
+        static_cast<int>(titleLines.size()) * titleLineHeight + hPaddingInSelection + 5;
+    const int neededForThisTile =
+        Lyra3CoversMetrics::values.homeCoverHeight + hPaddingInSelection + dynamicTitleBoxHeight;
+    tallestNeeded = std::max(tallestNeeded, neededForThisTile);
+  }
+  return tallestNeeded;
 }

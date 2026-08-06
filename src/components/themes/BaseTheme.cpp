@@ -915,6 +915,27 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
     leftClusterWidth += (hasLeftItem ? statusItemGap : 0) + timeLeftWidth;
   }
 
+  // Clock, in the reader specifically, when the user has it set to the
+  // bottom - appended to this same left cluster (after battery/time-left)
+  // rather than its own row across the top of the screen: a standalone
+  // top row was tried first, but that took a whole line away from the
+  // book text, which was worse than the thing being fixed. Sharing this
+  // row costs nothing extra since leftClusterWidth already keeps the
+  // (centered) title clear of whatever's actually in this cluster on a
+  // given screen. The top-row placement (SETTINGS.readerClockAtBottom ==
+  // 0, the default) is still drawn separately by the reader itself via
+  // drawTopStatusBarClock(), same as before this setting existed.
+  if (SETTINGS.readerClockAtBottom && SETTINGS.shouldShowClockInReader() && halClock.isAvailable()) {
+    char clockBuf[9];
+    if (halClock.formatTime(clockBuf, sizeof(clockBuf), SETTINGS.clockUtcOffsetQ, SETTINGS.clockFormat == 1)) {
+      const bool hasLeftItem = leftClusterWidth > 0;
+      const int clockX = leftClusterX + leftClusterWidth + (hasLeftItem ? statusItemGap : 0);
+      renderer.drawText(SMALL_FONT_ID, clockX, textY, clockBuf, foregroundBlack);
+      const int clockWidth = renderer.getTextWidth(SMALL_FONT_ID, clockBuf);
+      leftClusterWidth += (hasLeftItem ? statusItemGap : 0) + clockWidth;
+    }
+  }
+
   // Draw Title
   if (!title.empty()) {
     textY -= textYOffset;

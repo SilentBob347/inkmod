@@ -6,7 +6,7 @@
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <SdCardFontRegistry.h>
-#include <esp_timer.h>
+#include <ctime>
 
 #include <algorithm>
 #include <cstring>
@@ -365,6 +365,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                           "imageRendering", StrId::STR_CAT_READER));
     add(SettingInfo::Toggle(StrId::STR_EXTRA_SPACING, &InkMODSettings::extraParagraphSpacing,
                             "extraParagraphSpacing", StrId::STR_CAT_READER));
+    add(SettingInfo::Enum(StrId::STR_READER_CLOCK_POSITION, &InkMODSettings::readerClockAtBottom,
+                          {StrId::STR_TOP, StrId::STR_BOTTOM}, "readerClockAtBottom", StrId::STR_CAT_READER));
     add(SettingInfo::Toggle(StrId::STR_FORCE_PARAGRAPH_INDENTS, &InkMODSettings::forceParagraphIndents,
                             "forceParagraphIndents", StrId::STR_CAT_READER));
     add(SettingInfo::Toggle(StrId::STR_BIONIC_READING, &InkMODSettings::bionicReadingEnabled,
@@ -734,7 +736,7 @@ inline void addSettingByName(std::vector<SettingInfo>& target, const std::vector
 
 inline std::vector<SettingInfo> buildReaderSettingsParentList(const std::vector<SettingInfo>& allSettings) {
   std::vector<SettingInfo> readerSettings;
-  readerSettings.reserve(8);
+  readerSettings.reserve(9);
   readerSettings.push_back(SettingInfo::Submenu(StrId::STR_READER_FONT_OPTIONS, SettingAction::ReaderFontOptions));
   readerSettings.push_back(SettingInfo::Submenu(StrId::STR_READER_PAGE_LAYOUT, SettingAction::ReaderPageLayout));
   readerSettings.push_back(SettingInfo::Action(StrId::STR_CUSTOMISE_STATUS_BAR, SettingAction::CustomiseStatusBar));
@@ -744,6 +746,7 @@ inline std::vector<SettingInfo> buildReaderSettingsParentList(const std::vector<
   addSettingByName(readerSettings, allSettings, StrId::STR_IMAGES);
   addSettingByName(readerSettings, allSettings, StrId::STR_BIONIC_READING);
   addSettingByName(readerSettings, allSettings, StrId::STR_GUIDE_READING);
+  addSettingByName(readerSettings, allSettings, StrId::STR_READER_CLOCK_POSITION);
   return readerSettings;
 }
 
@@ -967,15 +970,17 @@ inline std::vector<SettingInfo> buildSystemDeviceSettingsList(const std::vector<
     settings.push_back(storageRow);
   }
   settings.push_back(SettingInfo::Info(StrId::STR_SINCE_LAST_CHARGE, [] {
-    const uint64_t lastChargeUs = powerManager.getLastChargeMonotonicUs();
-    const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
-    // lastChargeUs > nowUs is only possible if a hard reset happened since
-    // it was recorded (esp_timer_get_time() restarts at 0 on those, but
-    // not across deep sleep - see HalPowerManager.cpp), which makes the
-    // stored value meaningless for this boot. Showing "-" beats a negative
-    // or wildly wrong duration.
-    if (lastChargeUs == 0 || lastChargeUs > nowUs) return std::string("-");
-    const uint64_t elapsedSeconds = (nowUs - lastChargeUs) / 1000000ULL;
+    const uint64_t lastChargeEpoch = powerManager.getLastChargeEpochSeconds();
+    const uint64_t nowEpoch = static_cast<uint64_t>(time(nullptr));
+    // A value of 0 means never observed this boot and nothing persisted
+    // from a previous one either. kMinValidEpoch-style sanity check isn't
+    // needed here the way it is when seeding the clock itself - if the
+    // clock has never been synced, "now" itself is implausibly small and
+    // elapsedSeconds comes out small/zero rather than negative or huge,
+    // which reads as "0 ч" rather than garbage - acceptable, and self-
+    // corrects the moment the clock does get synced.
+    if (lastChargeEpoch == 0 || nowEpoch < lastChargeEpoch) return std::string("-");
+    const uint64_t elapsedSeconds = nowEpoch - lastChargeEpoch;
     const uint32_t days = static_cast<uint32_t>(elapsedSeconds / 86400ULL);
     const uint32_t hours = static_cast<uint32_t>((elapsedSeconds % 86400ULL) / 3600ULL);
     char buf[32];

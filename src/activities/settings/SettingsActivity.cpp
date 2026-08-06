@@ -332,6 +332,7 @@ StrId SettingsActivity::activeSubmenuTitleId() const {
 
 void SettingsActivity::openSubmenu(SettingAction action) {
   parentSubmenu = activeSubmenu;
+  parentSelectedIndex = selectedSettingIndex;
   activeSubmenu = action;
   setCurrentSettingsForCategory();
   selectedSettingIndex = 1;
@@ -346,7 +347,20 @@ void SettingsActivity::closeSubmenu() {
   activeSubmenu = parentSubmenu;
   parentSubmenu = SettingAction::None;
   setCurrentSettingsForCategory();
-  selectedSettingIndex = 1;
+  // Restored, not hard-coded back to 1 - see parentSelectedIndex's own
+  // comment. Still clamped/validated below in case the parent list's
+  // contents changed while the submenu was open (a setting that got
+  // hidden - e.g. a clock-disabled-dependent row - could otherwise leave
+  // the cursor on a since-removed row or a section header/info row it was
+  // never meant to land on).
+  selectedSettingIndex =
+      (parentSelectedIndex >= 0 && parentSelectedIndex <= settingsCount) ? parentSelectedIndex : 1;
+  parentSelectedIndex = 0;
+  while (selectedSettingIndex > 0 && selectedSettingIndex <= settingsCount &&
+         ((*currentSettings)[selectedSettingIndex - 1].type == SettingType::SECTION_HEADER ||
+          (*currentSettings)[selectedSettingIndex - 1].type == SettingType::INFO)) {
+    selectedSettingIndex = ButtonNavigator::nextIndex(selectedSettingIndex, settingsCount + 1);
+  }
 }
 
 bool SettingsActivity::currentSettingUsesOptionMenu(const SettingInfo& setting) const {

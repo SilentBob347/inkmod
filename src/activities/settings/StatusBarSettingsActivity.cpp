@@ -377,7 +377,15 @@ void StatusBarSettingsActivity::render(RenderLock&&) {
   const int previewLabelY = bottomPreviewTop - previewLabelLineHeight - previewLabelGap;
 
   renderer.drawText(UI_10_FONT_ID, previewX, previewLabelY, tr(STR_PREVIEW));
-  GUI.drawStatusBar(renderer, 75, 8, 32, title, bottomPreviewPadding, 0, false, timeLeftPreview);
+  // Plausible example numbers for the "by book" mode - drawStatusBar()
+  // only shows these when statusBarChapterPageCount == 2 AND both are
+  // >= 0 (its default when omitted, like the two calls below always used
+  // to pass implicitly, is -1/-1, meaning "not available" - so without
+  // this the preview silently fell back to the chapter-relative 8/32 no
+  // matter which mode was actually selected).
+  const bool previewBookWide = SETTINGS.statusBarChapterPageCount == 2;
+  GUI.drawStatusBar(renderer, 75, 8, 32, title, bottomPreviewPadding, 0, false, timeLeftPreview, false,
+                    previewBookWide ? 142 : -1, previewBookWide ? 512 : -1);
 
   renderer.displayBuffer();
 }

@@ -272,6 +272,12 @@ class SettingsActivity final : public Activity {
   bool quickResumeTimeoutAutoEnabled = false;
   SettingAction activeSubmenu = SettingAction::None;
   SettingAction parentSubmenu = SettingAction::None;
+  // Which row was selected in the parent list right before openSubmenu()
+  // switched to the child list - closeSubmenu() restores this instead of
+  // always landing back on row 1, so backing out of a submenu leaves the
+  // cursor where it was rather than resetting to the top of the parent
+  // list every time.
+  int parentSelectedIndex = 0;
 
   static constexpr int categoryCount = 4;
   static const StrId categoryNames[categoryCount];

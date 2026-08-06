@@ -105,7 +105,7 @@ bool JsonSettingsIO::saveState(const InkMODState& s, const char* path) {
   doc["pendingBookmarkProgress"] = s.pendingBookmarkProgress;
   doc["pendingBookmarkParagraphIndex"] = s.pendingBookmarkParagraphIndex;
   doc["showBootScreen"] = s.showBootScreen;
-  doc["lastChargeMonotonicUs"] = s.lastChargeMonotonicUs;
+  doc["lastChargeEpochSeconds"] = s.lastChargeEpochSeconds;
 
   String json;
   serializeJson(doc, json);
@@ -146,7 +146,7 @@ bool JsonSettingsIO::loadState(InkMODState& s, const char* json) {
   s.pendingBookmarkProgress = doc["pendingBookmarkProgress"] | static_cast<float>(-1.0f);
   s.pendingBookmarkParagraphIndex = doc["pendingBookmarkParagraphIndex"] | static_cast<uint16_t>(UINT16_MAX);
   s.showBootScreen = doc["showBootScreen"] | true;
-  s.lastChargeMonotonicUs = doc["lastChargeMonotonicUs"] | 0ULL;
+  s.lastChargeEpochSeconds = doc["lastChargeEpochSeconds"] | 0ULL;
   return true;
 }
 

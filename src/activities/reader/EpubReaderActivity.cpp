@@ -3096,8 +3096,14 @@ void EpubReaderActivity::renderStatusBar() const {
 
   GUI.drawStatusBar(renderer, bookProgress, currentPage, pageCount, title, 0, textYOffset, bookmarked, timeLeft,
                     ReaderUtils::readerDarkModeEnabled(), bookWideCurrentPage, bookWideTotalPages);
-  GUI.drawTopStatusBarClock(renderer, UITheme::getInstance().getMetrics().topPadding, nullptr, true, 0,
-                            ReaderUtils::readerDarkModeEnabled());
+  // Bottom placement (the other half of this toggle) is drawn as part of
+  // drawStatusBar() above instead, folded into its left cluster alongside
+  // battery/time-left - see that function's own comment for why. Top is
+  // still this separate call, same as before this setting existed.
+  if (!SETTINGS.readerClockAtBottom) {
+    GUI.drawTopStatusBarClock(renderer, UITheme::getInstance().getMetrics().topPadding, nullptr, true, 0,
+                              ReaderUtils::readerDarkModeEnabled());
+  }
 }
 
 void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool savePosition) {

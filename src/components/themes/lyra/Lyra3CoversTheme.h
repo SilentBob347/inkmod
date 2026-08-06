@@ -24,4 +24,15 @@ class Lyra3CoversTheme : public LyraTheme {
                            int selectorIndex, bool& coverRendered, bool& coverBufferStored, bool& bufferRestored,
                            const std::function<bool()>& storeCoverBuffer, const BookReadingStats* stats = nullptr,
                            float progressPercent = -1.0f) const override;
+
+  // Computes how tall the cover+title area actually needs to be for the
+  // longest-wrapping title among recentBooks, at the given pageWidth -
+  // callers positioning content below it (the home menu) can then reserve
+  // std::max(Lyra3CoversMetrics::values.homeCoverTileHeight, this) instead
+  // of assuming the fixed metric constant is always tall enough. A title
+  // long enough to wrap to 3-4 lines (see drawRecentBookCover's own
+  // dynamicTitleBoxHeight) can exceed it, which is what let a long title
+  // overlap the menu below instead of pushing it down.
+  static int computeCoverTileHeight(const GfxRenderer& renderer, int pageWidth,
+                                    const std::vector<RecentBook>& recentBooks);
 };

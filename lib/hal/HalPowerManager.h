@@ -51,18 +51,22 @@ class HalPowerManager {
   // getBatteryPercentage() on every poll.
   void trackChargingState() const;
 
-  // esp_timer_get_time() value (microseconds since boot) as of the last
-  // time trackChargingState() observed USB charging; 0 if never observed
-  // this boot/deep-sleep-retained cycle. Kept in RTC memory (survives deep
-  // sleep, resets together with esp_timer_get_time() on a hard reset - see
-  // the .cpp), not persisted to SD. For Settings -> System -> Device's
-  // "time since last charge" line: callers should treat a value greater
-  // than the current esp_timer_get_time() as invalid (a hard reset
-  // happened since it was set) rather than display it.
-  uint64_t getLastChargeMonotonicUs() const;
+  // time(nullptr) value (wall-clock epoch seconds) as of the last time
+  // trackChargingState() observed USB charging; 0 if never observed this
+  // boot/deep-sleep-retained cycle. Kept in RTC memory, not persisted to
+  // SD directly (the app layer separately persists this to
+  // InkMODState::lastChargeEpochSeconds on real transitions - see
+  // main.cpp's loop() - since RTC memory alone doesn't survive this
+  // device's battery-only deep sleep, which fully powers the MCU off).
+  // Wall-clock time specifically (not esp_timer_get_time(), which resets
+  // to ~0 on every wake from that same battery-only sleep) is what makes
+  // a value from a previous session still comparable to "now" after a
+  // sleep cycle - see trackChargingState()'s own comment for why that
+  // distinction mattered here.
+  uint64_t getLastChargeEpochSeconds() const;
 
   // Called once at startup with the value persisted from the previous
-  // session (InkMODState::lastChargeMonotonicUs), so "since last charge"
+  // session (InkMODState::lastChargeEpochSeconds), so "since last charge"
   // has something to show before this boot's own trackChargingState()
   // has observed anything - RTC memory survives deep sleep on its own but
   // resets on a fresh flash/reset, unlike the persisted copy this seeds
@@ -70,7 +74,7 @@ class HalPowerManager {
   // (i.e. the RTC copy is still its power-on-reset default of 0) - a real
   // charging session already tracked this boot should never be overwritten
   // by an older, persisted value.
-  void seedLastChargeMonotonicUs(uint64_t persistedValue);
+  void seedLastChargeEpochSeconds(uint64_t persistedValue);
 
   // RAII helper class to manage power saving locks
   // Usage: create an instance of Lock in a scope to disable power saving, for example when running a task that needs

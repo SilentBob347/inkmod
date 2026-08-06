@@ -749,7 +749,7 @@ void setup() {
 
   SETTINGS.loadFromFile();
   APP_STATE.loadFromFile();
-  powerManager.seedLastChargeMonotonicUs(APP_STATE.lastChargeMonotonicUs);
+  powerManager.seedLastChargeEpochSeconds(APP_STATE.lastChargeEpochSeconds);
   RECENT_BOOKS.loadFromFile();
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   KOREADER_STORE.loadFromFile();
@@ -944,7 +944,7 @@ void loop() {
     wasUsbConnected = isUsbConnected;
 
     // getBatteryPercentage() is what actually calls trackChargingState()
-    // (the thing that updates lastChargeMonotonicUs while charging) -
+    // (the thing that updates lastChargeEpochSeconds while charging) -
     // normally that only happens whenever something else asks for the
     // battery percentage, e.g. redrawing the status bar, which on an
     // e-ink screen doesn't happen constantly. A quick plug-in/unplug
@@ -962,9 +962,9 @@ void loop() {
 
     if (chargingJustStopped || periodicCheckDue) {
       lastChargePersistCheck = millis();
-      const uint64_t currentLastCharge = powerManager.getLastChargeMonotonicUs();
-      if (currentLastCharge != APP_STATE.lastChargeMonotonicUs) {
-        APP_STATE.lastChargeMonotonicUs = currentLastCharge;
+      const uint64_t currentLastCharge = powerManager.getLastChargeEpochSeconds();
+      if (currentLastCharge != APP_STATE.lastChargeEpochSeconds) {
+        APP_STATE.lastChargeEpochSeconds = currentLastCharge;
         APP_STATE.saveToFile();
       }
     }
