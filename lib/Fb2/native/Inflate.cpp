@@ -1,5 +1,6 @@
 #include "Inflate.h"
 #include <cstring>
+#include <memory>
 #include <vector>
 
 namespace {
@@ -111,7 +112,20 @@ const int kCodeLenOrder[19] = {16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15};
 // needs a buffer at least that large, full stop.
 class Window {
 public:
-    Window(const InflateOutputFn& out) : out_(out) {}
+    // buf_ used to be a plain uint8_t[32768] member - meaning a whole
+    // Window instance (this buffer plus everything else) sat directly on
+    // whichever stack constructed it. inflateRaw() below constructs one as
+    // a local variable, so every call put 32KB+ on the CALLING task's
+    // stack - on this device that's the "loopTask" stack, which is only
+    // 8-16KB total, guaranteeing overflow the moment a real deflate stream
+    // needed the full window (not always on the very first call - depends
+    // on when extraction actually happened to run). Heap-allocating it
+    // instead keeps Window itself small enough to live on the stack
+    // safely; the 32KB now lives on the heap, which has roughly 275KB
+    // available on this device - not remotely the same constraint.
+    explicit Window(const InflateOutputFn& out) : out_(out), buf_(new uint8_t[kWindowSize]) {
+        std::memset(buf_.get(), 0, kWindowSize);
+    }
     // Emits any bytes still sitting in the output buffer. Also runs via the
     // destructor, so every inflateRaw() exit path (success or the several
     // early `return false`s in inflateBlock()) flushes automatically -
@@ -158,9 +172,9 @@ private:
 
     static constexpr uint32_t kWindowSize = 32768;
     static constexpr uint32_t kMask = kWindowSize - 1;
-    uint8_t buf_[kWindowSize] = {0};
-    uint32_t pos_ = 0;
     const InflateOutputFn& out_;
+    std::unique_ptr<uint8_t[]> buf_;
+    uint32_t pos_ = 0;
     uint8_t outBuf_[1024];
     size_t outLen_ = 0;
 };
