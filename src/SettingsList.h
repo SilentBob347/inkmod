@@ -584,8 +584,12 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         "koMatchMethod", StrId::STR_KOREADER_SYNC));
 
     // --- Status Bar Settings (web-only, uses StatusBarSettingsActivity) ---
-    add(SettingInfo::Toggle(StrId::STR_CHAPTER_PAGE_COUNT, &InkMODSettings::statusBarChapterPageCount,
-                            "statusBarChapterPageCount", StrId::STR_CUSTOMISE_STATUS_BAR));
+    // Three values: hidden, chapter-relative, and whole-book.  This must be
+    // an enum (not a binary toggle), otherwise JSON loading clamps "By book"
+    // (raw value 2) back to "By chapter" after a deep-sleep reboot.
+    add(SettingInfo::Enum(StrId::STR_CHAPTER_PAGE_COUNT, &InkMODSettings::statusBarChapterPageCount,
+                          {StrId::STR_HIDE, StrId::STR_PAGE_COUNT_MODE_CHAPTER, StrId::STR_PAGE_COUNT_MODE_BOOK},
+                          "statusBarChapterPageCount", StrId::STR_CUSTOMISE_STATUS_BAR));
     add(SettingInfo::Toggle(StrId::STR_BOOK_PROGRESS_PERCENTAGE, &InkMODSettings::statusBarBookProgressPercentage,
                             "statusBarBookProgressPercentage", StrId::STR_CUSTOMISE_STATUS_BAR));
     add(SettingInfo::Enum(StrId::STR_PROGRESS_BAR, &InkMODSettings::statusBarProgressBar,
@@ -912,6 +916,7 @@ inline uint64_t& cachedUsedBytes() { static uint64_t v = 0; return v; }
 // Called when the user selects the "Внутренняя память" row. Idempotent -
 // later presses while already running/done do nothing.
 inline void start() {
+  // cppcheck-suppress knownConditionTrueFalse
   if (started()) return;
   started() = true;
   xTaskCreate(

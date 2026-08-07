@@ -5,10 +5,11 @@
 #include <I18n.h>
 #include <Logging.h>
 
+#include <cstring>
+
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
-#include "util/BookCacheUtils.h"
 
 void ClearCacheActivity::onEnter() {
   Activity::onEnter();
@@ -93,24 +94,25 @@ void ClearCacheActivity::clearCache() {
   // Iterate through all entries in the directory
   for (auto file = root.openNextFile(); file; file = root.openNextFile()) {
     file.getName(name, sizeof(name));
-    String itemName(name);
-
-    // Only clean directories matching known book cache names. Top-level files
-    // such as global_stats.bin are intentionally skipped.
-    if (file.isDirectory() && isBookCacheDirectoryName(itemName.c_str())) {
-      String fullPath = "/.inkmod/" + itemName;
-      LOG_DBG("CLEAR_CACHE", "Removing cache: %s", fullPath.c_str());
-
-      file.close();  // Close before attempting to delete
-
-      if (clearBookCacheDirectoryPreservingStats(fullPath.c_str())) {
-        clearedCount++;
-      } else {
-        LOG_ERR("CLEAR_CACHE", "Failed to remove: %s", fullPath.c_str());
-        failedCount++;
-      }
-    } else {
+    const bool preserve = std::strcmp(name, "wifi.json") == 0 || std::strcmp(name, "inkmod-settings.json") == 0;
+    const bool isDirectory = file.isDirectory();
+    if (preserve) {
       file.close();
+      continue;
+    }
+
+    // Keep the path on the stack: the directory entry name is bounded to 128
+    // bytes, so this avoids heap churn while removing many cache entries.
+    char fullPath[140];
+    snprintf(fullPath, sizeof(fullPath), "/.inkmod/%s", name);
+    file.close();  // SdFat permits only one active handle during deletion.
+
+    const bool removed = isDirectory ? Storage.removeDir(fullPath) : Storage.remove(fullPath);
+    if (removed) {
+      clearedCount++;
+    } else {
+      LOG_ERR("CLEAR_CACHE", "Failed to remove: %s", fullPath);
+      failedCount++;
     }
   }
   root.close();

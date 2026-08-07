@@ -132,5 +132,5 @@ class Fb2 {
   bool writeContainerFile() const;
   bool writeStyleFile() const;
   bool writeOpfFile() const;
-  bool writeNcxFile(const Fb2ScanResult& scan, const std::vector<int>& sectionFirstChapterIndex) const;
+  bool writeNcxFile(const Fb2ScanResult& scan) const;
 };

@@ -116,11 +116,9 @@ EpdFont ui12RegularFont(&inter_12_regular);
 EpdFont ui12BoldFont(&inter_12_bold);
 EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
 
-// "Large" tier for UI_10_FONT_ID on themes with roomy list rows - see
-// applyUiTextSize() below for why not every theme gets this size.
-EpdFont uiLargeRegularFont(&lexenddeca_14_regular);
-EpdFont uiLargeBoldFont(&lexenddeca_14_bold);
-EpdFontFamily uiLargeFontFamily(&uiLargeRegularFont, &uiLargeBoldFont);
+EpdFont ui14RegularFont(&inter_14_regular);
+EpdFont ui14BoldFont(&inter_14_bold);
+EpdFontFamily ui14FontFamily(&ui14RegularFont, &ui14BoldFont);
 
 // See UiTextSize.h. Only UI_10_FONT_ID (menu/list body text) grows; two roles
 // are deliberately left untouched:
@@ -165,6 +163,14 @@ void applyUiTextSize(GfxRenderer& r) {
   } else {
     r.replaceFont(UI_10_FONT_ID, ui10FontFamily);
   }
+}
+
+int uiControlFontId() {
+  return SETTINGS.uiTextSize == InkMODSettings::UI_TEXT_SIZE_LARGE ? UI_14_FONT_ID : UI_12_FONT_ID;
+}
+
+int uiHintFontId() {
+  return SETTINGS.uiTextSize == InkMODSettings::UI_TEXT_SIZE_LARGE ? UI_10_FONT_ID : SMALL_FONT_ID;
 }
 
 // measurement of power button press duration calibration value
@@ -557,6 +563,7 @@ void setupDisplayAndFonts(bool seamless = false) {
 
   renderer.insertFont(UI_10_FONT_ID, ui10FontFamily);
   renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
+  renderer.insertFont(UI_14_FONT_ID, ui14FontFamily);
   renderer.insertFont(SMALL_FONT_ID, smallFontFamily);
   applyUiTextSize(renderer);
 

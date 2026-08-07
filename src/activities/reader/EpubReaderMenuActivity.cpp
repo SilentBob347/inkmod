@@ -19,6 +19,7 @@ struct ReaderLayoutSettingsSnapshot {
   uint8_t lineHeightPercent;
   uint8_t orientation;
   uint8_t screenMargin;
+  uint8_t readerClockAtBottom;
   uint8_t publisherPageNumbers;
   uint8_t paragraphAlignment;
   uint8_t embeddedStyle;
@@ -33,7 +34,8 @@ struct ReaderLayoutSettingsSnapshot {
   bool operator==(const ReaderLayoutSettingsSnapshot& other) const {
     return fontFamily == other.fontFamily && fontSize == other.fontSize && sdFontSizeRange == other.sdFontSizeRange &&
            lineHeightPercent == other.lineHeightPercent && orientation == other.orientation &&
-           screenMargin == other.screenMargin && publisherPageNumbers == other.publisherPageNumbers &&
+           screenMargin == other.screenMargin && readerClockAtBottom == other.readerClockAtBottom &&
+           publisherPageNumbers == other.publisherPageNumbers &&
            paragraphAlignment == other.paragraphAlignment && embeddedStyle == other.embeddedStyle &&
            hyphenationEnabled == other.hyphenationEnabled && imageRendering == other.imageRendering &&
            extraParagraphSpacing == other.extraParagraphSpacing &&
@@ -52,6 +54,7 @@ ReaderLayoutSettingsSnapshot captureReaderLayoutSettings() {
       SETTINGS.lineHeightPercent,
       SETTINGS.orientation,
       SETTINGS.screenMargin,
+      SETTINGS.readerClockAtBottom,
       SETTINGS.publisherPageNumbers,
       SETTINGS.paragraphAlignment,
       SETTINGS.embeddedStyle,

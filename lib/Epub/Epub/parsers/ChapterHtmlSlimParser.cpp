@@ -34,11 +34,16 @@ constexpr size_t MAX_BUFFERED_WORDS_BEFORE_LAYOUT = 350;
 constexpr uint8_t INITIAL_PAGE_ELEMENT_RESERVE = 8;
 constexpr uint8_t INITIAL_TABLE_FRAGMENT_ROW_RESERVE = 8;
 constexpr uint32_t PAGE_ELEMENT_RESERVE_MIN_MAX_ALLOC = 1024;
+constexpr int16_t FLOAT_TEXT_GAP = 8;
 // Cap chapter anchors so converter-generated IDs do not grow memory without bound.
 constexpr size_t MAX_ANCHORS_PER_CHAPTER = 1024;
 
 static constexpr const char* const HEADER_TAGS[] = {"h1", "h2", "h3", "h4", "h5", "h6"};
-static constexpr const char* const BLOCK_TAGS[] = {"p", "li", "div", "br", "blockquote"};
+// EPUB publishers commonly put their real book layout on figure/hgroup/section,
+// not only on the immediate p/img children.
+static constexpr const char* const BLOCK_TAGS[] = {"p",       "li",      "div",     "br",      "blockquote",
+                                                    "figure",  "figcaption", "hgroup",  "header",  "footer",
+                                                    "section", "article",  "main",    "aside",   "pre"};
 static constexpr const char* const BOLD_TAGS[] = {"b", "strong"};
 static constexpr const char* const ITALIC_TAGS[] = {"i", "em"};
 static constexpr const char* const UNDERLINE_TAGS[] = {"u", "ins"};
@@ -112,6 +117,25 @@ bool isHeaderOrBlock(const char* name) {
 
 bool isTableStructuralTag(const char* name) {
   return strcmp(name, "table") == 0 || strcmp(name, "tr") == 0 || strcmp(name, "td") == 0 || strcmp(name, "th") == 0;
+}
+
+bool hasFloatAncestor(const std::vector<CssAncestorEntry>& ancestors, bool& right) {
+  for (auto it = ancestors.rbegin(); it != ancestors.rend(); ++it) {
+    if (attributeContainsToken(it->classAttr.c_str(), "figleft")) {
+      right = false;
+      return true;
+    }
+    if (attributeContainsToken(it->classAttr.c_str(), "figright")) {
+      right = true;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool hasDivAncestor(const std::vector<CssAncestorEntry>& ancestors) {
+  return std::any_of(ancestors.begin(), ancestors.end(),
+                     [](const CssAncestorEntry& ancestor) { return ancestor.tag == "div"; });
 }
 
 void ChapterHtmlSlimParser::skipCurrentElement() {
@@ -353,10 +377,17 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
         incoming.marginTop = static_cast<int16_t>(incoming.marginTop + lineHeight);
       }
 
-      // The stack accumulates horizontal properties from ancestors. Vertical margins are
-      // per-element; merge them only while the placeholder block is still empty.
+      // `blockStyle` already contains all horizontal insets accumulated from
+      // its ancestors.  The old placeholder must not replace those with its
+      // root style: doing so silently discarded a first paragraph's figure,
+      // hgroup, and blockquote layout.  Only its pending vertical spacing is
+      // relevant here.
       const auto style = currentTextBlock->getBlockStyle();
-      auto combinedStyle = style.getCombinedBlockStyle(incoming, BlockStyle::CombineAxis::Vertical);
+      auto combinedStyle = incoming;
+      combinedStyle.marginTop = std::max(combinedStyle.marginTop, style.marginTop);
+      combinedStyle.marginBottom = std::max(combinedStyle.marginBottom, style.marginBottom);
+      combinedStyle.paddingTop = static_cast<int16_t>(combinedStyle.paddingTop + style.paddingTop);
+      combinedStyle.paddingBottom = static_cast<int16_t>(combinedStyle.paddingBottom + style.paddingBottom);
       combinedStyle.fromBrElement = incoming.fromBrElement;
       currentTextBlock->setBlockStyle(combinedStyle);
 
@@ -1170,6 +1201,15 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                   }
                   const bool hasCssHeight = imgStyle.hasImageHeight();
                   const bool hasCssWidth = imgStyle.hasImageWidth();
+                  const bool hasCssMaxWidth = imgStyle.hasImageMaxWidth();
+                  // Many converted FB2 EPUBs use `div img { max-width:100% }`
+                  // as their only sizing rule. In a reflowed reader this is a
+                  // full text-width illustration, not a tiny source thumbnail.
+                  // Explicitly sized images and floats keep their own size.
+                  const bool fillsDivWidth = hasCssMaxWidth && !hasCssWidth && !hasCssHeight &&
+                                             imgStyle.imageMaxWidth.unit == CssUnit::Percent &&
+                                             imgStyle.imageMaxWidth.value >= 100.0f &&
+                                             hasDivAncestor(self->ancestorStack_);
                   int containerWidth = self->viewportWidth;
                   if (self->currentTextBlock) {
                     const int inset = self->currentTextBlock->getBlockStyle().totalHorizontalInset();
@@ -1253,6 +1293,30 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                     LOG_DBG("EHP", "Display size: %dx%d (scale %.2f)", displayWidth, displayHeight, scale);
                   }
 
+                  if (fillsDivWidth && dims.width > 0 && dims.height > 0) {
+                    displayWidth = containerWidth;
+                    displayHeight = static_cast<int>(
+                        displayWidth * (static_cast<float>(dims.height) / dims.width) + 0.5f);
+                    if (displayHeight > self->viewportHeight) {
+                      displayHeight = self->viewportHeight;
+                      displayWidth = static_cast<int>(
+                          displayHeight * (static_cast<float>(dims.width) / dims.height) + 0.5f);
+                    }
+                  // A maximum width is a cap, not a requested width. This
+                  // keeps small engravings at their natural size while still
+                  // honoring book layouts such as figure.half-page img.
+                  } else if (hasCssMaxWidth && dims.width > 0 && dims.height > 0) {
+                    int maxCssWidth = static_cast<int>(
+                        imgStyle.imageMaxWidth.toPixels(emSize, static_cast<float>(containerWidth)) + 0.5f);
+                    maxCssWidth = std::max(1, std::min(maxCssWidth, containerWidth));
+                    if (displayWidth > maxCssWidth) {
+                      displayWidth = maxCssWidth;
+                      displayHeight = static_cast<int>(
+                          displayWidth * (static_cast<float>(dims.height) / dims.width) + 0.5f);
+                      displayHeight = std::max(1, displayHeight);
+                    }
+                  }
+
                   // Flush any pending text block so it appears before the image
                   if (self->partWordBufferIndex > 0) {
                     self->flushPartWordBuffer();
@@ -1298,7 +1362,10 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                     LOG_ERR("EHP", "Failed to create ImageBlock");
                     return;
                   }
-                  int xPos = (self->viewportWidth - displayWidth) / 2;
+                  bool floatRight = false;
+                  const bool isFloatImage = hasFloatAncestor(self->ancestorStack_, floatRight);
+                  const int xPos = isFloatImage ? (floatRight ? self->viewportWidth - displayWidth : 0)
+                                                 : (self->viewportWidth - displayWidth) / 2;
                   auto pageImage = std::shared_ptr<PageImage>(new (std::nothrow)
                                                                   PageImage(imageBlock, xPos, self->currentPageNextY));
                   if (!pageImage) {
@@ -1306,7 +1373,14 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                     return;
                   }
                   self->currentPage->elements.push_back(pageImage);
-                  self->currentPageNextY += displayHeight + imageMarginBottom;
+                  if (isFloatImage) {
+                    self->activeFloat.active = true;
+                    self->activeFloat.right = floatRight;
+                    self->activeFloat.width = displayWidth;
+                    self->activeFloat.bottomY = static_cast<int16_t>(self->currentPageNextY + displayHeight);
+                  } else {
+                    self->currentPageNextY += displayHeight + imageMarginBottom;
+                  }
 
                   if (self->currentTextBlock && self->currentTextBlock->isEmpty()) {
                     self->currentTextBlock->setBlockStyle(self->blockStyleStack.back().withoutBottom());
@@ -1505,9 +1579,10 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       // If the block gets text added before the next block opens it becomes non-empty,
       // goes through makePages() normally, and the flag has no effect (inline <br> case).
       BlockStyle brStyle = self->blockStyleStack.back().withoutBottom();
-      if (self->currentTextBlock) {
+      if (self->currentTextBlock && !self->inlineLinePositionActive) {
         brStyle = self->currentTextBlock->getBlockStyle();
       }
+      self->inlineLinePositionActive = false;
       brStyle.fromBrElement = true;
       self->startNewTextBlock(brStyle);
     } else {
@@ -1665,6 +1740,43 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     self->inlineStyleStack.push_back(entry);
     self->updateEffectiveInlineStyle();
   } else if (strcmp(name, "span") == 0 || !isHeaderOrBlock(name)) {
+    const bool hasInlineLinePosition = cssStyle.hasMarginLeft() || cssStyle.hasMarginRight() ||
+                                       cssStyle.hasPaddingLeft() || cssStyle.hasPaddingRight();
+    if (self->embeddedStyle && hasInlineLinePosition && self->partWordBufferIndex == 0 &&
+        self->currentTextBlock && self->currentTextBlock->size() == 0) {
+      // EPUB poetry and typographic compositions commonly use a span after a
+      // <br> for each source line, with its horizontal offset in inline CSS.
+      // Treat that empty line as a positioned block.  We deliberately keep this
+      // narrow: a span occurring in the middle of text remains truly inline.
+      auto positionedStyle = self->blockStyleStack.back().getCombinedBlockStyle(
+          userAlignmentBlockStyle, BlockStyle::CombineAxis::Horizontal);
+      const auto& enclosingStyle = self->blockStyleStack.back();
+      // A line-level span is a replacement position within its reflowed
+      // container, not an additional desktop-width inset on top of a poem's
+      // parent margin.  Keep at least six ems for text so a long source
+      // offset cannot turn words into a vertical column at the right edge.
+      const auto minLineWidth = static_cast<int16_t>(emSize * 6.0f);
+      const auto maxInlineInset = static_cast<int16_t>(
+          std::max(0, static_cast<int>(self->viewportWidth) - enclosingStyle.marginRight - minLineWidth));
+      if (cssStyle.hasMarginLeft()) {
+        positionedStyle.marginLeft =
+            std::clamp<int16_t>(cssStyle.marginLeft.toPixelsInt16(emSize, self->viewportWidth), 0, maxInlineInset);
+      }
+      if (cssStyle.hasMarginRight()) {
+        positionedStyle.marginRight =
+            std::clamp<int16_t>(cssStyle.marginRight.toPixelsInt16(emSize, self->viewportWidth), 0, maxInlineInset);
+      }
+      if (cssStyle.hasPaddingLeft()) {
+        positionedStyle.paddingLeft =
+            std::clamp<int16_t>(cssStyle.paddingLeft.toPixelsInt16(emSize, self->viewportWidth), 0, maxInlineInset);
+      }
+      if (cssStyle.hasPaddingRight()) {
+        positionedStyle.paddingRight =
+            std::clamp<int16_t>(cssStyle.paddingRight.toPixelsInt16(emSize, self->viewportWidth), 0, maxInlineInset);
+      }
+      self->currentTextBlock->setBlockStyle(positionedStyle);
+      self->inlineLinePositionActive = true;
+    }
     // Handle span and other inline elements for CSS styling
     if (cssStyle.hasFontWeight() || cssStyle.hasFontStyle() || cssStyle.hasTextDecoration() ||
         cssStyle.hasBackgroundBlack() || cssStyle.hasVerticalAlign() || cssStyle.hasDirection() ||
@@ -2236,10 +2348,14 @@ void ChapterHtmlSlimParser::makePages() {
 
   // Apply top spacing before the paragraph (stored in pixels)
   const BlockStyle& blockStyle = currentTextBlock->getBlockStyle();
-  if (blockStyle.marginTop > 0) {
+  // A float belongs to the first line of the following paragraph.  Its CSS
+  // neighbour often has a normal paragraph margin, which would otherwise
+  // leave the drop capital visibly hanging above the text.
+  const bool startsBesideFloat = activeFloat.active && currentPageNextY < activeFloat.bottomY;
+  if (!startsBesideFloat && blockStyle.marginTop > 0) {
     currentPageNextY += blockStyle.marginTop;
   }
-  if (blockStyle.paddingTop > 0) {
+  if (!startsBesideFloat && blockStyle.paddingTop > 0) {
     currentPageNextY += blockStyle.paddingTop;
   }
 
@@ -2247,6 +2363,31 @@ void ChapterHtmlSlimParser::makePages() {
   const int horizontalInset = blockStyle.totalHorizontalInset();
   const uint16_t effectiveWidth =
       (horizontalInset < viewportWidth) ? static_cast<uint16_t>(viewportWidth - horizontalInset) : viewportWidth;
+
+  // Gutenberg and similar EPUBs use a small `figleft`/`figright` image for
+  // drop capitals and side engravings.  Lay out just the lines that overlap
+  // it in the remaining column, then continue the same paragraph at normal
+  // width.  This avoids a browser-grade float engine and keeps RAM bounded.
+  if (activeFloat.active && currentPageNextY < activeFloat.bottomY && effectiveWidth > FLOAT_TEXT_GAP + 1) {
+    const int16_t reservedWidth = std::min<int16_t>(activeFloat.width + FLOAT_TEXT_GAP, effectiveWidth - 1);
+    const uint16_t floatTextWidth = static_cast<uint16_t>(effectiveWidth - reservedWidth);
+    const size_t floatLineCount = static_cast<size_t>(
+        std::max<int16_t>(1, static_cast<int16_t>((activeFloat.bottomY - currentPageNextY + lineHeight - 1) / lineHeight)));
+    const BlockStyle normalStyle = currentTextBlock->getBlockStyle();
+    BlockStyle floatStyle = normalStyle;
+    if (!activeFloat.right) {
+      floatStyle.marginLeft = static_cast<int16_t>(floatStyle.marginLeft + reservedWidth);
+    }
+    currentTextBlock->setBlockStyle(floatStyle);
+    currentTextBlock->layoutAndExtractLines(
+        renderer, fontId, floatTextWidth,
+        [this](const std::shared_ptr<TextBlock>& textBlock) { addLineToPage(textBlock); }, true, floatLineCount);
+    currentTextBlock->setBlockStyle(normalStyle);
+    // A figright can contain a caption before the following paragraph.  The
+    // caption consumes only one line, so keep the float reservation for the
+    // remaining height instead of letting the paragraph draw through it.
+    activeFloat.active = currentPageNextY < activeFloat.bottomY;
+  }
 
   currentTextBlock->layoutAndExtractLines(
       renderer, fontId, effectiveWidth,

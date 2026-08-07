@@ -18,6 +18,7 @@
 #include "components/themes/lyra/LyraTheme.h"
 #include "components/themes/minimal/MinimalTheme.h"
 #include "components/themes/roundedraff/RoundedRaffTheme.h"
+#include "fontIds.h"
 
 namespace {
 constexpr char kWidthPlaceholder[] = "[WIDTH]";
@@ -109,8 +110,13 @@ int UITheme::getNumberOfItemsPerPage(const GfxRenderer& renderer, bool hasHeader
     reservedHeight += metrics.verticalSpacing + metrics.buttonHintsHeight;
   }
   const int availableHeight = renderer.getScreenHeight() - reservedHeight - extraReservedHeight;
-  int rowHeight = hasSubtitle ? metrics.listWithSubtitleRowHeight : metrics.listRowHeight;
-  return availableHeight / rowHeight;
+  const int titleLineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+  int rowHeight = metrics.listRowHeight;
+  if (hasSubtitle) {
+    const int subtitleLineHeight = renderer.getLineHeight(SMALL_FONT_ID);
+    rowHeight = std::max(metrics.listWithSubtitleRowHeight, titleLineHeight + subtitleLineHeight + 14);
+  }
+  return std::max(1, availableHeight / rowHeight);
 }
 
 // Screen area excluding the button hints

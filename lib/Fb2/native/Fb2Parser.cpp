@@ -194,16 +194,13 @@ bool Fb2Parser::scan(IByteReader& reader, Fb2ScanResult& out) {
                 if (const char* num = xml.attr("number")) out.metadata.sequenceNumber = static_cast<uint32_t>(std::strtoul(num, nullptr, 10));
             } else if (name == "body") {
                 Fb2BodyIndexEntry b;
-                b.startOffset = xml.tokenStartOffset();
                 if (const char* n = xml.attr("name")) b.name = n;
                 out.bodies.push_back(b);
                 currentBodyIndex = static_cast<int>(out.bodies.size()) - 1;
                 sectionStack.clear();
             } else if (name == "section" && currentBodyIndex >= 0) {
                 Fb2SectionIndexEntry e;
-                e.startOffset = xml.tokenStartOffset();
                 e.level = static_cast<uint16_t>(sectionStack.size());
-                e.parentIndex = sectionStack.empty() ? -1 : sectionStack.back();
                 e.bodyIndex = currentBodyIndex;
                 if (const char* id = xml.attr("id")) e.id = id;
                 out.sections.push_back(e);
@@ -268,13 +265,10 @@ bool Fb2Parser::scan(IByteReader& reader, Fb2ScanResult& out) {
             } else if (name == "coverpage") {
                 inCoverpage = false;
             } else if (name == "body") {
-                if (currentBodyIndex >= 0) out.bodies[currentBodyIndex].endOffset = xml.streamPos();
                 currentBodyIndex = -1;
                 sectionStack.clear();
             } else if (name == "section" && !sectionStack.empty()) {
-                int idx = sectionStack.back();
                 sectionStack.pop_back();
-                out.sections[idx].endOffset = xml.streamPos();
             } else if (name == "title") {
                 if (!sectionStack.empty()) out.sections[sectionStack.back()].title = titleBuf;
                 inTitle = false;

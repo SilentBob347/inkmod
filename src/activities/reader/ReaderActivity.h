@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include <memory>
 
 #include "activities/Activity.h"
@@ -12,7 +13,7 @@ class ReaderActivity final : public Activity {
   std::string initialBookPath;
   std::string currentBookPath;  // Track current book path for navigation
   bool suppressInitialBackRelease = false;
-  static std::unique_ptr<Epub> loadEpub(const std::string& path);
+  static std::unique_ptr<Epub> loadEpub(const std::string& path, const std::function<void(uint8_t)>& onProgress);
   static std::unique_ptr<Xtc> loadXtc(const std::string& path);
   static std::unique_ptr<Txt> loadTxt(const std::string& path);
   static bool isXtcFile(const std::string& path);

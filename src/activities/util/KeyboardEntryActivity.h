@@ -49,6 +49,9 @@ class KeyboardEntryActivity : public Activity {
   int selectedRow = 0;
   int selectedCol = 0;
   int shiftState = 0;
+  enum class Language : uint8_t { English, Russian, Ukrainian };
+  Language language = Language::English;
+  char selectedAsciiKey[2] = {'\0', '\0'};
   bool symMode = false;
   bool confirmHeld = false;
   bool confirmLongHandled = false;
@@ -220,8 +223,11 @@ class KeyboardEntryActivity : public Activity {
   int getContentColCount() const;
   int getTotalRowCount() const;
   bool isBottomRow(int row) const;
-  char getSelectedChar() const;
-  char getAlternativeChar() const;
+  const char* getSelectedText();
+  const char* getAlternativeText();
+  const char* keyLabel(int row, int col, bool secondary, char (&asciiBuf)[2]) const;
+  const char* languageModeLabel() const;
+  void cycleLanguage();
   bool handleKeyPress();
   bool insertChar(char c);
   void insertString(const std::string& str);

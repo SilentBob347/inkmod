@@ -165,7 +165,7 @@ void formatStreakStat(const GlobalReadingStats& globalStats, char* buf, const si
     return;
   }
 
-  snprintf(buf, len, "%d %s", static_cast<unsigned>(streak), tr(STR_STATS_DAY_STREAK_FORMAT));
+  snprintf(buf, len, "%u %s", static_cast<unsigned>(streak), tr(STR_STATS_DAY_STREAK_FORMAT));
 }
 
 // ============================================================================

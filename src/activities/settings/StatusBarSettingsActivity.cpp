@@ -66,8 +66,14 @@ const StrId timeLeftNames[TIME_LEFT_ITEMS] = {StrId::STR_HIDE, StrId::STR_CHAPTE
 constexpr int XTC_STATUS_BAR_ITEMS = 3;
 const StrId xtcStatusBarNames[XTC_STATUS_BAR_ITEMS] = {StrId::STR_HIDE, StrId::STR_BOTTOM, StrId::STR_TOP};
 
+constexpr int CHAPTER_PAGE_COUNT_ITEMS = 3;
+const StrId chapterPageCountNames[CHAPTER_PAGE_COUNT_ITEMS] = {StrId::STR_HIDE, StrId::STR_PAGE_COUNT_MODE_CHAPTER,
+                                                               StrId::STR_PAGE_COUNT_MODE_BOOK};
+
 int optionCountForItem(const int item) {
   switch (item) {
+    case ITEM_CHAPTER_PAGE_COUNT:
+      return CHAPTER_PAGE_COUNT_ITEMS;
     case ITEM_PROGRESS_BAR:
       return PROGRESS_BAR_ITEMS;
     case ITEM_PROGRESS_BAR_THICKNESS:
@@ -85,6 +91,8 @@ int optionCountForItem(const int item) {
 
 StrId optionNameForItem(const int item, const int optionIndex) {
   switch (item) {
+    case ITEM_CHAPTER_PAGE_COUNT:
+      return chapterPageCountNames[optionIndex];
     case ITEM_PROGRESS_BAR:
       return progressBarNames[optionIndex];
     case ITEM_PROGRESS_BAR_THICKNESS:
@@ -114,6 +122,9 @@ uint8_t optionRawValueForItem(const int item, const int optionIndex) {
 uint8_t currentOptionIndexForItem(const int item) {
   uint8_t rawValue = 0;
   switch (item) {
+    case ITEM_CHAPTER_PAGE_COUNT:
+      rawValue = SETTINGS.statusBarChapterPageCount;
+      break;
     case ITEM_PROGRESS_BAR:
       rawValue = SETTINGS.statusBarProgressBar;
       break;
@@ -143,6 +154,9 @@ uint8_t currentOptionIndexForItem(const int item) {
 void setOptionIndexForItem(const int item, const uint8_t optionIndex) {
   const uint8_t rawValue = optionRawValueForItem(item, optionIndex);
   switch (item) {
+    case ITEM_CHAPTER_PAGE_COUNT:
+      SETTINGS.statusBarChapterPageCount = rawValue;
+      break;
     case ITEM_PROGRESS_BAR:
       SETTINGS.statusBarProgressBar = rawValue;
       break;
@@ -166,10 +180,11 @@ void setOptionIndexForItem(const int item, const uint8_t optionIndex) {
 std::string valueTextForItem(const int item) {
   switch (item) {
     case ITEM_CHAPTER_PAGE_COUNT:
-      // 0=hide, 1=chapter-relative "X/Y" (existing), 2=whole-book estimate.
-      return SETTINGS.statusBarChapterPageCount == 0   ? tr(STR_HIDE)
-             : SETTINGS.statusBarChapterPageCount == 1 ? tr(STR_PAGE_COUNT_MODE_CHAPTER)
-                                                        : tr(STR_PAGE_COUNT_MODE_BOOK);
+      // Not tr() - that macro textually prepends "StrId::" to its argument
+      // (it's built for a literal enum-member name like STR_HIDE, not an
+      // expression that already evaluates to a StrId), so it can't be used
+      // on an array lookup like this one.
+      return I18n::getInstance().get(chapterPageCountNames[currentOptionIndexForItem(ITEM_CHAPTER_PAGE_COUNT)]);
     case ITEM_BOOK_PROGRESS_PERCENTAGE:
       return SETTINGS.statusBarBookProgressPercentage ? tr(STR_SHOW) : tr(STR_HIDE);
     case ITEM_BATTERY:
@@ -260,9 +275,6 @@ void StatusBarSettingsActivity::handleSelection() {
   }
 
   switch (selectedIndex) {
-    case ITEM_CHAPTER_PAGE_COUNT:
-      SETTINGS.statusBarChapterPageCount = (SETTINGS.statusBarChapterPageCount + 1) % 3;
-      break;
     case ITEM_BOOK_PROGRESS_PERCENTAGE:
       SETTINGS.statusBarBookProgressPercentage = (SETTINGS.statusBarBookProgressPercentage + 1) % 2;
       break;

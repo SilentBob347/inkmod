@@ -55,7 +55,7 @@ enum class CssFontWeight : uint8_t { Normal = 0, Bold = 1 };
 enum class CssTextDecoration : uint8_t { None = 0, Underline = 1, LineThrough = 2 };
 
 // Display options - only None and Block are relevant for e-ink rendering
-enum class CssDisplay : uint8_t { Block = 0, None = 1 };
+enum class CssDisplay : uint8_t { Block = 0, None = 1, Inline = 2 };
 
 // Vertical alignment options for inline elements (e.g. superscript/subscript)
 enum class CssVerticalAlign : uint8_t { Baseline = 0, Super = 1, Sub = 2 };
@@ -77,6 +77,7 @@ struct CssPropertyFlags {
   uint32_t paddingRight : 1;
   uint32_t imageHeight : 1;
   uint32_t imageWidth : 1;
+  uint32_t imageMaxWidth : 1;
   uint32_t display : 1;
   uint32_t backgroundBlack : 1;
   uint32_t verticalAlign : 1;
@@ -99,6 +100,7 @@ struct CssPropertyFlags {
         paddingRight(0),
         imageHeight(0),
         imageWidth(0),
+        imageMaxWidth(0),
         display(0),
         backgroundBlack(0),
         verticalAlign(0),
@@ -108,14 +110,14 @@ struct CssPropertyFlags {
   [[nodiscard]] bool anySet() const {
     return textAlign || fontStyle || fontWeight || textDecoration || textIndent || marginTop || marginBottom ||
            marginLeft || marginRight || paddingTop || paddingBottom || paddingLeft || paddingRight || imageHeight ||
-           imageWidth || display || backgroundBlack || verticalAlign || direction || smallCaps;
+           imageWidth || imageMaxWidth || display || backgroundBlack || verticalAlign || direction || smallCaps;
   }
 
   void clearAll() {
     textAlign = fontStyle = fontWeight = textDecoration = textIndent = 0;
     marginTop = marginBottom = marginLeft = marginRight = 0;
     paddingTop = paddingBottom = paddingLeft = paddingRight = 0;
-    imageHeight = imageWidth = display = backgroundBlack = verticalAlign = direction = smallCaps = 0;
+    imageHeight = imageWidth = imageMaxWidth = display = backgroundBlack = verticalAlign = direction = smallCaps = 0;
   }
 };
 
@@ -143,6 +145,7 @@ struct CssStyle {
   CssLength paddingRight;   // Padding right
   CssLength imageHeight;    // Height for img (e.g. 2em) – width derived from aspect ratio when only height set
   CssLength imageWidth;     // Width for img when both or only width set
+  CssLength imageMaxWidth;  // Maximum width for img; must never enlarge an image
   CssDisplay display = CssDisplay::Block;                       // display property (Block or None)
   bool backgroundBlack = false;                                 // Simple black inline/block background support
   CssVerticalAlign verticalAlign = CssVerticalAlign::Baseline;  // vertical-align (super/sub positioning)
@@ -213,6 +216,10 @@ struct CssStyle {
       imageWidth = base.imageWidth;
       defined.imageWidth = 1;
     }
+    if (base.hasImageMaxWidth()) {
+      imageMaxWidth = base.imageMaxWidth;
+      defined.imageMaxWidth = 1;
+    }
     if (base.hasDisplay()) {
       display = base.display;
       defined.display = 1;
@@ -250,6 +257,7 @@ struct CssStyle {
   [[nodiscard]] bool hasPaddingRight() const { return defined.paddingRight; }
   [[nodiscard]] bool hasImageHeight() const { return defined.imageHeight; }
   [[nodiscard]] bool hasImageWidth() const { return defined.imageWidth; }
+  [[nodiscard]] bool hasImageMaxWidth() const { return defined.imageMaxWidth; }
   [[nodiscard]] bool hasDisplay() const { return defined.display; }
   [[nodiscard]] bool hasBackgroundBlack() const { return defined.backgroundBlack; }
   [[nodiscard]] bool hasVerticalAlign() const { return defined.verticalAlign; }
@@ -265,7 +273,7 @@ struct CssStyle {
     textIndent = CssLength{};
     marginTop = marginBottom = marginLeft = marginRight = CssLength{};
     paddingTop = paddingBottom = paddingLeft = paddingRight = CssLength{};
-    imageHeight = imageWidth = CssLength{};
+    imageHeight = imageWidth = imageMaxWidth = CssLength{};
     display = CssDisplay::Block;
     backgroundBlack = false;
     verticalAlign = CssVerticalAlign::Baseline;

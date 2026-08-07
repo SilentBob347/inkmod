@@ -1,11 +1,14 @@
 #include "HomeActivity.h"
 
+#include <Arduino.h>
 #include <Bitmap.h>
 #include <Epub.h>
+#include <Fb2.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <Logging.h>
 #include <Serialization.h>
 #include <Utf8.h>
 #include <Xtc.h>
@@ -16,11 +19,13 @@
 #include <cmath>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "../reader/BookReadingStats.h"
 #include "../reader/BookStatsActivity.h"
+#include "BookActions.h"
 #include "BookmarkStore.h"
 #include "BookmarksHomeActivity.h"
 #include "InkMODSettings.h"
@@ -29,11 +34,15 @@
 #include "OpdsServerStore.h"
 #include "RecentBookProgress.h"
 #include "RecentBooksStore.h"
+#include "activities/util/KeyboardEntryActivity.h"
+#include "activities/util/OptionSelectionActivity.h"
 #include "components/UITheme.h"
 #include "components/themes/lyra/Lyra3CoversTheme.h"
 #include "components/themes/lyra/LyraCarouselTheme.h"
 #include "components/themes/minimal/MinimalTheme.h"
 #include "fontIds.h"
+#include "util/BookArchiveUtils.h"
+#include "util/FileSearchUtils.h"
 
 namespace {
 constexpr uint32_t CAROUSEL_CACHE_MAGIC = 0x43434152;  // "CCAR"
@@ -47,6 +56,7 @@ constexpr int HOME_BOOK_SWAP_RECENT_COUNT = 2;
 
 enum class HomeMenuAction {
   BrowseFiles,
+  SearchFiles,
   ContinueReading,
   RecentBooks,
   OpdsBrowser,
@@ -202,6 +212,7 @@ bool ensureReusableCoverPath(RecentBook& book) {
 
 void appendHomeMenuItems(HomeMenuEntries& items, bool hasOpdsServers, bool hasReadingStats, bool hasBookmarks) {
   items.push({tr(STR_BROWSE_FILES), Folder, HomeMenuAction::BrowseFiles});
+  items.push({tr(STR_SEARCH_FILES), Search, HomeMenuAction::SearchFiles});
   items.push({tr(STR_MENU_RECENT_BOOKS), Recent, HomeMenuAction::RecentBooks});
 
   if (hasOpdsServers) {
@@ -497,7 +508,7 @@ static_assert(HomeActivity::kMaxCachedBooks >= LyraCarouselMetrics::values.homeR
 
 int HomeActivity::getMenuItemCount() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  int count = 4;  // File Browser, Recents, File transfer, Settings
+  int count = 5;  // File Browser, Search, Recents, File transfer, Settings
   if (!metrics.homeContinueReadingInMenu && !recentBooks.empty()) {
     count += getVisibleRecentBookCount();
   } else if (metrics.homeContinueReadingInMenu && !recentBooks.empty()) {
@@ -1328,6 +1339,9 @@ void HomeActivity::loop() {
           case HomeMenuAction::BrowseFiles:
             onFileBrowserOpen();
             break;
+          case HomeMenuAction::SearchFiles:
+            onSearchFilesOpen();
+            break;
           case HomeMenuAction::RecentBooks:
             onRecentsOpen();
             break;
@@ -1516,6 +1530,9 @@ void HomeActivity::loop() {
     switch (menuItems[menuSelectedIndex].action) {
       case HomeMenuAction::BrowseFiles:
         onFileBrowserOpen();
+        break;
+      case HomeMenuAction::SearchFiles:
+        onSearchFilesOpen();
         break;
       case HomeMenuAction::ContinueReading:
         onContinueReading();
@@ -1752,6 +1769,114 @@ void HomeActivity::onSelectBook(const std::string& path) {
 }
 
 void HomeActivity::onFileBrowserOpen() { activityManager.goToFileBrowser(); }
+
+void HomeActivity::openSearchResultPath(const std::string& fullPath) {
+  // Mirrors FileBrowserActivity's own short-press-open handling for a
+  // non-directory entry - a search result found this same file by walking
+  // the same directories that screen lists from, so it needs the same
+  // "is this actually a raw FB2 (or FB2-in-zip) that has to be converted
+  // to an EPUB package first" check before handing off to onSelectBook().
+  // Skipping this (calling onSelectBook() directly on the raw .fb2/.zip
+  // path) is exactly what made a found FB2 book fail to open - the reader
+  // received a path that was never actually a valid EPUB package to begin
+  // with, and errored out trying to parse it as one instead.
+  const bool isZip = FsHelpers::checkFileExtension(fullPath, ".zip");
+  const BookArchiveType archiveType = isZip ? detectBookArchiveType(fullPath) : BookArchiveType::None;
+  const bool isFb2 = FsHelpers::checkFileExtension(fullPath, ".fb2") || archiveType == BookArchiveType::Fb2;
+
+  if (isFb2) {
+    const std::string cacheBasePath = "/.inkmod";
+    const Rect popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
+    GUI.fillPopupProgress(renderer, popupRect, 0);
+
+    Fb2 fb2Converter(fullPath, cacheBasePath);
+    if (fb2Converter.load([this, popupRect](int percent) { GUI.fillPopupProgress(renderer, popupRect, percent); })) {
+      onSelectBook(fb2Converter.getPackagePath());
+    } else {
+      LOG_ERR("FB2", "Failed to load FB2 file: %s", fullPath.c_str());
+    }
+  } else if (!isZip || archiveType == BookArchiveType::Epub) {
+    onSelectBook(fullPath);
+  } else {
+    LOG_ERR("Home", "ZIP is neither an EPUB nor an FB2 book: %s", fullPath.c_str());
+    GUI.drawPopup(renderer, tr(STR_UNKNOWN_ERROR));
+  }
+}
+
+void HomeActivity::onSearchFilesOpen() {
+  startActivityForResult(
+      std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH_FILES_PROMPT),
+                                              "",  // No initial text
+                                              64,  // Reasonable query length cap
+                                              InputType::Text),
+      [this](const ActivityResult& result) {
+        if (result.isCancelled) return;
+        const std::string query = std::get<KeyboardResult>(result.data).text;
+        if (query.empty()) return;
+
+        // "/" - the whole card, not just one folder - since the point is
+        // finding a book regardless of which directory it ended up in.
+        pendingSearchResultPaths = searchBookFiles("/", query);
+        LOG_INF("SEARCH", "Query '%s' found %zu results", query.c_str(), pendingSearchResultPaths.size());
+        if (pendingSearchResultPaths.empty()) {
+          // A toast (same one used for "cache cleared" etc. elsewhere in
+          // this app), not a dialog with buttons - there's nothing to
+          // confirm or choose here, just something to notice and move on
+          // from, so a brief non-blocking message beats making the user
+          // press a button to dismiss a button-shaped question that was
+          // never really a question.
+          BookActions::drawToast(renderer, tr(STR_SEARCH_NO_RESULTS));
+          delay(1000);
+          requestUpdate();
+          // Straight back into another search attempt instead of home -
+          // a typo is the most likely reason for zero results, so getting
+          // to fix it and retry without detouring through the menu again
+          // is the more useful default here.
+          onSearchFilesOpen();
+          return;
+        }
+
+        showSearchResultsPicker();
+      });
+}
+
+void HomeActivity::showSearchResultsPicker() {
+  std::vector<std::string> displayNames;
+  displayNames.reserve(pendingSearchResultPaths.size());
+  for (const auto& entry : pendingSearchResultPaths) {
+    const size_t slashPos = entry.path.find_last_of('/');
+    std::string name = slashPos == std::string::npos ? entry.path : entry.path.substr(slashPos + 1);
+    // Trailing slash marks a folder result in the list, same convention
+    // FileBrowserActivity's own directory rows use.
+    if (entry.kind == SearchResultKind::Folder) name += "/";
+    displayNames.push_back(std::move(name));
+  }
+
+  startActivityForResult(
+      std::make_unique<OptionSelectionActivity>(renderer, mappedInput, "FileSearchResults",
+                                                StrId::STR_SEARCH_FILES, std::move(displayNames), 0,
+                                                false, false),
+      [this](const ActivityResult& pickResult) {
+        if (pickResult.isCancelled) {
+          pendingSearchResultPaths.clear();
+          return;
+        }
+        const uint8_t index = std::get<OptionSelectionResult>(pickResult.data).index;
+        if (index < pendingSearchResultPaths.size()) {
+          const SearchResultEntry entry = pendingSearchResultPaths[index];
+          pendingSearchResultPaths.clear();
+          if (entry.kind == SearchResultKind::Folder) {
+            // Straight to that folder in the file browser, not an attempt
+            // to open it as a book - it's a folder, not a book file.
+            activityManager.goToFileBrowser(entry.path);
+          } else {
+            openSearchResultPath(entry.path);
+          }
+        } else {
+          pendingSearchResultPaths.clear();
+        }
+      });
+}
 
 void HomeActivity::onContinueReading() {
   if (!recentBooks.empty()) {

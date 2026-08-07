@@ -103,7 +103,7 @@ bool BookMetadataCache::endWrite() {
 }
 
 bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMetadata& metadata,
-                                     const bool unpackedPackage) {
+                                     const bool unpackedPackage, const BuildProgressFn& onProgress) {
   // Open all three files, writing to meta, reading from spine and toc
   if (!Storage.openFileForWrite("BMC", cachePath + bookBinFile, bookFile)) {
     return false;
@@ -177,6 +177,14 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
   ZipFile zip(epubPath);
   std::deque<uint32_t> spineSizes;
   bool useBatchSizes = false;
+  constexpr char kPackageSuffix[] = "/package.epub";
+  constexpr size_t kPackageSuffixLen = sizeof(kPackageSuffix) - 1;
+  const bool isFb2Origin = unpackedPackage && epubPath.size() > kPackageSuffixLen &&
+                           epubPath.compare(epubPath.size() - kPackageSuffixLen, kPackageSuffixLen,
+                                            kPackageSuffix) == 0 &&
+                           Storage.exists((epubPath.substr(0, epubPath.size() - kPackageSuffixLen) +
+                                           Fb2::SOURCE_MARKER_FILE)
+                                              .c_str());
 
   // FB2-converted books are written as a plain unpacked directory (not a zip
   // container), so there is no zip central directory to read sizes from.
@@ -251,7 +259,14 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
     lastSpineTocIndex = spineEntry.tocIndex;
 
     size_t itemSize = 0;
-    if (unpackedPackage) {
+    if (isFb2Origin) {
+      // FB2 chapters are generated on demand, so probing every future
+      // chapter file only produces an SD error and delays the loading popup.
+      itemSize = Fb2::getApproxChapterSize(epubPath.substr(0, epubPath.size() - kPackageSuffixLen), i);
+      if (itemSize == 0) {
+        LOG_ERR("BMC", "Could not estimate FB2 spine item %d: %s", i, spineEntry.href.c_str());
+      }
+    } else if (unpackedPackage) {
       // Unpacked (FB2-converted, or a real unpacked EPUB) package: items
       // live directly on disk under epubPath, matching Epub::itemPath's
       // "filepath + '/' + normalisedHref" layout - except an FB2-origin
@@ -272,11 +287,6 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
         // (and so "% read") reads as 0 until every chapter has been opened.
         // Fb2's cache dir is epubPath with the trailing "/package.epub"
         // (epubPath == Epub::filepath == Fb2::packagePath) stripped back off.
-        constexpr char kPackageSuffix[] = "/package.epub";
-        constexpr size_t kSuffixLen = sizeof(kPackageSuffix) - 1;
-        if (epubPath.size() > kSuffixLen && epubPath.compare(epubPath.size() - kSuffixLen, kSuffixLen, kPackageSuffix) == 0) {
-          itemSize = Fb2::getApproxChapterSize(epubPath.substr(0, epubPath.size() - kSuffixLen), i);
-        }
         if (itemSize == 0) {
           LOG_ERR("BMC", "Warning: Could not get size for spine item: %s", path.c_str());
         }
@@ -311,6 +321,9 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
 
     // Write out spine data to book.bin
     writeSpineEntry(bookFile, spineEntry);
+    if (onProgress) {
+      onProgress(static_cast<uint16_t>(i + 1), spineCount);
+    }
   }
   // Close opened zip file
   zip.close();

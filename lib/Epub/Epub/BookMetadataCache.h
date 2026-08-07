@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <deque>
+#include <functional>
 #include <string>
 
 class BookMetadataCache {
@@ -100,7 +101,9 @@ class BookMetadataCache {
   bool cleanupTmpFiles() const;
 
   // Post-processing to update mappings and sizes
-  bool buildBookBin(const std::string& epubPath, const BookMetadata& metadata, bool unpackedPackage);
+  using BuildProgressFn = std::function<void(uint16_t completed, uint16_t total)>;
+  bool buildBookBin(const std::string& epubPath, const BookMetadata& metadata, bool unpackedPackage,
+                    const BuildProgressFn& onProgress = nullptr);
 
   // Cheap check (no parsing) for whether a metadata cache exists at cachePath.
   // Lets callers predict a fast cached open without doing the full load().

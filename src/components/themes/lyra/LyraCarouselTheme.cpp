@@ -76,7 +76,6 @@ constexpr int kButtonHintsH = LyraCarouselMetrics::values.buttonHintsHeight;
 
 struct MenuLayoutMetrics {
   int tileH;
-  int tileW;
   int labelLineHeight;
   int rowY;
   int labelY;
@@ -88,7 +87,7 @@ MenuLayoutMetrics computeMenuLayout(const GfxRenderer& renderer, int buttonCount
   const int rowY = renderer.getScreenHeight() - kButtonHintsH - tileH - kMenuLabelTopGap - labelLineHeight -
                    kMenuLabelBottomGap + kMenuRowDrop;
   return {
-      tileH, 0, labelLineHeight, rowY, rowY - kMenuLabelTopGap - labelLineHeight,
+      tileH, labelLineHeight, rowY, rowY - kMenuLabelTopGap - labelLineHeight,
   };
 }
 

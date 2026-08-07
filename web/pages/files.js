@@ -1278,6 +1278,19 @@
     }
     if (files.length > 0 && hasConvertible) {
       convertOptions.style.display = 'block';
+      // Large books are prepared in this browser before transfer. This keeps
+      // image resizing/splitting off the ESP32-C3 and avoids a long first-open
+      // indexing pass on the reader. The option remains visible so a user can
+      // explicitly turn it off for a lossless copy.
+      const hasLargeConvertible = Array.from(files).some(f => {
+        const n = f.name.toLowerCase();
+        return f.size >= 5 * 1024 * 1024 && (n.endsWith('.epub') || isFb2Name(n) || isImageName(n));
+      });
+      const convertCheckbox = document.getElementById('convertBeforeUpload');
+      if (hasLargeConvertible && convertCheckbox && !convertCheckbox.checked) {
+        convertCheckbox.checked = true;
+        toggleConvertOptions();
+      }
     } else {
       convertOptions.style.display = 'none';
       // Clear stale checkbox state so the "Optimize & Upload" button doesn't linger

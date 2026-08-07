@@ -26,16 +26,19 @@ struct Uc8179Config {
   uint8_t psr0;
   // PSR (0x00) byte 1.
   uint8_t psr1;
-  // PLL/OSC control (cmd 0x03).
-  uint8_t pll;
+  // PFS power-off sequence (cmd 0x03). (PLL is 0x30 and stays panel-programmed.)
+  uint8_t pfs;
   // Booster soft-start (cmd 0x06), 4 bytes.
   uint8_t btst[4];
-  // cmd 0xE1 (power/analog control tail).
-  uint8_t e1;
-  // cmd 0xE0.
-  uint8_t e0;
-  // VCOM_DC (cmd 0xE5).
-  uint8_t vcomDc;
+  // Gate-scan selection (cmd 0xE1).
+  uint8_t gateScan;
+  // CCSET cascade/output enable (cmd 0xE0).
+  uint8_t ccset;
+  // TSSET forced temperature (cmd 0xE5) for a full refresh — selects the OTP
+  // waveform's frame count/rate.
+  uint8_t tsset;
+  // TSSET (cmd 0xE5) for a fast/partial refresh (the OEM uses a different value).
+  uint8_t tssetFast;
   // CDI (0x50) byte0 asserted during a refresh (before DRF); byte1 is 0x07.
   uint8_t cdiActive;
   // CDI (0x50) byte0 restored after the refresh completes; byte1 is 0x07.
@@ -68,8 +71,24 @@ class Uc8179Driver : public PanelDriver {
   void requestResync(uint8_t settlePasses) override;
   void skipInitialResync() override;
 
+  // --- 4-level grayscale (anti-aliasing) ---
+  // Two full 1bpp planes encode 4 levels: LSB -> DTM 0x10 ("old"), MSB -> DTM
+  // 0x13 ("new"); the OTP gray waveform resolves (old,new) -> {black, 2 mids,
+  // white}. Full-buffer path only (supportsStripGrayscale stays false — the
+  // UC8179 has no RAM-window addressing and our row-reversal orientation can't
+  // span strips; the X4 Pro's PSRAM absorbs the two full planes).
+  void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
+  void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
+  void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
+  void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
+
  private:
   void initController(EpdBus& bus);
+  // Stream a framebuffer into a RAM plane (ramCmd): mirror-Y via row reversal
+  // (sendPlaneFlipped, as the UC8279 sibling does), padded with white to the
+  // addressed gate count. Mirror-X is done in hardware via the PSR SHL bit. Used
+  // for both the NEW plane (0x13) and the OLD-plane sync (0x10).
+  void streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb);
 
   const Uc8179Config& _cfg;
 
@@ -80,10 +99,21 @@ class Uc8179Driver : public PanelDriver {
   uint32_t _bufferSize;
 
   bool _isScreenOn = false;
+  // Force the first refresh after begin() to a full flash, so a partial update
+  // never runs against an unknown on-screen state (e.g. a retained boot image).
+  bool _needFullClear = true;
+  // True once the OLD plane (0x10) holds a valid previous displayed frame, so a
+  // differential partial has a real baseline to diff against (no ghosting).
+  // Cleared after grayscale (which overwrites the planes) so the next B/W is full.
+  bool _oldPlaneValid = false;
+  // AA CDI select: the first grayscale refresh after init sends the border-driving
+  // CDI (0x29); later ones the border-holding CDI (0xA9), per the vendor reference.
+  bool _grayRefreshedOnce = false;
 
   // Async split state (see Uc8279Driver for the contract).
   bool _pendingRefresh = false;
   bool _pendingTurnOff = false;
+  bool _pendingPartial = false;  // this refresh used the PTIN/PTOUT partial path
 };
 
 PanelDriver& uc8179Driver();

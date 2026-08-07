@@ -9,10 +9,10 @@
  * BlockStyle - Block-level styling properties
  */
 struct BlockStyle {
-  // Upper bound (in em) for any single side's horizontal margin or padding.
-  // Some EPUBs apply huge em-based insets to chapter-opener classes; without a
-  // cap, effectiveWidth collapses to 1-2 words per line and justification dumps
-  // the remaining space into a single gap.
+  // Upper bound (in em) for an em-based horizontal margin or padding.  Percentage
+  // insets use a viewport-relative cap below so real book layouts such as poems
+  // can retain their intended position without letting malformed CSS collapse a
+  // line to one or two words.
   static constexpr float MAX_HORIZONTAL_INSET_EM = 2.0f;
 
   CssTextAlign alignment = CssTextAlign::Justify;
@@ -107,17 +107,23 @@ struct BlockStyle {
                                  const uint16_t viewportWidth = 0) {
     BlockStyle blockStyle;
     const float vw = viewportWidth;
-    const auto maxHorizontalInsetPx = static_cast<int16_t>(emSize * MAX_HORIZONTAL_INSET_EM);
+    const auto maxEmHorizontalInsetPx = static_cast<int16_t>(emSize * MAX_HORIZONTAL_INSET_EM);
+    const auto maxPercentHorizontalInsetPx = static_cast<int16_t>(viewportWidth * 2 / 5);
+    const auto resolveHorizontalInset = [&](const CssLength& length) {
+      const auto resolved = length.toPixelsInt16(emSize, vw);
+      const auto maximum = length.unit == CssUnit::Percent ? maxPercentHorizontalInsetPx : maxEmHorizontalInsetPx;
+      return std::clamp<int16_t>(resolved, 0, maximum);
+    };
     // Resolve all CssLength values to pixels using the current font's em size and viewport width
     blockStyle.marginTop = cssStyle.marginTop.toPixelsInt16(emSize, vw);
     blockStyle.marginBottom = cssStyle.marginBottom.toPixelsInt16(emSize, vw);
-    blockStyle.marginLeft = std::min(cssStyle.marginLeft.toPixelsInt16(emSize, vw), maxHorizontalInsetPx);
-    blockStyle.marginRight = std::min(cssStyle.marginRight.toPixelsInt16(emSize, vw), maxHorizontalInsetPx);
+    blockStyle.marginLeft = resolveHorizontalInset(cssStyle.marginLeft);
+    blockStyle.marginRight = resolveHorizontalInset(cssStyle.marginRight);
 
     blockStyle.paddingTop = cssStyle.paddingTop.toPixelsInt16(emSize, vw);
     blockStyle.paddingBottom = cssStyle.paddingBottom.toPixelsInt16(emSize, vw);
-    blockStyle.paddingLeft = std::min(cssStyle.paddingLeft.toPixelsInt16(emSize, vw), maxHorizontalInsetPx);
-    blockStyle.paddingRight = std::min(cssStyle.paddingRight.toPixelsInt16(emSize, vw), maxHorizontalInsetPx);
+    blockStyle.paddingLeft = resolveHorizontalInset(cssStyle.paddingLeft);
+    blockStyle.paddingRight = resolveHorizontalInset(cssStyle.paddingRight);
 
     // For textIndent: if it's a percentage we can't resolve (no viewport width),
     // leave textIndentDefined=false so the space-width fallback in resolveFirstLineIndent() is used

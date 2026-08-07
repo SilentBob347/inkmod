@@ -15,51 +15,14 @@
 
 namespace {
 
-constexpr uint8_t PACKAGE_VERSION = 6;  // bumped: image-heavy sections split into virtual chapters
+constexpr uint8_t PACKAGE_VERSION = 7;  // bumped: cap each virtual chapter at two images
 // A single FB2 <section> with more inline images than this gets split into
-// several virtual chapters (see splitSectionsForImageLoad()), so a chapter
+// several virtual chapters while its SD-card index is written, so a chapter
 // that's actually opened never needs to extract more than this many images
 // at once. Real-world crash trace: 23 images in one un-split section
 // reliably tripped the reader's own low-heap image-suppression check
 // (MemoryBudget::hasHeapForEpubInlineImage) on every single one of them.
-constexpr uint32_t MAX_IMAGES_PER_CHAPTER = 6;
-
-// One entry per chapter that will actually get written to the spine/section
-// index - either a whole FB2 <section> (the common case) or, for a section
-// with more than MAX_IMAGES_PER_CHAPTER inline images, one of several
-// consecutive image-count-bounded slices of it. rangeEnd is exclusive;
-// UINT32_MAX means "through the end of the section" (used for both
-// unsplit sections and the last slice of a split one, so trailing text
-// after the final counted image - if any - isn't dropped).
-struct VirtualChapter {
-  size_t sectionIndex;
-  uint32_t imageRangeStart;
-  uint32_t imageRangeEnd;
-  bool isFirstOfSection;  // only this slice gets the section's real title
-};
-
-std::vector<VirtualChapter> splitSectionsForImageLoad(const std::vector<Fb2SectionIndexEntry>& sections) {
-  std::vector<VirtualChapter> result;
-  result.reserve(sections.size());
-  for (size_t i = 0; i < sections.size(); ++i) {
-    const uint32_t imageCount = sections[i].imageRefCount;
-    if (imageCount <= MAX_IMAGES_PER_CHAPTER) {
-      result.push_back({i, 0, UINT32_MAX, true});
-      continue;
-    }
-    uint32_t start = 0;
-    bool first = true;
-    for (;;) {
-      const uint32_t chunkEnd = start + MAX_IMAGES_PER_CHAPTER;
-      const bool isLastChunk = chunkEnd >= imageCount;
-      result.push_back({i, start, isLastChunk ? UINT32_MAX : chunkEnd, first});
-      if (isLastChunk) break;
-      first = false;
-      start = chunkEnd;
-    }
-  }
-  return result;
-}
+constexpr uint32_t MAX_IMAGES_PER_CHAPTER = 2;
 constexpr char CACHE_MAGIC[] = "FB2IDX";  // 6 bytes, no trailing NUL written
 constexpr size_t CACHE_MAGIC_LEN = 6;
 
@@ -875,21 +838,27 @@ bool Fb2::convertToPackage(const ProgressFn& onProgress) {
   if (language.empty()) language = "und";
   coverImageId = scan.metadata.coverBinaryId;
 
-  images.clear();
-  for (const auto& binary : scan.binaries) {
-    const std::string mediaType = normalizeImageMediaType(binary.contentType);
-    if (mediaType.empty()) continue;
-    ImageInfoPublic image;
-    image.id = binary.id;
-    image.mediaType = mediaType;
-    image.filename = "image_" + std::to_string(images.size()) + (mediaType == "image/png" ? ".png" : ".jpg");
-    images.push_back(std::move(image));
-  }
-
   {
     const bool imagesOk = persistImageIndex(scan);
     if (!imagesOk) return fail();
   }
+
+  // The scan result already owns every binary id. Persist its offsets first,
+  // then transfer those strings into the long-lived image list instead of
+  // copying them. On illustration-heavy FB2s, keeping both copies alive is
+  // enough to exhaust the C3 heap before the first chapter can be opened.
+  images.clear();
+  images.reserve(scan.binaries.size());
+  for (auto& binary : scan.binaries) {
+    const std::string mediaType = normalizeImageMediaType(binary.contentType);
+    if (mediaType.empty()) continue;
+    ImageInfoPublic image;
+    image.id = std::move(binary.id);
+    image.mediaType = mediaType;
+    image.filename = "image_" + std::to_string(images.size()) + (mediaType == "image/png" ? ".png" : ".jpg");
+    images.push_back(std::move(image));
+  }
+  std::vector<Fb2BinaryIndexEntry>().swap(scan.binaries);
   if (onProgress) onProgress(70);
 
   // Persist the section index (level, innerStartOffset, id, title, image
@@ -902,47 +871,40 @@ bool Fb2::convertToPackage(const ProgressFn& onProgress) {
   // Offsets, parent/body indices are scan()-only bookkeeping and aren't
   // persisted. One record is written per *virtual* chapter, not per FB2
   // <section> - see splitSectionsForImageLoad().
-  const std::vector<VirtualChapter> virtualChapters = splitSectionsForImageLoad(scan.sections);
-  std::vector<int> sectionFirstChapterIndex(scan.sections.size(), -1);
+  chapterCount = 0;
   {
     HalFile sectionsOut;
     if (!Storage.openFileForWrite("FB2", cachePath + SECTIONS_INDEX_FILE, sectionsOut)) return fail();
     writeCacheHeader(sectionsOut);
-    for (size_t chapterIdx = 0; chapterIdx < virtualChapters.size(); ++chapterIdx) {
-      const auto& vc = virtualChapters[chapterIdx];
-      const auto& section = scan.sections[vc.sectionIndex];
-      if (sectionFirstChapterIndex[vc.sectionIndex] < 0) {
-        sectionFirstChapterIndex[vc.sectionIndex] = static_cast<int>(chapterIdx);
-      }
-      // How many virtual chapters this section was split into, so
-      // approxTextBytes (a whole-section estimate) can be divided evenly
-      // across them instead of counting the same section's size once per
-      // slice toward the book's total.
-      uint32_t sliceCount = 0;
-      for (const auto& other : virtualChapters) {
-        if (other.sectionIndex == vc.sectionIndex) ++sliceCount;
-      }
-
+    for (const auto& section : scan.sections) {
+      const uint32_t sliceCount = std::max<uint32_t>(1, (section.imageRefCount + MAX_IMAGES_PER_CHAPTER - 1) /
+                                                             MAX_IMAGES_PER_CHAPTER);
       const uint8_t level = static_cast<uint8_t>(std::min<uint16_t>(section.level, 255));
       const uint32_t innerStartOffset = section.innerStartOffset;
-      const std::string& title = vc.isFirstOfSection ? section.title : std::string();
       const uint16_t idLen = static_cast<uint16_t>(std::min(section.id.size(), static_cast<size_t>(4096)));
-      const uint16_t titleLen = static_cast<uint16_t>(std::min(title.size(), static_cast<size_t>(4096)));
       const uint32_t approxBytes = sliceCount > 0 ? section.approxTextBytes / sliceCount : section.approxTextBytes;
-      sectionsOut.write(&level, sizeof(level));
-      sectionsOut.write(&innerStartOffset, sizeof(innerStartOffset));
-      sectionsOut.write(&idLen, sizeof(idLen));
-      if (idLen) sectionsOut.write(section.id.data(), idLen);
-      sectionsOut.write(&titleLen, sizeof(titleLen));
-      if (titleLen) sectionsOut.write(title.data(), titleLen);
-      sectionsOut.write(&approxBytes, sizeof(approxBytes));
-      sectionsOut.write(&vc.imageRangeStart, sizeof(vc.imageRangeStart));
-      sectionsOut.write(&vc.imageRangeEnd, sizeof(vc.imageRangeEnd));
+      for (uint32_t slice = 0; slice < sliceCount; ++slice) {
+        const std::string& title = slice == 0 ? section.title : std::string();
+        const uint16_t titleLen = static_cast<uint16_t>(std::min(title.size(), static_cast<size_t>(4096)));
+        const uint32_t imageRangeStart = slice * MAX_IMAGES_PER_CHAPTER;
+        const uint32_t imageRangeEnd =
+            imageRangeStart + MAX_IMAGES_PER_CHAPTER >= section.imageRefCount ? UINT32_MAX
+                                                                               : imageRangeStart + MAX_IMAGES_PER_CHAPTER;
+        sectionsOut.write(&level, sizeof(level));
+        sectionsOut.write(&innerStartOffset, sizeof(innerStartOffset));
+        sectionsOut.write(&idLen, sizeof(idLen));
+        if (idLen) sectionsOut.write(section.id.data(), idLen);
+        sectionsOut.write(&titleLen, sizeof(titleLen));
+        if (titleLen) sectionsOut.write(title.data(), titleLen);
+        sectionsOut.write(&approxBytes, sizeof(approxBytes));
+        sectionsOut.write(&imageRangeStart, sizeof(imageRangeStart));
+        sectionsOut.write(&imageRangeEnd, sizeof(imageRangeEnd));
+        ++chapterCount;
+      }
     }
     sectionsOut.close();
   }
 
-  chapterCount = static_cast<int>(virtualChapters.size());
   if (chapterCount <= 0 || chapterCount > UINT16_MAX) {
     LOG_ERR("FB2", "FB2 has no readable chapters: %s", filepath.c_str());
     return fail();
@@ -953,7 +915,7 @@ bool Fb2::convertToPackage(const ProgressFn& onProgress) {
   // real files, render them from this FB2 source instead."
   if (!writeStaticFile(cachePath + SOURCE_MARKER_FILE, sourcePath.c_str())) return fail();
 
-  if (!writeContainerFile() || !writeStyleFile() || !writeOpfFile() || !writeNcxFile(scan, sectionFirstChapterIndex))
+  if (!writeContainerFile() || !writeStyleFile() || !writeOpfFile() || !writeNcxFile(scan))
     return fail();
   if (onProgress) onProgress(95);
 
@@ -970,18 +932,20 @@ bool Fb2::persistImageIndex(const Fb2ScanResult& scan) {
   HalFile imagesOut;
   if (!Storage.openFileForWrite("FB2", cachePath + IMAGES_INDEX_FILE, imagesOut)) return false;
   writeCacheHeader(imagesOut);
-  for (const auto& image : images) {
-    const auto it = std::find_if(scan.binaries.begin(), scan.binaries.end(),
-                                 [&](const Fb2BinaryIndexEntry& b) { return b.id == image.id; });
-    if (it == scan.binaries.end()) continue;
-    const uint16_t idLen = static_cast<uint16_t>(std::min(image.id.size(), static_cast<size_t>(4096)));
-    const uint16_t nameLen = static_cast<uint16_t>(std::min(image.filename.size(), static_cast<size_t>(4096)));
+  size_t imageIndex = 0;
+  for (const auto& binary : scan.binaries) {
+    const std::string mediaType = normalizeImageMediaType(binary.contentType);
+    if (mediaType.empty()) continue;
+    const std::string filename =
+        "image_" + std::to_string(imageIndex++) + (mediaType == "image/png" ? ".png" : ".jpg");
+    const uint16_t idLen = static_cast<uint16_t>(std::min(binary.id.size(), static_cast<size_t>(4096)));
+    const uint16_t nameLen = static_cast<uint16_t>(std::min(filename.size(), static_cast<size_t>(4096)));
     imagesOut.write(&idLen, sizeof(idLen));
-    if (idLen) imagesOut.write(image.id.data(), idLen);
+    if (idLen) imagesOut.write(binary.id.data(), idLen);
     imagesOut.write(&nameLen, sizeof(nameLen));
-    if (nameLen) imagesOut.write(image.filename.data(), nameLen);
-    imagesOut.write(&it->payloadStartOffset, sizeof(it->payloadStartOffset));
-    imagesOut.write(&it->payloadEndOffset, sizeof(it->payloadEndOffset));
+    if (nameLen) imagesOut.write(filename.data(), nameLen);
+    imagesOut.write(&binary.payloadStartOffset, sizeof(binary.payloadStartOffset));
+    imagesOut.write(&binary.payloadEndOffset, sizeof(binary.payloadEndOffset));
   }
   imagesOut.close();
   return true;
@@ -1394,7 +1358,7 @@ bool Fb2::writeOpfFile() const {
   return true;
 }
 
-bool Fb2::writeNcxFile(const Fb2ScanResult& scan, const std::vector<int>& sectionFirstChapterIndex) const {
+bool Fb2::writeNcxFile(const Fb2ScanResult& scan) const {
   HalFile file;
   if (!Storage.openFileForWrite("FB2", packagePath + "/OEBPS/toc.ncx", file)) return false;
 
@@ -1406,9 +1370,14 @@ bool Fb2::writeNcxFile(const Fb2ScanResult& scan, const std::vector<int>& sectio
 
   int openDepth = 0;
   int playOrder = 1;
+  int sectionFirstChapterIndex = 0;
   bool any = false;
   for (size_t i = 0; i < scan.sections.size(); ++i) {
     const auto& section = scan.sections[i];
+    const int currentFirstChapterIndex = sectionFirstChapterIndex;
+    sectionFirstChapterIndex +=
+        static_cast<int>(std::max<uint32_t>(1, (section.imageRefCount + MAX_IMAGES_PER_CHAPTER - 1) /
+                                                MAX_IMAGES_PER_CHAPTER));
     // Footnotes/comments (<body name="notes">, "comments", etc.) are only
     // ever reached via an in-text link (see buildLinkResolver()) - they
     // aren't part of the normal reading flow, so they don't belong in the
@@ -1437,7 +1406,7 @@ bool Fb2::writeNcxFile(const Fb2ScanResult& scan, const std::vector<int>& sectio
     // A split section's TOC entry always points at its first virtual
     // chapter (see splitSectionsForImageLoad()) - i may not equal the
     // chapter index once any earlier section has been split.
-    writeBytes(file, chapterHref(sectionFirstChapterIndex[i]));
+    writeBytes(file, chapterHref(currentFirstChapterIndex));
     writeBytes(file, "#" + anchorName(anchor));
     writeBytes(file, "\"/>\n");
     openDepth = targetDepth;

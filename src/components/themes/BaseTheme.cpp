@@ -9,12 +9,14 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <numeric>
 #include <string>
 
 #include "I18n.h"
 #include "RecentBooksStore.h"
 #include "activities/reader/BookReadingStats.h"
 #include "components/UITheme.h"
+#include "UiTextSize.h"
 #include "fontIds.h"
 
 // Internal constants
@@ -272,6 +274,13 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
                          const std::function<std::string(int index)>& rowValue, bool highlightValue,
                          const std::function<bool(int index)>& rowDimmed,
                          const std::function<bool(int index)>& isHeader) const {
+  if (itemCount <= 0) return;
+
+  // OptionSelection always supplies a callback, including for a list whose
+  // subtitles are all empty. Treating the callback itself as a subtitle made
+  // every simple menu use the tall two-line row.
+  const int subtitleProbeIndex = std::clamp(selectedIndex, 0, itemCount - 1);
+  const bool hasSubtitle = rowSubtitle != nullptr && !rowSubtitle(subtitleProbeIndex).empty();
   // Row height and the subtitle's vertical offset both used to be fixed
   // constants (BaseMetrics::values.listWithSubtitleRowHeight, and a bare
   // "itemY + 22" below) sized for the normal 10pt UI font. Accessibility's
@@ -285,10 +294,10 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
   const int titleLineH = renderer.getLineHeight(UI_10_FONT_ID);
   constexpr int kTitleSubtitleGap = 4;
   constexpr int kSubtitleBottomPadding = 6;
-  const int subtitleLineH = (rowSubtitle != nullptr) ? renderer.getLineHeight(SMALL_FONT_ID) : 0;
+  const int subtitleLineH = hasSubtitle ? renderer.getLineHeight(SMALL_FONT_ID) : 0;
   const int subtitleOffsetY = titleLineH + kTitleSubtitleGap;
   const int dynamicSubtitleRowHeight = subtitleOffsetY + subtitleLineH + kSubtitleBottomPadding;
-  int rowHeight = (rowSubtitle != nullptr)
+  int rowHeight = hasSubtitle
                       ? std::max(BaseMetrics::values.listWithSubtitleRowHeight, dynamicSubtitleRowHeight)
                       : BaseMetrics::values.listRowHeight;
   int pageItems = rect.height / rowHeight;
@@ -366,19 +375,20 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
                         EpdFontFamily::BOLD);
       continue;
     }
-    renderer.drawText(font, rect.x + BaseMetrics::values.contentSidePadding, itemY, item.c_str(), i != selectedIndex);
+    const int titleY = hasSubtitle ? itemY : itemY + (rowHeight - titleLineH) / 2;
+    renderer.drawText(font, rect.x + BaseMetrics::values.contentSidePadding, titleY, item.c_str(), i != selectedIndex);
 
     // Apply checkerboard dither to create gray text effect for dimmed items
     if (rowDimmed && rowDimmed(i) && i != selectedIndex) {
       const int titleWidth = renderer.getTextWidth(font, item.c_str());
       const int lineH = renderer.getLineHeight(font);
       const int tx = rect.x + BaseMetrics::values.contentSidePadding;
-      for (int py = itemY; py < itemY + lineH; py++)
+      for (int py = titleY; py < titleY + lineH; py++)
         for (int px = tx; px < tx + titleWidth; px++)
           if ((px + py) % 2 == 0) renderer.drawPixel(px, py, false);
     }
 
-    if (rowSubtitle != nullptr) {
+    if (hasSubtitle) {
       std::string subtitleText = rowSubtitle(i);
       if (!subtitleText.empty()) {
         auto subtitle = renderer.truncatedText(SMALL_FONT_ID, subtitleText.c_str(), rowTextWidth);
@@ -390,8 +400,10 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
     if (!valueText.empty()) {
       const auto valueTextWidth = renderer.getTextWidth(UI_10_FONT_ID, valueText.c_str());
       int valueY = itemY;
-      if (rowSubtitle != nullptr) {
+      if (hasSubtitle) {
         valueY = itemY + 10;
+      } else {
+        valueY = itemY + (rowHeight - titleLineH) / 2;
       }
       renderer.drawText(UI_10_FONT_ID, rect.x + contentWidth - BaseMetrics::values.contentSidePadding - valueTextWidth,
                         valueY, valueText.c_str(), i != selectedIndex);
@@ -482,19 +494,18 @@ void BaseTheme::drawTabBar(const GfxRenderer& renderer, const Rect rect, const s
   constexpr int underlineHeight = 2;  // Height of selection underline
   constexpr int underlineGap = 4;     // Gap between text and underline
 
-  const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+  const int lineHeight = renderer.getLineHeight(uiControlFontId());
 
   int currentX = rect.x + BaseMetrics::values.contentSidePadding;
   const int availableWidth = rect.width - BaseMetrics::values.contentSidePadding * 2;
 
   // If the natural widths of all tab labels don't fit, cap each label to a fair share of the
   // available width so long translated strings truncate instead of running off the tab bar.
-  int naturalTotalWidth = 0;
-  for (const auto& tab : tabs) {
-    naturalTotalWidth +=
-        renderer.getTextWidth(UI_12_FONT_ID, tab.label, tab.selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR) +
-        BaseMetrics::values.tabSpacing;
-  }
+  const int naturalTotalWidth = std::accumulate(tabs.begin(), tabs.end(), 0, [&](const int total, const TabInfo& tab) {
+    return total + renderer.getTextWidth(UI_12_FONT_ID, tab.label,
+                                         tab.selected ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR) +
+           BaseMetrics::values.tabSpacing;
+  });
   const int perTabMaxWidth = tabs.empty() ? 0 : availableWidth / static_cast<int>(tabs.size()) -
                                                     BaseMetrics::values.tabSpacing;
   const bool needsTruncation = naturalTotalWidth > availableWidth && perTabMaxWidth > 0;
@@ -1135,15 +1146,17 @@ void BaseTheme::drawKeyboardKey(const GfxRenderer& renderer, Rect rect, const ch
   }
 
   const bool hasSecondary = secondaryLabel != nullptr && secondaryLabel[0] != '\0';
-  const int itemWidth = renderer.getTextWidth(UI_12_FONT_ID, label);
+  const int primaryFontId = hasSecondary ? UI_10_FONT_ID : uiControlFontId();
+  const int secondaryFontId = uiHintFontId();
+  const int itemWidth = renderer.getTextWidth(primaryFontId, label);
   const int textX = rect.x + (rect.width - itemWidth) / 2;
-  const int textY = rect.y + (rect.height - renderer.getLineHeight(UI_12_FONT_ID)) / 2;
+  const int textY = rect.y + (rect.height - renderer.getLineHeight(primaryFontId)) / 2;
 
-  renderer.drawText(UI_12_FONT_ID, textX, textY, label, !invert);
+  renderer.drawText(primaryFontId, textX, textY, label, !invert);
 
   if (hasSecondary) {
-    const int secWidth = renderer.getTextWidth(SMALL_FONT_ID, secondaryLabel);
-    renderer.drawText(SMALL_FONT_ID, rect.x + rect.width - secWidth - metrics.keyboardSecondaryLabelRightPadding,
+    const int secWidth = renderer.getTextWidth(secondaryFontId, secondaryLabel);
+    renderer.drawText(secondaryFontId, rect.x + rect.width - secWidth - metrics.keyboardSecondaryLabelRightPadding,
                       rect.y + metrics.keyboardSecondaryLabelTopPadding, secondaryLabel, !invert);
   }
 }

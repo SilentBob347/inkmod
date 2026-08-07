@@ -36,7 +36,11 @@ inline void applyOrientation(GfxRenderer& renderer, const uint8_t orientation) {
   renderer.setOrientation(toRendererOrientation(orientation));
 }
 
-inline bool shouldShowTopClockStatusBar() { return halClock.isAvailable() && SETTINGS.shouldShowClockInReader(); }
+inline bool shouldShowTopClockStatusBar() {
+  // With the clock folded into the bottom status bar, the page must not
+  // reserve an unused header row above its text or illustrations.
+  return !SETTINGS.readerClockAtBottom && halClock.isAvailable() && SETTINGS.shouldShowClockInReader();
+}
 
 inline bool readerDarkModeEnabled() { return SETTINGS.readerDarkMode != 0; }
 

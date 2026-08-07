@@ -533,8 +533,17 @@ Epub::CssParseStatus Epub::parseCssFiles(const bool forceRebuild) const {
 }
 
 // load in the meta data for the epub file
-bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
+bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss, const ProgressFn& onProgress) {
   LOG_DBG("EBP", "Loading ePub: %s", filepath.c_str());
+  int lastReportedProgress = -5;
+  const auto reportProgress = [&](const int progress) {
+    if (!onProgress) return;
+    const int clamped = std::clamp(progress, 0, 100);
+    if (clamped == 100 || clamped - lastReportedProgress >= 5) {
+      onProgress(static_cast<uint8_t>(clamped));
+      lastReportedProgress = clamped;
+    }
+  };
 
   // Initialize spine/TOC cache
   bookMetadataCache.reset(new BookMetadataCache(cachePath));
@@ -602,6 +611,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
 
   // Cache doesn't exist or is invalid, build it
   LOG_DBG("EBP", "Cache not found, building spine/TOC cache");
+  reportProgress(0);
   setupCacheDir();
 
   const uint32_t indexingStart = millis();
@@ -629,6 +639,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
     return false;
   }
   LOG_DBG("EBP", "OPF pass completed in %lu ms", millis() - opfStart);
+  reportProgress(15);
 
   // TOC Pass - try EPUB 3 nav first, fall back to NCX
   const uint32_t tocStart = millis();
@@ -661,16 +672,22 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
     return false;
   }
   LOG_DBG("EBP", "TOC pass completed in %lu ms", millis() - tocStart);
+  reportProgress(30);
 
   // Close the cache files
   if (!bookMetadataCache->endWrite()) {
     LOG_ERR("EBP", "Could not end writing cache");
     return false;
   }
+  reportProgress(35);
 
   // Build final book.bin
   const uint32_t buildStart = millis();
-  if (!bookMetadataCache->buildBookBin(filepath, bookMetadata, unpackedPackage)) {
+  if (!bookMetadataCache->buildBookBin(filepath, bookMetadata, unpackedPackage,
+                                       [&](const uint16_t completed, const uint16_t total) {
+                                         const int buildPercent = total == 0 ? 95 : (completed * 60) / total;
+                                         reportProgress(35 + buildPercent);
+                                       })) {
     LOG_ERR("EBP", "Could not update mappings and sizes");
     return false;
   }
@@ -699,6 +716,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   }
 
   LOG_DBG("EBP", "Loaded ePub: %s", filepath.c_str());
+  reportProgress(100);
   return true;
 }
 

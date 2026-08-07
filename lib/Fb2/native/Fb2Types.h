@@ -48,15 +48,13 @@ struct Fb2Metadata {
     std::string embeddedStylesheetCss;
 };
 
-// One entry per <section> found anywhere under any <body>. Sections form a
-// tree (via level/parentIndex) but are stored flat, matching how the
-// existing TocEntry table is flat with a `level` field.
+// One entry per <section> found anywhere under any <body>. The scan keeps
+// only fields needed to write the on-SD index or render a chapter later.
+// Parent/end offsets are deliberately omitted: retaining them for hundreds
+// of sections exhausts the ESP32-C3 heap before the index can be persisted.
 struct Fb2SectionIndexEntry {
-    uint32_t startOffset = 0;   // byte offset of the section's '<' in the file
-    uint32_t endOffset = 0;     // byte offset just past the matching </section>
     uint32_t innerStartOffset = 0; // offset right after the opening <section ...> tag
     uint16_t level = 0;         // nesting depth, 0 = direct child of <body>
-    int32_t parentIndex = -1;   // index into the same vector, -1 if top-level
     int32_t bodyIndex = 0;      // which <body> this section lives under
     std::string id;             // section's id="" attribute, if any
     std::string title;          // flattened text of the section's <title>, if any
@@ -74,8 +72,6 @@ struct Fb2SectionIndexEntry {
 // (endnotes) when building the primary spine, while still being able to
 // look them up later for footnote rendering.
 struct Fb2BodyIndexEntry {
-    uint32_t startOffset = 0;
-    uint32_t endOffset = 0;
     std::string name; // <body name="notes"> -> "notes"; empty for main body
 };
 

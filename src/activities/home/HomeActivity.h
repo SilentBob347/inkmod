@@ -9,6 +9,7 @@
 #include "activities/reader/BookReadingStats.h"
 #include "activities/reader/GlobalReadingStats.h"
 #include "util/ButtonNavigator.h"
+#include "util/FileSearchUtils.h"
 
 struct RecentBook;
 struct Rect;
@@ -63,10 +64,21 @@ class HomeActivity final : public Activity {
   bool carouselWarmupPending = false;
 
   std::vector<RecentBook> recentBooks;
+  // Holds search results between the two steps of the search flow
+  // (results picker -> open selected book) as plain member state rather
+  // than a captured variable in a nested lambda - startActivityForResult
+  // chains more than one level deep (keyboard's own result handler
+  // launching a second activity) are less exercised elsewhere in this
+  // codebase than the member-state pattern WifiSelectionActivity uses for
+  // its own multi-step flow, so this stays closer to that proven shape.
+  std::vector<SearchResultEntry> pendingSearchResultPaths;
   const HomeMenuItem initialMenuItem;
 
   void onSelectBook(const std::string& path);
   void onFileBrowserOpen();
+  void openSearchResultPath(const std::string& fullPath);
+  void onSearchFilesOpen();
+  void showSearchResultsPicker();
   void onContinueReading();
   void onRecentsOpen();
   void onSettingsOpen();

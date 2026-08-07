@@ -985,6 +985,12 @@ void EpubReaderActivity::onExit() {
   } else {
     epub.reset();
   }
+
+  // Image-heavy FB2/EPUB parsing can leave the heap fragmented even after the
+  // section is gone.  The SD font is restored by ReaderActivity before the
+  // next book opens; releasing it here restores one large contiguous block
+  // for the next decoder instead of carrying a stale glyph cache between books.
+  sdFontSystem.releaseLoadedFont(renderer);
 }
 
 void EpubReaderActivity::loop() {
@@ -2720,7 +2726,6 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     pageShownAtMs = millis();
     LOG_DBG("ERS", "Rendered page in %dms", millis() - start);
   }
-  silentIndexNextChapterIfNeeded(viewportWidth, viewportHeight);
   if (!saveProgress(currentSpineIndex, section->currentPage, section->pageCount)) {
     pendingSyncSaveError = true;
   }
@@ -2731,93 +2736,6 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   if (pendingScreenshot) {
     pendingScreenshot = false;
     ScreenshotUtil::takeScreenshot(renderer);
-  }
-}
-
-void EpubReaderActivity::silentIndexNextChapterIfNeeded(const uint16_t viewportWidth, const uint16_t viewportHeight) {
-  if (!epub || !section) {
-    return;
-  }
-
-  if (section->pageCount < 2) {
-    LOG_DBG("ERS",
-            "Skipping silent next-chapter indexing: chapter too short (spine=%d page=%d pages=%u free=%u maxAlloc=%u)",
-            currentSpineIndex, section->currentPage, section->pageCount, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-    return;
-  }
-
-  // Build the next chapter cache while the second-to-last page is on screen.
-  const int triggerPage = section->pageCount - 2;
-  if (section->currentPage != triggerPage) {
-    if (section->currentPage >= triggerPage - 1) {
-      LOG_DBG("ERS",
-              "Silent next-chapter indexing not triggered: spine=%d page=%d target=%d pages=%u free=%u maxAlloc=%u",
-              currentSpineIndex, section->currentPage, triggerPage, section->pageCount, ESP.getFreeHeap(),
-              ESP.getMaxAllocHeap());
-    }
-    return;
-  }
-
-  const int nextSpineIndex = currentSpineIndex + 1;
-  if (nextSpineIndex < 0 || nextSpineIndex >= epub->getSpineItemsCount()) {
-    LOG_DBG("ERS", "Skipping silent next-chapter indexing: no next chapter (spine=%d page=%d pages=%u)",
-            currentSpineIndex, section->currentPage, section->pageCount);
-    return;
-  }
-
-  LOG_DBG("ERS", "Silent next-chapter indexing check: spine=%d page=%d target=%d pages=%u next=%d free=%u maxAlloc=%u",
-          currentSpineIndex, section->currentPage, triggerPage, section->pageCount, nextSpineIndex, ESP.getFreeHeap(),
-          ESP.getMaxAllocHeap());
-
-  Section nextSection(epub, nextSpineIndex, renderer);
-  if (nextSection.loadSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
-                                  SETTINGS.extraParagraphSpacing, SETTINGS.forceParagraphIndents,
-                                  SETTINGS.paragraphAlignment, viewportWidth, viewportHeight,
-                                  SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle, SETTINGS.imageRendering,
-                                  SETTINGS.bionicReadingEnabled, SETTINGS.guideReadingEnabled)) {
-    LOG_DBG("ERS",
-            "Skipping silent next-chapter indexing: cache already exists (chapter=%d pages=%u free=%u maxAlloc=%u)",
-            nextSpineIndex, nextSection.pageCount, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-    return;
-  }
-
-  if (!MemoryBudget::hasHeapForOptionalEpubRebuild("ERS", "silent next-chapter indexing", nextSpineIndex)) {
-    LOG_DBG("ERS", "Silent next-chapter indexing skipped by heap guard: spine=%d page=%d pages=%u next=%d",
-            currentSpineIndex, section->currentPage, section->pageCount, nextSpineIndex);
-    return;
-  }
-
-  // Same guard as the interactive open path (see the size check right
-  // before Section::createSectionFile() further up this file) - without
-  // it, this background prefetch is the thing that actually hits an
-  // oversized spine item first, since it runs speculatively while the
-  // user is still reading the *current* chapter. It would spend minutes
-  // failing the exact same slow way before the interactive guard ever got
-  // a chance to refuse quickly once the user actually turned the page.
-  {
-    constexpr size_t kMaxSaneSpineItemBytes = 1024 * 1024;
-    const size_t cumulativeThroughNext = epub->getCumulativeSpineItemSize(nextSpineIndex);
-    const size_t cumulativeThroughCurrent = epub->getCumulativeSpineItemSize(currentSpineIndex);
-    const size_t nextItemBytes =
-        cumulativeThroughNext > cumulativeThroughCurrent ? cumulativeThroughNext - cumulativeThroughCurrent : 0;
-    if (nextItemBytes > kMaxSaneSpineItemBytes) {
-      LOG_DBG("ERS", "Silent next-chapter indexing skipped: spine=%d is %zu bytes - too large to prefetch",
-              nextSpineIndex, nextItemBytes);
-      return;
-    }
-  }
-
-  LOG_DBG("ERS", "Silently indexing next chapter: %d (free=%u, maxAlloc=%u)", nextSpineIndex, ESP.getFreeHeap(),
-          ESP.getMaxAllocHeap());
-  if (!nextSection.createSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
-                                     SETTINGS.extraParagraphSpacing, SETTINGS.forceParagraphIndents,
-                                     SETTINGS.paragraphAlignment, viewportWidth, viewportHeight,
-                                     SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle, SETTINGS.imageRendering,
-                                     SETTINGS.bionicReadingEnabled, SETTINGS.guideReadingEnabled)) {
-    LOG_ERR("ERS", "Failed silent indexing for chapter: %d", nextSpineIndex);
-  } else {
-    LOG_DBG("ERS", "Silent indexing complete: chapter=%d pages=%u free=%u maxAlloc=%u", nextSpineIndex,
-            nextSection.pageCount, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
   }
 }
 

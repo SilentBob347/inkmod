@@ -20,6 +20,9 @@ struct HeapRequirement {
 
 constexpr uint32_t EPUB_INLINE_IMAGE_MIN_FREE = 96U * 1024U;
 constexpr uint32_t EPUB_INLINE_IMAGE_MIN_MAX_ALLOC = 56U * 1024U;
+// JPEGDEC needs about 20 KB plus its 48 KB safety margin. Requiring the
+// PNG-sized 96 KB budget here needlessly suppresses otherwise safe JPEGs.
+constexpr uint32_t EPUB_INLINE_JPEG_MIN_FREE = 72U * 1024U;
 constexpr uint32_t EPUB_INLINE_JPEG_MIN_MAX_ALLOC = 42U * 1024U;
 constexpr uint32_t EPUB_INLINE_IMAGE_SD_FONT_RELEASE_MIN_FREE = 120U * 1024U;
 constexpr uint32_t EPUB_INLINE_IMAGE_SD_FONT_RELEASE_MIN_MAX_ALLOC = 80U * 1024U;
@@ -67,8 +70,8 @@ inline bool isJpegSource(const char* source) {
 }
 
 inline HeapRequirement epubInlineImageRequirementForSource(const char* source) {
-  return {EPUB_INLINE_IMAGE_MIN_FREE,
-          isJpegSource(source) ? EPUB_INLINE_JPEG_MIN_MAX_ALLOC : EPUB_INLINE_IMAGE_MIN_MAX_ALLOC};
+  return isJpegSource(source) ? HeapRequirement{EPUB_INLINE_JPEG_MIN_FREE, EPUB_INLINE_JPEG_MIN_MAX_ALLOC}
+                               : HeapRequirement{EPUB_INLINE_IMAGE_MIN_FREE, EPUB_INLINE_IMAGE_MIN_MAX_ALLOC};
 }
 
 inline bool shouldReleaseSdFontCachesForEpubInlineImage(const HeapSnapshot heap) {

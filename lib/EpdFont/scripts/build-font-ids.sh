@@ -105,6 +105,7 @@ reading_font_id BITTER_20_FONT_ID \
 # UI fonts — no emoji variant
 echo "#define UI_10_FONT_ID ($(hash_files ./inter_10_regular.h ./inter_10_bold.h))"
 echo "#define UI_12_FONT_ID ($(hash_files ./inter_12_regular.h ./inter_12_bold.h))"
+echo "#define UI_14_FONT_ID ($(hash_files ./inter_14_regular.h ./inter_14_bold.h))"
 echo "#define SMALL_FONT_ID ($(hash_files ./inter_8_regular.h))"
 
 echo ""
@@ -119,6 +120,6 @@ for id in \
   CHAREINK_16_FONT_ID CHAREINK_18_FONT_ID CHAREINK_20_FONT_ID \
   BITTER_8_FONT_ID BITTER_9_FONT_ID BITTER_10_FONT_ID BITTER_12_FONT_ID BITTER_14_FONT_ID \
   BITTER_16_FONT_ID BITTER_18_FONT_ID BITTER_20_FONT_ID \
-  UI_10_FONT_ID UI_12_FONT_ID SMALL_FONT_ID; do
+  UI_10_FONT_ID UI_12_FONT_ID UI_14_FONT_ID SMALL_FONT_ID; do
   echo "static_assert(${id} != 0, \"Font ID collision with sentinel\");"
 done

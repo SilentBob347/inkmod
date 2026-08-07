@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <numeric>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,8 @@
 #include "components/icons/image24.h"
 #include "components/icons/library.h"
 #include "components/icons/recent.h"
+#include "components/icons/search24.h"
+#include "components/icons/search32.h"
 #include "components/icons/settings2.h"
 #include "components/icons/text24.h"
 #include "components/icons/transfer.h"
@@ -82,6 +85,8 @@ const uint8_t* LyraTheme::iconForName(UIIcon icon, uint32_t size) {
         return Book24Icon;
       case UIIcon::File:
         return File24Icon;
+      case UIIcon::Search:
+        return Search24Icon;
       default:
         return nullptr;
     }
@@ -93,6 +98,8 @@ const uint8_t* LyraTheme::iconForName(UIIcon icon, uint32_t size) {
         return BookIcon;
       case UIIcon::Chart:
         return ChartIcon;
+      case UIIcon::Search:
+        return SearchIcon;
       case UIIcon::Recent:
         return RecentIcon;
       case UIIcon::Settings:
@@ -291,11 +298,10 @@ void LyraTheme::drawTabBar(const GfxRenderer& renderer, Rect rect, const std::ve
 
   // Если даже с минимальным отступом вкладки не помещаются, обрезаем текст каждой вкладки,
   // чтобы длинный перевод не вылезал за пределы полосы вкладок.
-  int minTotalWidth = 0;
-  for (const auto& tab : tabs) {
-    minTotalWidth += renderer.getTextWidth(UI_10_FONT_ID, tab.label, EpdFontFamily::REGULAR) + 2 * padding +
-                     LyraMetrics::values.tabSpacing;
-  }
+  const int minTotalWidth = std::accumulate(tabs.begin(), tabs.end(), 0, [&](const int total, const TabInfo& tab) {
+    return total + renderer.getTextWidth(UI_10_FONT_ID, tab.label, EpdFontFamily::REGULAR) + 2 * padding +
+           LyraMetrics::values.tabSpacing;
+  });
   const int perTabMaxWidth =
       tabs.empty() ? 0 : availableWidth / static_cast<int>(tabs.size()) - 2 * padding - LyraMetrics::values.tabSpacing;
   const bool needsTruncation = minTotalWidth > availableWidth && perTabMaxWidth > 0;
@@ -346,6 +352,12 @@ void LyraTheme::drawListWithMetrics(const GfxRenderer& renderer, Rect rect, int 
                                     const std::function<bool(int index)>& rowDimmed,
                                     const std::function<bool(int index)>& isHeader, const ThemeMetrics& metrics,
                                     const bool invertSelectedRows) const {
+  if (itemCount <= 0) return;
+
+  // See BaseTheme::drawList(): simple option lists provide an empty subtitle
+  // callback, which must not turn the entire list into tall two-line rows.
+  const int subtitleProbeIndex = std::clamp(selectedIndex, 0, itemCount - 1);
+  const bool hasSubtitle = rowSubtitle != nullptr && !rowSubtitle(subtitleProbeIndex).empty();
   // Row height and the subtitle's offset (itemY + 30 below) were both
   // fixed constants sized for the normal 10pt UI font - see BaseTheme.cpp's
   // matching fix for why Accessibility's "Increase interface text" setting
@@ -357,12 +369,11 @@ void LyraTheme::drawListWithMetrics(const GfxRenderer& renderer, Rect rect, int 
   constexpr int kTitleSubtitleGap = 4;
   constexpr int kSubtitleBottomPadding = 6;
   const int subtitleOffsetY = kSubtitleTopOffset + titleLineHeight + kTitleSubtitleGap;
-  int rowHeight = (rowSubtitle != nullptr) ? metrics.listWithSubtitleRowHeight : metrics.listRowHeight;
-  if (rowSubtitle != nullptr) {
+  int rowHeight = hasSubtitle ? metrics.listWithSubtitleRowHeight : metrics.listRowHeight;
+  if (hasSubtitle) {
     const int subtitleLineHeight = renderer.getLineHeight(SMALL_FONT_ID);
     rowHeight = std::max(rowHeight, subtitleOffsetY + subtitleLineHeight + kSubtitleBottomPadding);
   }
-  if (itemCount <= 0) return;
   const auto isHeaderRow = [&isHeader](int index) { return isHeader != nullptr && isHeader(index); };
   const int sectionHeaderTopPadding = halTiltSensor.isAvailable() ? 10 : 20;
   constexpr int sectionHeaderFontId = UI_10_FONT_ID;
@@ -409,7 +420,7 @@ void LyraTheme::drawListWithMetrics(const GfxRenderer& renderer, Rect rect, int 
   int textWidth = contentWidth - metrics.contentSidePadding * 2 - hPaddingInSelection * 2;
   uint32_t iconSize;
   if (rowIcon != nullptr) {
-    iconSize = (rowSubtitle != nullptr) ? mainMenuIconSize : listIconSize;
+    iconSize = hasSubtitle ? mainMenuIconSize : listIconSize;
     textX += iconSize + hPaddingInSelection;
     textWidth -= iconSize + hPaddingInSelection;
   }
@@ -441,21 +452,25 @@ void LyraTheme::drawListWithMetrics(const GfxRenderer& renderer, Rect rect, int 
 
     int rowTextWidth = textWidth;
 
-    // Draw name
-    int valueWidth = 0;
+    // Reserve the marker's complete pill before measuring the title. The old
+    // code reserved only the letters but painted a full-row black block, which
+    // made the current-setting marker look as if it had drifted into the row.
+    int valueTextWidth = 0;
+    int valuePillWidth = 0;
     std::string valueText = "";
     if (rowValue != nullptr) {
       valueText = rowValue(i);
       if (!valueText.empty()) {
         valueText = renderer.truncatedText(UI_10_FONT_ID, valueText.c_str(), maxListValueWidth);
-        valueWidth = renderer.getTextWidth(UI_10_FONT_ID, valueText.c_str()) + hPaddingInSelection;
-        rowTextWidth -= valueWidth;
+        valueTextWidth = renderer.getTextWidth(UI_10_FONT_ID, valueText.c_str());
+        valuePillWidth = valueTextWidth + hPaddingInSelection * 2;
+        rowTextWidth = std::max(0, rowTextWidth - valuePillWidth - hPaddingInSelection);
       }
     }
 
     auto itemName = rowTitle(i);
     auto item = renderer.truncatedText(UI_10_FONT_ID, itemName.c_str(), rowTextWidth);
-    const int titleY = rowSubtitle != nullptr ? itemY + 7 : centeredRowY(itemY, currentRowHeight, titleLineHeight);
+    const int titleY = hasSubtitle ? itemY + 7 : centeredRowY(itemY, currentRowHeight, titleLineHeight);
     renderer.drawText(UI_10_FONT_ID, textX, titleY, item.c_str(), foreground);
 
     // Apply checkerboard dither to create gray text effect for dimmed items
@@ -472,7 +487,7 @@ void LyraTheme::drawListWithMetrics(const GfxRenderer& renderer, Rect rect, int 
       if (iconBitmap != nullptr) {
         const int iconX = rect.x + metrics.contentSidePadding + hPaddingInSelection;
         const int iconY =
-            rowSubtitle != nullptr ? itemY + 16 : centeredRowY(itemY, currentRowHeight, static_cast<int>(iconSize));
+            hasSubtitle ? itemY + 16 : centeredRowY(itemY, currentRowHeight, static_cast<int>(iconSize));
         if (invertSelectedRows && selectedRow) {
           renderer.drawIconInverted(iconBitmap, iconX, iconY, iconSize, iconSize);
         } else {
@@ -481,7 +496,7 @@ void LyraTheme::drawListWithMetrics(const GfxRenderer& renderer, Rect rect, int 
       }
     }
 
-    if (rowSubtitle != nullptr) {
+    if (hasSubtitle) {
       // Draw subtitle
       std::string subtitleText = rowSubtitle(i);
       auto subtitle = renderer.truncatedText(SMALL_FONT_ID, subtitleText.c_str(), rowTextWidth);
@@ -490,15 +505,20 @@ void LyraTheme::drawListWithMetrics(const GfxRenderer& renderer, Rect rect, int 
 
     // Draw value
     if (!valueText.empty()) {
+      // Keep the "Selected" pill inside the selection highlight. Its former
+      // right edge coincided with the highlight edge, making it look clipped
+      // on real panels even at the normal interface size.
+      const int valueX =
+          rect.x + contentWidth - metrics.contentSidePadding - hPaddingInSelection - valuePillWidth;
+      const int valueY = centeredRowY(itemY, currentRowHeight, titleLineHeight);
       if (selectedRow && highlightValue) {
-        renderer.fillRoundedRect(rect.x + contentWidth - metrics.contentSidePadding - hPaddingInSelection - valueWidth,
-                                 itemY, valueWidth + hPaddingInSelection, rowHeight, cornerRadius, Color::Black);
+        const int pillHeight = std::min(currentRowHeight - 4, titleLineHeight + 8);
+        const int pillY = itemY + (currentRowHeight - pillHeight) / 2;
+        renderer.fillRoundedRect(valueX, pillY, valuePillWidth, pillHeight, cornerRadius, Color::Black);
       }
 
-      const int valueY = rowSubtitle != nullptr ? itemY + 16 : centeredRowY(itemY, currentRowHeight, titleLineHeight);
       const bool valueForeground = invertSelectedRows ? !selectedRow : !(selectedRow && highlightValue);
-      renderer.drawText(UI_10_FONT_ID, rect.x + contentWidth - metrics.contentSidePadding - valueWidth, valueY,
-                        valueText.c_str(), valueForeground);
+      renderer.drawText(UI_10_FONT_ID, valueX + hPaddingInSelection, valueY, valueText.c_str(), valueForeground);
     }
   }
 }

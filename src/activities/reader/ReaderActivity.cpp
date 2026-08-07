@@ -40,7 +40,7 @@ bool ReaderActivity::shouldShowLoadingPopup(const std::string& path) {
   return !Epub::hasCache(path, "/.inkmod");
 }
 
-std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path) {
+std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path, const std::function<void(uint8_t)>& onProgress) {
   if (!Storage.exists(path.c_str())) {
     LOG_ERR("READER", "File does not exist: %s", path.c_str());
     return nullptr;
@@ -54,7 +54,7 @@ std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path) {
   const std::string readPath = EpubChapterSplitter::resolveReadPath(path, "/.inkmod");
 
   auto epub = std::unique_ptr<Epub>(new Epub(readPath, "/.inkmod"));
-  if (epub->load(true, SETTINGS.embeddedStyle == 0)) {
+  if (epub->load(true, SETTINGS.embeddedStyle == 0, onProgress)) {
     return epub;
   }
 
@@ -132,8 +132,15 @@ void ReaderActivity::onEnter() {
     return;
   }
 
-  if (shouldShowLoadingPopup(initialBookPath)) {
-    GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
+  const bool showLoadingPopup = shouldShowLoadingPopup(initialBookPath);
+  Rect loadingPopupRect{};
+  std::function<void(uint8_t)> reportProgress;
+  if (showLoadingPopup) {
+    loadingPopupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
+    GUI.fillPopupProgress(renderer, loadingPopupRect, 0);
+    reportProgress = [this, loadingPopupRect](const uint8_t progress) {
+      GUI.fillPopupProgress(renderer, loadingPopupRect, progress);
+    };
   }
 
   if (isImagePreviewFile(initialBookPath)) {
@@ -159,7 +166,7 @@ void ReaderActivity::onEnter() {
     }
     onGoToTxtReader(std::move(txt));
   } else {
-    auto epub = loadEpub(initialBookPath);
+    auto epub = loadEpub(initialBookPath, reportProgress);
     if (!epub) {
       onGoBack();
       return;

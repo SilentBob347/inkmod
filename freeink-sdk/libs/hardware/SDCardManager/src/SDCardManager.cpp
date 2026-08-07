@@ -327,14 +327,8 @@ uint64_t SDCardManager::sdUsedBytes() {
   if (!initialized) return 0;
   const uint32_t now = millis();
   if (!cachedUsedBytesValid || (now - cachedUsedBytesAt) >= USED_BYTES_CACHE_TTL_MS) {
-    const uint32_t debugStartMs = millis();
     const int32_t freeClusters = vol().freeClusterCount();
     const uint64_t clusterCount = vol().clusterCount();
-    const uint32_t debugBpc = vol().bytesPerCluster();
-    if (Serial)
-      Serial.printf("[%lu] [SD] sdUsedBytes: took %lums, freeClusters=%ld clusterCount=%llu bytesPerCluster=%lu\n",
-                    millis(), static_cast<unsigned long>(millis() - debugStartMs), static_cast<long>(freeClusters),
-                    static_cast<unsigned long long>(clusterCount), static_cast<unsigned long>(debugBpc));
     if (freeClusters < 0) {
       cachedUsedBytes = 0;
     } else {

@@ -12,6 +12,7 @@
 
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
+#include "UiTextSize.h"
 #include "components/icons/cover.h"
 #include "fontIds.h"
 
@@ -250,7 +251,7 @@ void RoundedRaffTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int butt
 void RoundedRaffTheme::drawTextField(const GfxRenderer& renderer, Rect rect, const int textWidth, bool cursorMode,
                                      int contentStartX, int contentWidth) const {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+  const int lineHeight = renderer.getLineHeight(uiControlFontId());
   const int lineY = rect.y + rect.height + lineHeight + metrics.verticalSpacing;
   const int thickness = cursorMode ? 3 : 2;
 
@@ -307,7 +308,7 @@ void RoundedRaffTheme::drawKeyboardKey(const GfxRenderer& renderer, Rect rect, c
   }
 
   if (label != nullptr && label[0] != '\0') {
-    const int primaryFontId = hasSecondary ? UI_10_FONT_ID : UI_12_FONT_ID;
+    const int primaryFontId = hasSecondary ? UI_10_FONT_ID : uiControlFontId();
     const int itemWidth = renderer.getTextWidth(primaryFontId, label);
     const int centeredTextX = rect.x + (rect.width - itemWidth) / 2;
     const int textX = hasSecondary ? std::max(rect.x + 4, centeredTextX - 6) : centeredTextX;
@@ -317,8 +318,9 @@ void RoundedRaffTheme::drawKeyboardKey(const GfxRenderer& renderer, Rect rect, c
   }
 
   if (hasSecondary) {
-    const int secWidth = renderer.getTextWidth(SMALL_FONT_ID, secondaryLabel);
-    renderer.drawText(SMALL_FONT_ID, rect.x + rect.width - secWidth - 3, rect.y + 2, secondaryLabel, !invert);
+    const int secondaryFontId = uiHintFontId();
+    const int secWidth = renderer.getTextWidth(secondaryFontId, secondaryLabel);
+    renderer.drawText(secondaryFontId, rect.x + rect.width - secWidth - 3, rect.y + 2, secondaryLabel, !invert);
   }
 }
 
@@ -332,7 +334,12 @@ void RoundedRaffTheme::drawList(const GfxRenderer& renderer, Rect rect, int item
   (void)rowIcon;
   (void)highlightValue;
   (void)rowDimmed;
-  const bool hasSubtitle = static_cast<bool>(rowSubtitle);
+  if (itemCount <= 0) return;
+
+  // Empty callbacks are used by ordinary option lists. Only a real subtitle
+  // should select the taller two-line card layout.
+  const int subtitleProbeIndex = std::clamp(selectedIndex, 0, itemCount - 1);
+  const bool hasSubtitle = rowSubtitle != nullptr && !rowSubtitle(subtitleProbeIndex).empty();
   const int titleLineHeight = renderer.getLineHeight(kTitleFontId);
   const int subtitleLineHeight = renderer.getLineHeight(kSubtitleFontId);
   constexpr int subtitleTopPadding = 10;
@@ -340,7 +347,8 @@ void RoundedRaffTheme::drawList(const GfxRenderer& renderer, Rect rect, int item
   constexpr int subtitleInterLineGap = 4;
   const int subtitleRowHeight =
       subtitleTopPadding + titleLineHeight + subtitleInterLineGap + subtitleLineHeight + subtitleBottomPadding;
-  const int rowHeight = hasSubtitle ? subtitleRowHeight : RoundedRaffMetrics::values.listRowHeight;
+  const int rowHeight = hasSubtitle ? subtitleRowHeight
+                                    : std::max(RoundedRaffMetrics::values.listRowHeight, titleLineHeight + 8);
   const auto isHeaderRow = [&isHeader](int index) { return isHeader != nullptr && isHeader(index); };
   bool hasHeaderRows = false;
   for (int i = 0; i < itemCount; ++i) {

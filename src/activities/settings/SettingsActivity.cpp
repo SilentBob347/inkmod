@@ -534,6 +534,7 @@ void SettingsActivity::loop() {
   // finishing on its own and force the row to redraw with the real value
   // instead of leaving it on "Загрузка..." until the next unrelated press.
   static bool storageUsageWasReady = false;
+  // cppcheck-suppress knownConditionTrueFalse
   if (StorageUsageCalc::ready() && !storageUsageWasReady) {
     storageUsageWasReady = true;
     requestUpdate();

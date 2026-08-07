@@ -1073,7 +1073,9 @@ void SleepActivity::renderCalendarSleepScreenLandscape() const {
   const int sharedTop = kMargin + kTopPad;
 
   int sidebarY = sharedTop;
-  const int gridTop = sharedTop;
+  // The weekday row, rather than its invisible container, is the visual top
+  // of the calendar. Align it with the month heading in the left column.
+  const int gridTop = sharedTop - dowGap;
 
   renderer.drawText(UI_12_FONT_ID, kMargin, sidebarY, calendarMonthName(now.date.month), true, EpdFontFamily::BOLD);
   sidebarY += monthLineH + kHeaderLineGap;

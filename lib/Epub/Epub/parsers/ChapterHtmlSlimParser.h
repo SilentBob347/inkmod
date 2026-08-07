@@ -67,6 +67,20 @@ class ChapterHtmlSlimParser {
   bool lowMemoryAbort = false;
   bool attemptedTextLayoutFontCacheRelease = false;
 
+  // One active float is enough for the printed-book XHTML used in EPUBs.
+  // It is scalar state only; page records still own the image and text lines.
+  struct ActiveFloat {
+    bool active = false;
+    bool right = false;
+    int16_t width = 0;
+    int16_t bottomY = 0;
+  } activeFloat;
+
+  // A <br> normally continues its current block style.  A line whose position
+  // comes from an inline span is different: the following line must start from
+  // the enclosing block again, otherwise its margin would accumulate.
+  bool inlineLinePositionActive = false;
+
   // Style tracking (replaces depth-based approach)
   struct StyleStackEntry {
     int depth = 0;

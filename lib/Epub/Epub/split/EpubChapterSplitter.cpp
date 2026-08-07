@@ -2,6 +2,7 @@
 
 #include <HalStorage.h>
 #include <Logging.h>
+#include <MemoryBudget.h>
 #include <ZipFile.h>
 
 #include <algorithm>
@@ -23,6 +24,10 @@ namespace {
 // "would otherwise hang" describe exactly the same set of books.
 constexpr size_t MAX_SANE_SPINE_ITEM_BYTES = 1024 * 1024;
 constexpr size_t TARGET_CHUNK_BYTES = 250 * 1024;
+// Splitting is optional.  Its first pass uses temporary ZIP indexes and
+// strings, so it must not start on a no-PSRAM X4 with fragmented heap.
+constexpr uint32_t SPLITTER_MIN_FREE_HEAP = 160U * 1024U;
+constexpr uint32_t SPLITTER_MIN_MAX_ALLOC = 128U * 1024U;
 constexpr char CACHE_MAGIC[] = "EPUBSPLIT";
 constexpr size_t CACHE_MAGIC_LEN = 9;
 constexpr uint8_t CACHE_VERSION = 1;
@@ -194,6 +199,16 @@ std::string resolveReadPathForZip(const std::string& originalPath, const std::st
     }
   }
 
+  // A cached package needs no preparation.  With a new cache, leave the
+  // EPUB untouched when memory is low: normal EPUBs will then open through
+  // the regular reader path instead of resetting during optional splitting.
+  const auto heap = MemoryBudget::snapshot();
+  if (!MemoryBudget::hasHeap(heap, SPLITTER_MIN_FREE_HEAP, SPLITTER_MIN_MAX_ALLOC)) {
+    LOG_INF("EPS", "Skipping optional EPUB split: low heap (%u free, %u max alloc)", heap.freeHeap,
+            heap.maxAllocHeap);
+    return originalPath;
+  }
+
   // No valid cache yet - check whether this book even needs one. Cheap:
   // one small content.opf read, one batched zip-central-directory size
   // lookup. Any failure along the way (missing container.xml, unparseable
@@ -211,20 +226,17 @@ std::string resolveReadPathForZip(const std::string& originalPath, const std::st
   if (!EpubOpfLite::parse(opfContent, opf) || opf.manifest.empty() || opf.spineIdrefs.empty()) return originalPath;
 
   const std::string opfDir = dirnameWithSlash(opfPath);
-  std::unordered_map<std::string, std::string> idToHref;  // manifest id -> zip path
-  std::unordered_map<std::string, std::string> idToMediaType;
-  for (const auto& item : opf.manifest) {
-    idToHref[item.id] = resolveHref(opfDir, item.href);
-    idToMediaType[item.id] = item.mediaType;
-  }
+  const auto findManifestItem = [&opf](const std::string& idref) -> const EpubOpfManifestItem* {
+    for (const auto& item : opf.manifest) {
+      if (item.id == idref) return &item;
+    }
+    return nullptr;
+  };
 
   std::deque<ZipFile::SizeTarget> targets;
-  std::vector<std::string> spineZipPaths;
-  spineZipPaths.reserve(opf.spineIdrefs.size());
   for (size_t i = 0; i < opf.spineIdrefs.size(); ++i) {
-    const auto it = idToHref.find(opf.spineIdrefs[i]);
-    const std::string zipPath = it == idToHref.end() ? std::string() : it->second;
-    spineZipPaths.push_back(zipPath);
+    const auto* item = findManifestItem(opf.spineIdrefs[i]);
+    const std::string zipPath = item ? resolveHref(opfDir, item->href) : std::string();
     if (zipPath.empty() || i > 0xFFFF) continue;
     targets.push_back({ZipFile::fnvHash64(zipPath.data(), zipPath.size()), static_cast<uint16_t>(zipPath.size()),
                        static_cast<uint16_t>(i)});
@@ -249,8 +261,21 @@ std::string resolveReadPathForZip(const std::string& originalPath, const std::st
   }
   if (oversizedSpineIndex < 0) return originalPath;  // the common case: nothing here needs splitting
 
+  // A regular EPUB only reaches the return above. Keep these two maps out of
+  // that path: a book with hundreds of small chapters otherwise duplicates
+  // every OPF id and path merely to prove that no split is needed.
+  std::unordered_map<std::string, std::string> idToHref;
+  idToHref.reserve(opf.manifest.size());
+  for (const auto& item : opf.manifest) {
+    idToHref.emplace(item.id, resolveHref(opfDir, item.href));
+  }
+
+  const auto oversizedItem = findManifestItem(opf.spineIdrefs[oversizedSpineIndex]);
+  if (!oversizedItem) return originalPath;
+  const std::string oversizedSpinePath = resolveHref(opfDir, oversizedItem->href);
+
   LOG_INF("EPS", "Spine item '%s' is %u bytes - splitting into a cached copy",
-          spineZipPaths[oversizedSpineIndex].c_str(), sizes[oversizedSpineIndex]);
+          oversizedSpinePath.c_str(), sizes[oversizedSpineIndex]);
 
   if (Storage.exists(cachePath.c_str())) Storage.removeDir(cachePath.c_str());
   Storage.mkdir(packagePath.c_str(), true);
@@ -260,7 +285,7 @@ std::string resolveReadPathForZip(const std::string& originalPath, const std::st
     return originalPath;
   }
 
-  const std::string oversizedHref = spineZipPaths[oversizedSpineIndex];
+  const std::string oversizedHref = oversizedSpinePath;
   std::string oversizedContent;
   {
     HalFile f;

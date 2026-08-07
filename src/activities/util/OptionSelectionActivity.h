@@ -12,7 +12,8 @@ class OptionSelectionActivity final : public Activity {
  public:
   OptionSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string activityName,
                           StrId titleId, std::vector<std::string> options, uint8_t selectedIndex,
-                          bool readerMode = false);
+                          bool readerMode = false, bool showCurrentMarker = true,
+                          std::vector<std::string> subtitles = {});
 
   void onEnter() override;
   void loop() override;
@@ -26,7 +27,9 @@ class OptionSelectionActivity final : public Activity {
   ButtonNavigator buttonNavigator_;
   StrId titleId_;
   std::vector<std::string> options_;
+  std::vector<std::string> subtitles_;
   int currentIndex_ = 0;
   int selectedIndex_ = 0;
   bool readerMode_ = false;
+  bool showCurrentMarker_ = true;
 };

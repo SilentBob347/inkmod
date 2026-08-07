@@ -20,6 +20,7 @@
 #include "components/themes/minimal/MinimalTheme.h"
 #include "fontIds.h"
 #include "Fb2.h" // Добавлено для поддержки FB2
+#include "util/BookArchiveUtils.h"
 
 namespace {
 constexpr unsigned long GO_HOME_MS = 1000;
@@ -85,6 +86,7 @@ std::string buildFullPath(std::string basepath, const std::string& entry) {
   if (basepath.back() != '/') basepath += "/";
   return basepath + entry;
 }
+
 
 std::string normalizeDirectoryPath(std::string path) {
   while (path.length() > 1 && path.back() == '/') {
@@ -174,26 +176,15 @@ void FileBrowserActivity::loadFiles() {
         // Firmware picker: only show .bin files.
         shouldAdd = FsHelpers::checkFileExtension(filename, ".bin");
       } else {
-        // --- ДОБАВЛЕНА ПОДДЕРЖКА FB2 ---
         bool isFb2 = FsHelpers::checkFileExtension(filename, ".fb2");
-        // Not just files ending in the exact ".fb2.zip" double extension -
-        // a real book renamed with e.g. "_fb2.zip" (underscore, not dot)
-        // used to be invisible here entirely, and separately, still be
-        // misread as raw zip-container bytes if opened some other way
-        // (see Fb2::isCompressedFb2()). "Contains fb2, ends in .zip" is
-        // loose enough to catch that naming without matching completely
-        // unrelated zip files.
-        bool isFb2Zip = false;
-        if (FsHelpers::checkFileExtension(filename, ".zip")) {
-          std::string lower(filename);
-          std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return std::tolower(c); });
-          isFb2Zip = lower.find("fb2") != std::string::npos;
-        }
+        // EPUB files are ZIP containers too. A bare .zip is shown so it can
+        // be identified by its central-directory entries when opened.
+        bool isZip = FsHelpers::checkFileExtension(filename, ".zip");
 
         if (FsHelpers::hasEpubExtension(filename) || FsHelpers::hasXtcExtension(filename) ||
             FsHelpers::hasTxtExtension(filename) || FsHelpers::hasMarkdownExtension(filename) ||
             FsHelpers::hasBmpExtension(filename) || FsHelpers::hasPngExtension(filename) ||
-            isFb2 || isFb2Zip) {
+            isFb2 || isZip) {
           shouldAdd = true;
         }
       }
@@ -271,14 +262,9 @@ void FileBrowserActivity::promptDeleteFile(const std::string& fullPath, const st
     LOG_DBG("FileBrowser", "Attempting to delete: %s", fullPath.c_str());
     BookActions::clearFileMetadata(fullPath);
 
-    // --- ОЧИСТКА КЭША FB2 ПРИ УДАЛЕНИИ ---
-    std::string lowerExt = fullPath;
-    for (auto& c : lowerExt) c = tolower(static_cast<unsigned char>(c));
-    bool isFb2 = (lowerExt.length() >= 4 && lowerExt.substr(lowerExt.length() - 4) == ".fb2");
-    // Not just the exact ".fb2.zip" double extension - see the matching
-    // comment where isFb2Zip is first computed above for why.
-    bool isFb2Zip = (lowerExt.length() >= 4 && lowerExt.substr(lowerExt.length() - 4) == ".zip") &&
-                    lowerExt.find("fb2") != std::string::npos;
+    const bool isFb2 = FsHelpers::checkFileExtension(fullPath, ".fb2");
+    const bool isFb2Zip = FsHelpers::checkFileExtension(fullPath, ".zip") &&
+                          detectBookArchiveType(fullPath) == BookArchiveType::Fb2;
 
     if (isFb2 || isFb2Zip) {
       std::string cacheBasePath = "/.inkmod";
@@ -671,17 +657,11 @@ void FileBrowserActivity::loop() {
         requestUpdate();
       } else {
         std::string fullPath = basepath + entry;
-        std::string lowerExt = fullPath;
-        for (auto& c : lowerExt) c = tolower(static_cast<unsigned char>(c));
+        const bool isZip = FsHelpers::checkFileExtension(fullPath, ".zip");
+        const BookArchiveType archiveType = isZip ? detectBookArchiveType(fullPath) : BookArchiveType::None;
+        const bool isFb2 = FsHelpers::checkFileExtension(fullPath, ".fb2") || archiveType == BookArchiveType::Fb2;
 
-        // --- ПЕРЕХВАТ ОТКРЫТИЯ FB2 ---
-        bool isFb2 = (lowerExt.length() >= 4 && lowerExt.substr(lowerExt.length() - 4) == ".fb2");
-        // Not just the exact ".fb2.zip" double extension - see the matching
-        // comment where isFb2Zip is first computed above for why.
-        bool isFb2Zip = (lowerExt.length() >= 4 && lowerExt.substr(lowerExt.length() - 4) == ".zip") &&
-                        lowerExt.find("fb2") != std::string::npos;
-
-        if (isFb2 || isFb2Zip) {
+        if (isFb2) {
           std::string cacheBasePath = "/.inkmod";
 
           const Rect popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
@@ -695,8 +675,11 @@ void FileBrowserActivity::loop() {
           } else {
             LOG_ERR("FB2", "Failed to load FB2 file: %s", fullPath.c_str());
           }
-        } else {
+        } else if (!isZip || archiveType == BookArchiveType::Epub) {
           onSelectBook(fullPath);
+        } else {
+          LOG_ERR("FileBrowser", "ZIP is neither an EPUB nor an FB2 book: %s", fullPath.c_str());
+          GUI.drawPopup(renderer, tr(STR_UNKNOWN_ERROR));
         }
       }
     }

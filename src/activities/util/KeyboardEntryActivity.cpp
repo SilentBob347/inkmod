@@ -4,12 +4,41 @@
 #include <I18n.h>
 
 #include <algorithm>
+#include <vector>
 
 #include "MappedInputManager.h"
+#include "UiTextSize.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
 const char* const KeyboardEntryActivity::shiftString[2] = {"shift", "SHIFT"};
+
+namespace {
+
+// These UTF-8 labels are static flash data. The keyboard never copies a
+// layout to heap RAM; it inserts only the selected one- or two-byte glyph.
+constexpr const char* kRussianLower[3][10] = {
+    {"й", "ц", "у", "к", "е", "н", "г", "ш", "щ", "з"},
+    {"ф", "ы", "в", "а", "п", "р", "о", "л", "д", "ж"},
+    {"я", "ч", "с", "м", "и", "т", "ь", "б", "ю", "э"},
+};
+constexpr const char* kRussianUpper[3][10] = {
+    {"Й", "Ц", "У", "К", "Е", "Н", "Г", "Ш", "Щ", "З"},
+    {"Ф", "Ы", "В", "А", "П", "Р", "О", "Л", "Д", "Ж"},
+    {"Я", "Ч", "С", "М", "И", "Т", "Ь", "Б", "Ю", "Э"},
+};
+constexpr const char* kUkrainianLower[3][10] = {
+    {"й", "ц", "у", "к", "е", "н", "г", "ш", "щ", "з"},
+    {"ф", "і", "в", "а", "п", "р", "о", "л", "д", "ж"},
+    {"я", "ч", "с", "м", "и", "т", "ь", "б", "ю", "є"},
+};
+constexpr const char* kUkrainianUpper[3][10] = {
+    {"Й", "Ц", "У", "К", "Е", "Н", "Г", "Ш", "Щ", "З"},
+    {"Ф", "І", "В", "А", "П", "Р", "О", "Л", "Д", "Ж"},
+    {"Я", "Ч", "С", "М", "И", "Т", "Ь", "Б", "Ю", "Є"},
+};
+
+}  // namespace
 
 void KeyboardEntryActivity::onEnter() {
   Activity::onEnter();
@@ -20,6 +49,17 @@ void KeyboardEntryActivity::onEnter() {
   togglePos = false;
   passwordVisible = false;
   shiftState = 0;
+  switch (I18N.getLanguage()) {
+    case ::Language::RU:
+      language = Language::Russian;
+      break;
+    case ::Language::UK:
+      language = Language::Ukrainian;
+      break;
+    default:
+      language = Language::English;
+      break;
+  }
   selectedRow = 0;
   selectedCol = 0;
   delPressCount = 0;
@@ -48,30 +88,48 @@ int KeyboardEntryActivity::getTotalRowCount() const { return getContentRowCount(
 
 bool KeyboardEntryActivity::isBottomRow(const int row) const { return row == getContentRowCount(); }
 
-char KeyboardEntryActivity::getSelectedChar() const {
-  const KeyDef(*layout)[COLS] = symMode ? symLayout : (inputType == InputType::Url ? urlLayout : abcLayout);
+const char* KeyboardEntryActivity::keyLabel(const int row, const int col, const bool secondary,
+                                            char (&asciiBuf)[2]) const {
+  if (!symMode && inputType != InputType::Url && row >= 1 && row <= 3 && col >= 0 && col < COLS) {
+    const int languageRow = row - 1;
+    if (language == Language::Russian) return (secondary ? kRussianUpper : kRussianLower)[languageRow][col];
+    if (language == Language::Ukrainian) return (secondary ? kUkrainianUpper : kUkrainianLower)[languageRow][col];
+  }
 
-  if (selectedRow < 0 || selectedRow >= getContentRowCount()) return '\0';
-  if (selectedCol < 0 || selectedCol >= COLS) return '\0';
-
-  const KeyDef& key = layout[selectedRow][selectedCol];
-  return (shiftState > 0 && key.secondary != '\0') ? key.secondary : key.primary;
+  const KeyDef& key = (symMode ? symLayout : (inputType == InputType::Url ? urlLayout : abcLayout))[row][col];
+  asciiBuf[0] = secondary && key.secondary != '\0' ? key.secondary : key.primary;
+  asciiBuf[1] = '\0';
+  return asciiBuf;
 }
 
-char KeyboardEntryActivity::getAlternativeChar() const {
-  if (symMode || urlMode) return '\0';
-  if (inputType == InputType::Url && selectedRow > 0) return '\0';
+const char* KeyboardEntryActivity::getSelectedText() {
+  if (selectedRow < 0 || selectedRow >= getContentRowCount() || selectedCol < 0 || selectedCol >= COLS) return "";
+  return keyLabel(selectedRow, selectedCol, !symMode && shiftState > 0, selectedAsciiKey);
+}
 
-  const KeyDef(*layout)[COLS] = abcLayout;
+const char* KeyboardEntryActivity::getAlternativeText() {
+  if (symMode || urlMode || inputType == InputType::Url || selectedRow < 0 || selectedRow >= getContentRowCount() ||
+      selectedCol < 0 || selectedCol >= COLS) {
+    return "";
+  }
+  return keyLabel(selectedRow, selectedCol, shiftState == 0, selectedAsciiKey);
+}
 
-  if (selectedRow < 0 || selectedRow >= getContentRowCount()) return '\0';
-  if (selectedCol < 0 || selectedCol >= COLS) return '\0';
+const char* KeyboardEntryActivity::languageModeLabel() const {
+  switch (language) {
+    case Language::Russian:
+      return "RU #";
+    case Language::Ukrainian:
+      return "UK #";
+    default:
+      return "EN #";
+  }
+}
 
-  const KeyDef& key = layout[selectedRow][selectedCol];
-  const char current = getSelectedChar();
-  if (current == key.primary && key.secondary != '\0') return key.secondary;
-  if (current == key.secondary) return key.primary;
-  return '\0';
+void KeyboardEntryActivity::cycleLanguage() {
+  language = language == Language::English ? Language::Russian
+             : language == Language::Russian ? Language::Ukrainian
+                                              : Language::English;
 }
 
 bool KeyboardEntryActivity::insertChar(char c) {
@@ -174,7 +232,8 @@ bool KeyboardEntryActivity::handleKeyPress() {
   delPressCount = 0;
   hintVisible = false;
 
-  return insertChar(getSelectedChar());
+  insertString(getSelectedText());
+  return true;
 }
 
 void KeyboardEntryActivity::mapColContentBottom(int& col, bool goingUp) const {
@@ -329,9 +388,15 @@ void KeyboardEntryActivity::loop() {
 
   if (confirmHeld && !confirmLongHandled && mappedInput.isPressed(MappedInputManager::Button::Confirm) &&
       mappedInput.getHeldTime() > LONG_PRESS_MS) {
-    char alt = getAlternativeChar();
-    if (alt != '\0') {
-      insertChar(alt);
+    if (isBottomRow(selectedRow) && selectedCol == static_cast<int>(SpecialKeyType::Mode) && !symMode &&
+        !urlMode && inputType != InputType::Url) {
+      cycleLanguage();
+      confirmLongHandled = true;
+      requestUpdate();
+    } else {
+      const char* alt = getAlternativeText();
+      if (alt[0] == '\0') return;
+      insertString(alt);
       requestUpdate();
       confirmLongHandled = true;
     }
@@ -366,10 +431,12 @@ void KeyboardEntryActivity::render(RenderLock&&) {
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
   const auto& metrics = UITheme::getInstance().getMetrics();
+  const int controlFontId = uiControlFontId();
+  const int hintFontId = uiHintFontId();
 
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, title.c_str());
 
-  const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+  const int lineHeight = renderer.getLineHeight(controlFontId);
   const int inputStartY = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing +
                           metrics.verticalSpacing * 4 + metrics.keyboardVerticalOffset;
   int inputHeight = 0;
@@ -393,14 +460,18 @@ void KeyboardEntryActivity::render(RenderLock&&) {
   }
 
   const bool isPassword = (inputType == InputType::Password);
-  int availableWidth = pageWidth;
-  if (gpio.deviceIsX3()) {
-    availableWidth -= 2 * metrics.sideButtonHintsWidth;
-  }
+  // The X4 puts both page buttons on the right edge; X3 has one on
+  // each edge. Keep an extra gutter as the themed outlines themselves
+  // reach the edge of the button column.
+  constexpr int sideHintClearance = 8;
+  const int sideHintReservation =
+      gpio.deviceIsX3() ? 2 * (metrics.sideButtonHintsWidth + sideHintClearance)
+                         : metrics.sideButtonHintsWidth + sideHintClearance;
+  const int availableWidth = std::max(0, pageWidth - sideHintReservation);
   const int effectiveMargin = (pageWidth - availableWidth * metrics.keyboardTextFieldWidthPercent / 100) / 2;
   const int toggleGap = isPassword ? 4 : 0;
-  const int toggleReserve = isPassword ? std::max(renderer.getTextWidth(UI_12_FONT_ID, "[abc]"),
-                                                  renderer.getTextWidth(UI_12_FONT_ID, "[***]")) +
+  const int toggleReserve = isPassword ? std::max(renderer.getTextWidth(controlFontId, "[abc]"),
+                                                  renderer.getTextWidth(controlFontId, "[***]")) +
                                              toggleGap
                                        : 0;
   const int textAreaWidth = pageWidth - 2 * effectiveMargin - toggleReserve;
@@ -409,7 +480,7 @@ void KeyboardEntryActivity::render(RenderLock&&) {
 
   int cursorCharWidth = 6;
   if (cursorPos < text.length()) {
-    int w = renderer.getTextWidth(UI_12_FONT_ID, text.substr(cursorPos, 1).c_str());
+    int w = renderer.getTextWidth(controlFontId, text.substr(cursorPos, 1).c_str());
     if (w > cursorCharWidth) cursorCharWidth = w;
   }
 
@@ -422,7 +493,7 @@ void KeyboardEntryActivity::render(RenderLock&&) {
 
   while (true) {
     std::string lineText = displayText.substr(lineStartIdx, lineEndIdx - lineStartIdx);
-    textWidth = renderer.getTextAdvanceX(UI_12_FONT_ID, lineText.c_str(), EpdFontFamily::REGULAR);
+    textWidth = renderer.getTextAdvanceX(controlFontId, lineText.c_str(), EpdFontFamily::REGULAR);
     if (textWidth <= maxLineWidth) {
       const bool isLastLine = (lineEndIdx == static_cast<int>(displayText.length()));
       bool isCursorLine = false;
@@ -434,14 +505,14 @@ void KeyboardEntryActivity::render(RenderLock&&) {
         } else {
           beforeCursor = displayText.substr(lineStartIdx, cursorPos - lineStartIdx);
         }
-        int beforeWidth = renderer.getTextAdvanceX(UI_12_FONT_ID, beforeCursor.c_str(), EpdFontFamily::REGULAR);
+        int beforeWidth = renderer.getTextAdvanceX(controlFontId, beforeCursor.c_str(), EpdFontFamily::REGULAR);
         int kernOffset = 0;
         if (cursorPos < displayText.length()) {
           std::string beforeAndCursor = beforeCursor + displayText.substr(cursorPos, 1);
           int beforeAndCursorWidth =
-              renderer.getTextAdvanceX(UI_12_FONT_ID, beforeAndCursor.c_str(), EpdFontFamily::REGULAR);
+              renderer.getTextAdvanceX(controlFontId, beforeAndCursor.c_str(), EpdFontFamily::REGULAR);
           int charAdvance =
-              renderer.getTextAdvanceX(UI_12_FONT_ID, displayText.substr(cursorPos, 1).c_str(), EpdFontFamily::REGULAR);
+              renderer.getTextAdvanceX(controlFontId, displayText.substr(cursorPos, 1).c_str(), EpdFontFamily::REGULAR);
           kernOffset = beforeAndCursorWidth - beforeWidth - charAdvance;
         }
         if (centerText) {
@@ -460,17 +531,17 @@ void KeyboardEntryActivity::render(RenderLock&&) {
         // displayText uses '*' for all chars; actual char may be wider than '*'.
         // Part 1: chars before cursor position
         const std::string part1 = displayText.substr(lineStartIdx, cursorPos - lineStartIdx);
-        renderer.drawText(UI_12_FONT_ID, lineStartX, inputStartY + inputHeight, part1.c_str());
+        renderer.drawText(controlFontId, lineStartX, inputStartY + inputHeight, part1.c_str());
         // Part 2: skip cursor slot (block + actual char drawn later)
         // Part 3: chars after cursor position (skip char under cursor), starting at cursorPixelX + cursorCharWidth
         const int afterStart = static_cast<int>(cursorPos) + (cursorPos < text.length() ? 1 : 0);
         const int afterEnd = lineEndIdx;
         if (afterStart < afterEnd) {
           const std::string part3 = displayText.substr(afterStart, afterEnd - afterStart);
-          renderer.drawText(UI_12_FONT_ID, cursorPixelX + cursorCharWidth, inputStartY + inputHeight, part3.c_str());
+          renderer.drawText(controlFontId, cursorPixelX + cursorCharWidth, inputStartY + inputHeight, part3.c_str());
         }
       } else {
-        renderer.drawText(UI_12_FONT_ID, lineStartX, inputStartY + inputHeight, lineText.c_str());
+        renderer.drawText(controlFontId, lineStartX, inputStartY + inputHeight, lineText.c_str());
       }
       if (lineEndIdx == displayText.length()) {
         break;
@@ -494,7 +565,7 @@ void KeyboardEntryActivity::render(RenderLock&&) {
     renderer.fillRect(cursorPixelX - blockPadding, cursorLineY, cursorCharWidth + blockPadding * 2, lineHeight, true);
     if (cursorPos < text.length()) {
       const char buf[2] = {text[cursorPos], '\0'};
-      renderer.drawText(UI_12_FONT_ID, cursorPixelX, cursorLineY, buf, false);
+      renderer.drawText(controlFontId, cursorPixelX, cursorLineY, buf, false);
     }
   } else if (cursorPos <= displayText.length()) {
     static constexpr int serifW = 3;
@@ -510,51 +581,57 @@ void KeyboardEntryActivity::render(RenderLock&&) {
 
   if (isPassword) {
     const char* toggleLabel = passwordVisible ? "[***]" : "[abc]";
-    const int toggleWidth = renderer.getTextWidth(UI_12_FONT_ID, toggleLabel);
+    const int toggleWidth = renderer.getTextWidth(controlFontId, toggleLabel);
     const int toggleX = pageWidth - effectiveMargin - toggleWidth;
     const int toggleY = inputStartY + inputHeight;
     const bool toggleSelected = cursorMode && togglePos;
 
     if (toggleSelected) {
       renderer.fillRect(toggleX - 2, toggleY, toggleWidth + 5, lineHeight + 3, true);
-      renderer.drawText(UI_12_FONT_ID, toggleX, toggleY, toggleLabel, false);
+      renderer.drawText(controlFontId, toggleX, toggleY, toggleLabel, false);
     } else {
-      renderer.drawText(UI_12_FONT_ID, toggleX, toggleY, toggleLabel, true);
+      renderer.drawText(controlFontId, toggleX, toggleY, toggleLabel, true);
     }
   }
 
   if (hintVisible && !text.empty()) {
-    const int hintLh = renderer.getLineHeight(SMALL_FONT_ID);
+    const int hintLh = renderer.getLineHeight(hintFontId);
     const int underlineY = inputStartY + inputHeight + lineHeight + metrics.verticalSpacing;
     const int hintY = underlineY + 4;
     if (cursorMode) {
       int hintLineY = hintY;
       if (inputType == InputType::Password && togglePos) {
         renderer.drawCenteredText(
-            SMALL_FONT_ID, hintLineY,
+            hintFontId, hintLineY,
             passwordVisible ? tr(STR_KB_HINT_TOGGLE_HIDE_PASSWORD) : tr(STR_KB_HINT_TOGGLE_SHOW_PASSWORD), true);
         hintLineY += hintLh;
-        renderer.drawCenteredText(SMALL_FONT_ID, hintLineY, tr(STR_KB_HINT_RETURN_CURSOR), true);
+        renderer.drawCenteredText(hintFontId, hintLineY, tr(STR_KB_HINT_RETURN_CURSOR), true);
       } else {
-        renderer.drawCenteredText(SMALL_FONT_ID, hintLineY, tr(STR_KB_HINT_MOVE_CURSOR), true);
+        renderer.drawCenteredText(hintFontId, hintLineY, tr(STR_KB_HINT_MOVE_CURSOR), true);
         hintLineY += hintLh;
         if (inputType == InputType::Password) {
           const char* passTip = passwordVisible ? tr(STR_KB_HINT_HIDE_PASSWORD) : tr(STR_KB_HINT_SHOW_PASSWORD);
-          renderer.drawCenteredText(SMALL_FONT_ID, hintLineY, passTip, true);
+          renderer.drawCenteredText(hintFontId, hintLineY, passTip, true);
         }
       }
     } else {
-      renderer.drawCenteredText(SMALL_FONT_ID, hintY, tr(STR_KB_HINT_EDIT_ENTRY), true);
+      renderer.drawCenteredText(hintFontId, hintY, tr(STR_KB_HINT_EDIT_ENTRY), true);
     }
   }
 
-  const int keyHeight = metrics.keyboardKeyHeight;
-  const int bottomKeyHeight = metrics.keyboardBottomKeyHeight;
+  const int keyHeight = std::max(metrics.keyboardKeyHeight, renderer.getLineHeight(controlFontId) + 8);
+  const int bottomKeyHeight = std::max(metrics.keyboardBottomKeyHeight, renderer.getLineHeight(controlFontId) + 8);
   const int keySpacing = metrics.keyboardKeySpacing;
   const int contentCols = getContentColCount();
-  const int keyboardWidth = pageWidth * metrics.keyboardWidthPercent / 100;
+  // Side button hints occupy the right edge on this device. Center every
+  // keyboard row in the remaining area rather than the full framebuffer, so
+  // the last keys never draw underneath the physical-button column.
+  const int keyboardAvailableWidth = availableWidth;
+  const int keyboardWidth = keyboardAvailableWidth * metrics.keyboardWidthPercent / 100;
   const int keyWidth = (keyboardWidth - (contentCols - 1) * keySpacing) / contentCols;
-  const int leftMargin = (pageWidth - (contentCols * keyWidth + (contentCols - 1) * keySpacing)) / 2;
+  const int keyboardContentX = gpio.deviceIsX3() ? metrics.sideButtonHintsWidth + sideHintClearance : 0;
+  const int leftMargin =
+      keyboardContentX + (keyboardAvailableWidth - (contentCols * keyWidth + (contentCols - 1) * keySpacing)) / 2;
 
   const int bottomRowGap = metrics.keyboardBottomKeySpacing > 0 ? 4 : 0;
   const int keyboardStartY = metrics.keyboardBottomAligned
@@ -563,56 +640,51 @@ void KeyboardEntryActivity::render(RenderLock&&) {
                                        bottomRowGap + metrics.keyboardVerticalOffset
                                  : inputStartY + inputHeight + lineHeight + metrics.verticalSpacing;
 
-  const int tipsLh = renderer.getLineHeight(SMALL_FONT_ID);
+  const int tipsLh = renderer.getLineHeight(hintFontId);
   const int underlineBottom = inputStartY + inputHeight + lineHeight + metrics.verticalSpacing + 4;
-  auto drawTip = [&](const char* tip, int y) { renderer.drawCenteredText(SMALL_FONT_ID, y, tip, true); };
-
-  int tipCount = 0;
+  // Help is drawn in the same safe column as the keyboard. At the large
+  // accessibility size the explanatory line is deliberately wrapped instead
+  // of being clipped under the X4's Up/Down buttons.
+  const int tipMaxWidth = keyboardAvailableWidth;
+  const int maxTipLines = std::max(1, (keyboardStartY - underlineBottom) / tipsLh);
+  std::vector<const char*> tipMessages;
+  tipMessages.reserve(4);
+  tipMessages.push_back(tr(STR_KB_TIPS));
   if (cursorMode) {
-    tipCount = 1;
+    tipMessages.push_back(tr(STR_KB_HINT_RETURN_KEYBOARD));
   } else if (urlMode) {
-    tipCount = 1 + (!text.empty() ? 1 : 0);
+    tipMessages.push_back(tr(STR_KB_HINT_EXIT_URL_MODE));
+    if (!text.empty()) tipMessages.push_back(tr(STR_KB_HINT_CLEAR_TEXT));
   } else if (symMode) {
-    tipCount = !text.empty() ? 1 : 0;
+    if (!text.empty()) tipMessages.push_back(tr(STR_KB_HINT_CLEAR_TEXT));
   } else {
-    tipCount = 1 + (inputType == InputType::Url ? 1 : 0) + (!text.empty() ? 1 : 0);
+    if (inputType == InputType::Url) {
+      tipMessages.push_back(tr(STR_KB_HINT_SECONDARY_CHAR));
+      tipMessages.push_back(tr(STR_KB_HINT_URL_SNIPPETS));
+    } else {
+      tipMessages.push_back(shiftState > 0 ? tr(STR_KB_HINT_LOWER_SECONDARY) : tr(STR_KB_HINT_UPPER_SECONDARY));
+    }
+    if (!text.empty()) tipMessages.push_back(tr(STR_KB_HINT_CLEAR_TEXT));
   }
 
-  if (tipCount > 0) {
-    int y = (underlineBottom + keyboardStartY) / 2 - (tipCount + 1) * tipsLh / 2;
-    drawTip(tr(STR_KB_TIPS), y);
-    y += tipsLh;
-    if (cursorMode) {
-      drawTip(tr(STR_KB_HINT_RETURN_KEYBOARD), y);
-    } else if (urlMode) {
-      drawTip(tr(STR_KB_HINT_EXIT_URL_MODE), y);
-      y += tipsLh;
-      if (!text.empty()) {
-        drawTip(tr(STR_KB_HINT_CLEAR_TEXT), y);
-      }
-    } else if (symMode) {
-      if (!text.empty()) {
-        drawTip(tr(STR_KB_HINT_CLEAR_TEXT), y);
-      }
-    } else {
-      const char* altCharTip;
-      if (inputType == InputType::Url) {
-        altCharTip = tr(STR_KB_HINT_SECONDARY_CHAR);
-      } else if (shiftState > 0) {
-        altCharTip = tr(STR_KB_HINT_LOWER_SECONDARY);
-      } else {
-        altCharTip = tr(STR_KB_HINT_UPPER_SECONDARY);
-      }
-      drawTip(altCharTip, y);
-      y += tipsLh;
-      if (inputType == InputType::Url) {
-        drawTip(tr(STR_KB_HINT_URL_SNIPPETS), y);
-        y += tipsLh;
-      }
-      if (!text.empty()) {
-        drawTip(tr(STR_KB_HINT_CLEAR_TEXT), y);
-      }
+  std::vector<std::string> tipLines;
+  tipLines.reserve(static_cast<size_t>(maxTipLines));
+  for (size_t i = 0; i < tipMessages.size() && static_cast<int>(tipLines.size()) < maxTipLines; ++i) {
+    const int remainingMessages = static_cast<int>(tipMessages.size() - i - 1);
+    const int lineLimit = std::max(1, maxTipLines - static_cast<int>(tipLines.size()) - remainingMessages);
+    auto wrapped = renderer.wrappedText(hintFontId, tipMessages[i], tipMaxWidth, lineLimit);
+    for (auto& line : wrapped) {
+      if (static_cast<int>(tipLines.size()) >= maxTipLines) break;
+      tipLines.push_back(std::move(line));
     }
+  }
+
+  const int tipBlockHeight = static_cast<int>(tipLines.size()) * tipsLh;
+  int tipY = underlineBottom + std::max(0, (keyboardStartY - underlineBottom - tipBlockHeight) / 2);
+  for (const auto& line : tipLines) {
+    const int textWidth = renderer.getTextWidth(hintFontId, line.c_str());
+    renderer.drawText(hintFontId, keyboardContentX + (keyboardAvailableWidth - textWidth) / 2, tipY, line.c_str(), true);
+    tipY += tipsLh;
   }
 
   const int bkSpacing = metrics.keyboardBottomKeySpacing;
@@ -620,7 +692,8 @@ void KeyboardEntryActivity::render(RenderLock&&) {
   const int contentTotalWidth = COLS * abcKeyWidth + (COLS - 1) * keySpacing;
   const int bottomKeyWidth = (contentTotalWidth - (BOTTOM_KEY_COUNT - 1) * bkSpacing) / BOTTOM_KEY_COUNT;
   const int bottomLeftMargin =
-      (pageWidth - (BOTTOM_KEY_COUNT * bottomKeyWidth + (BOTTOM_KEY_COUNT - 1) * bkSpacing)) / 2;
+      keyboardContentX +
+      (keyboardAvailableWidth - (BOTTOM_KEY_COUNT * bottomKeyWidth + (BOTTOM_KEY_COUNT - 1) * bkSpacing)) / 2;
 
   int urlLeftMargin = leftMargin;
   if (urlMode) {
@@ -649,21 +722,18 @@ void KeyboardEntryActivity::render(RenderLock&&) {
                               activeKeySelected, nullptr);
         }
       } else {
-        const KeyDef& key = layout[row][col];
-
-        char primaryChar = key.primary;
-        char secondaryChar = key.secondary;
-
-        if (!symMode && shiftState > 0 && key.secondary != '\0') {
-          primaryChar = key.secondary;
-          secondaryChar = key.primary;
-        }
-
-        const char primaryBuf[2] = {primaryChar, '\0'};
-        const char secondaryBuf[2] = {secondaryChar, '\0'};
-        const bool showSecondary = !symMode && row == 0 && secondaryChar != '\0';
-        GUI.drawKeyboardKey(renderer, Rect{keyX, rowY, keyWidth, keyHeight}, primaryBuf, activeKeySelected,
-                            showSecondary ? secondaryBuf : nullptr);
+        char primaryBuf[2];
+        char secondaryBuf[2];
+        const char* primary = keyLabel(row, col, !symMode && shiftState > 0, primaryBuf);
+        const char* secondary = keyLabel(row, col, !symMode && shiftState == 0, secondaryBuf);
+        // A 14pt accessibility glyph plus its alternate cannot fit in the
+        // top half of a key without the two bitmaps touching. The alternate
+        // remains available through a long press and is explained above the
+        // keyboard; hide only its tiny visual label in this mode.
+        const bool showSecondary = !symMode && row == 0 && secondaryBuf[0] != '\0' &&
+                                   uiControlFontId() != UI_14_FONT_ID;
+        GUI.drawKeyboardKey(renderer, Rect{keyX, rowY, keyWidth, keyHeight}, primary, activeKeySelected,
+                            showSecondary ? secondary : nullptr);
       }
     }
   }
@@ -678,7 +748,7 @@ void KeyboardEntryActivity::render(RenderLock&&) {
   const BottomKeyInfo bottomKeys[BOTTOM_KEY_COUNT] = {
       {(symMode || urlMode || inputType == InputType::Url) ? KeyboardKeyType::Disabled : KeyboardKeyType::Shift,
        (symMode || urlMode || inputType == InputType::Url) ? shiftString[0] : shiftString[shiftState]},
-      {KeyboardKeyType::Mode, urlMode ? "abc" : (symMode ? "abc" : "#@!")},
+      {KeyboardKeyType::Mode, urlMode ? "abc" : (symMode ? "abc" : languageModeLabel())},
       {inputType == InputType::Url ? KeyboardKeyType::Mode : KeyboardKeyType::Space,
        inputType == InputType::Url ? "URL" : nullptr},
       {KeyboardKeyType::Del, nullptr},
@@ -718,18 +788,14 @@ void KeyboardEntryActivity::render(RenderLock&&) {
                             KeyboardKeyType::Normal, true);
       }
     } else {
-      const KeyDef& selKey = layout[selectedRow][selectedCol];
-      char selPrimary = selKey.primary;
-      char selSecondary = selKey.secondary;
-      if (!symMode && shiftState > 0 && selKey.secondary != '\0') {
-        selPrimary = selKey.secondary;
-        selSecondary = selKey.primary;
-      }
-      const char selPrimaryBuf[2] = {selPrimary, '\0'};
-      const char selSecondaryBuf[2] = {selSecondary, '\0'};
-      const bool selShowSecondary = !symMode && selectedRow == 0 && selSecondary != '\0';
-      GUI.drawKeyboardKey(renderer, Rect{selKeyX, selKeyY, selKeyW, selKeyH}, selPrimaryBuf, true,
-                          selShowSecondary ? selSecondaryBuf : nullptr, KeyboardKeyType::Normal, true);
+      char selPrimaryBuf[2];
+      char selSecondaryBuf[2];
+      const char* selPrimary = keyLabel(selectedRow, selectedCol, !symMode && shiftState > 0, selPrimaryBuf);
+      const char* selSecondary = keyLabel(selectedRow, selectedCol, !symMode && shiftState == 0, selSecondaryBuf);
+      const bool selShowSecondary = !symMode && selectedRow == 0 && selSecondaryBuf[0] != '\0' &&
+                                    uiControlFontId() != UI_14_FONT_ID;
+      GUI.drawKeyboardKey(renderer, Rect{selKeyX, selKeyY, selKeyW, selKeyH}, selPrimary, true,
+                          selShowSecondary ? selSecondary : nullptr, KeyboardKeyType::Normal, true);
     }
   }
 
