@@ -3,6 +3,8 @@
 #include <FsHelpers.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <Logging.h>
+#include <Memory.h>
 
 #include "InkMODSettings.h"
 #include "Epub.h"
@@ -53,7 +55,11 @@ std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path, const st
   // opening `path` directly. See EpubChapterSplitter's own header for why.
   const std::string readPath = EpubChapterSplitter::resolveReadPath(path, "/.inkmod");
 
-  auto epub = std::unique_ptr<Epub>(new Epub(readPath, "/.inkmod"));
+  auto epub = makeUniqueNoThrow<Epub>(readPath, "/.inkmod");
+  if (!epub) {
+    LOG_ERR("READER", "OOM: could not allocate EPUB reader");
+    return nullptr;
+  }
   if (epub->load(true, SETTINGS.embeddedStyle == 0, onProgress)) {
     return epub;
   }
@@ -68,7 +74,11 @@ std::unique_ptr<Xtc> ReaderActivity::loadXtc(const std::string& path) {
     return nullptr;
   }
 
-  auto xtc = std::unique_ptr<Xtc>(new Xtc(path, "/.inkmod"));
+  auto xtc = makeUniqueNoThrow<Xtc>(path, "/.inkmod");
+  if (!xtc) {
+    LOG_ERR("READER", "OOM: could not allocate XTC reader");
+    return nullptr;
+  }
   if (xtc->load()) {
     return xtc;
   }
@@ -83,7 +93,11 @@ std::unique_ptr<Txt> ReaderActivity::loadTxt(const std::string& path) {
     return nullptr;
   }
 
-  auto txt = std::unique_ptr<Txt>(new Txt(path, "/.inkmod"));
+  auto txt = makeUniqueNoThrow<Txt>(path, "/.inkmod");
+  if (!txt) {
+    LOG_ERR("READER", "OOM: could not allocate TXT reader");
+    return nullptr;
+  }
   if (txt->load()) {
     return txt;
   }

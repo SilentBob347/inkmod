@@ -152,6 +152,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   // passes; on first view this just moves the one-time decode to the BW pass.
   FontCacheManager* fcm = renderer.getFontCacheManager();
   if (fcm && fcm->isScanning()) return;
+  if (unavailableThisSection) return;
 
   LOG_DBG("IMG", "Rendering image at %d,%d: %s (%dx%d)", x, y, imagePath.c_str(), width, height);
 
@@ -202,6 +203,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   FsFile file;
   if (!Storage.openFileForRead("IMG", imagePath, file)) {
     LOG_ERR("IMG", "Image file not found: %s", imagePath.c_str());
+    unavailableThisSection = true;
     return;
   }
   size_t fileSize = file.size();
@@ -209,6 +211,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
 
   if (fileSize == 0) {
     LOG_ERR("IMG", "Image file is empty: %s", imagePath.c_str());
+    unavailableThisSection = true;
     return;
   }
 
@@ -230,6 +233,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(imagePath);
   if (!decoder) {
     LOG_ERR("IMG", "No decoder found for image: %s", imagePath.c_str());
+    unavailableThisSection = true;
     return;
   }
 
@@ -238,6 +242,7 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   bool success = decoder->decodeToFramebuffer(imagePath, renderer, config);
   if (!success) {
     LOG_ERR("IMG", "Failed to decode image: %s", imagePath.c_str());
+    unavailableThisSection = true;
     return;
   }
 

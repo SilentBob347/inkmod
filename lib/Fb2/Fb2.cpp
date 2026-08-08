@@ -4,6 +4,7 @@
 #include <freertos/task.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstring>
 #include <limits>
@@ -15,13 +16,16 @@
 
 namespace {
 
-constexpr uint8_t PACKAGE_VERSION = 7;  // bumped: cap each virtual chapter at two images
+constexpr uint8_t PACKAGE_VERSION = 11;  // named main bodies must rebuild their NCX entries
 // A single FB2 <section> with more inline images than this gets split into
 // several virtual chapters while its SD-card index is written, so a chapter
 // that's actually opened never needs to extract more than this many images
 // at once. Real-world crash trace: 23 images in one un-split section
 // reliably tripped the reader's own low-heap image-suppression check
 // (MemoryBudget::hasHeapForEpubInlineImage) on every single one of them.
+// Keep chapters bounded without splitting too aggressively through nested
+// markup.  Images are now converted to their SD pixel cache while parsing, so
+// two per virtual chapter no longer requires two live PNG decoders later.
 constexpr uint32_t MAX_IMAGES_PER_CHAPTER = 2;
 constexpr char CACHE_MAGIC[] = "FB2IDX";  // 6 bytes, no trailing NUL written
 constexpr size_t CACHE_MAGIC_LEN = 6;
@@ -74,6 +78,12 @@ std::string lowercase(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(),
                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   return value;
+}
+
+bool isNotesBody(const std::string& name) {
+  const std::string normalized = lowercase(name);
+  return normalized == "notes" || normalized == "comments" || normalized == "footnotes" ||
+         normalized == "endnotes" || normalized == "annotations";
 }
 
 std::string normalizeImageMediaType(const std::string& value) {
@@ -154,6 +164,19 @@ bool readAndCheckCacheHeader(HalFile& in) {
     return false;
   }
   return in.read(&version, sizeof(version)) == sizeof(version) && version == PACKAGE_VERSION;
+}
+
+// Skip an on-SD variable-length field without allocating a std::string for
+// it. The 64-byte scratch buffer stays well below the reader task's stack
+// budget and prevents a large chapter title/id from fragmenting the heap.
+bool skipCacheBytes(HalFile& in, uint32_t bytes) {
+  std::array<uint8_t, 64> scratch = {};
+  while (bytes > 0) {
+    const size_t chunk = std::min<size_t>(bytes, scratch.size());
+    if (in.read(scratch.data(), chunk) != chunk) return false;
+    bytes -= static_cast<uint32_t>(chunk);
+  }
+  return true;
 }
 
 // The native parser (native/Fb2XmlReader.h) intentionally never decodes
@@ -345,6 +368,7 @@ bool transcodeToUtf8IfNeeded(std::string& path, const std::string& tempPathBase,
 constexpr int MAX_CACHED_FB2_PACKAGES = 5;
 constexpr char LRU_INDEX_FILE[] = "/.fb2_lru_index";
 constexpr char METADATA_FILE[] = "/fb2_metadata.txt";
+constexpr char ANNOTATION_FILE[] = "/fb2_annotation.txt";
 constexpr char PACKAGE_STATE_FILE[] = "/fb2_package.bin";
 constexpr char SECTIONS_INDEX_FILE[] = "/.fb2_sections.bin";
 constexpr char IMAGES_INDEX_FILE[] = "/.fb2_images.bin";
@@ -381,6 +405,59 @@ void writeLruIndex(const std::string& path, const std::vector<std::string>& keys
 // chapter-splitting - one call renders exactly one section, the same way a
 // real EPUB's single chapter file can be arbitrarily long).
 // ---------------------------------------------------------------------
+bool findIndexedImageFilename(const std::string& imageIndexPath, const std::string& wantedId, std::string& filename) {
+  HalFile imagesIn;
+  if (!Storage.openFileForRead("FB2", imageIndexPath, imagesIn) || !readAndCheckCacheHeader(imagesIn)) {
+    imagesIn.close();
+    return false;
+  }
+
+  // The FB2 image index is on SD precisely so large illustrated books don't
+  // retain every binary id in RAM. Compare ids in a fixed buffer and allocate
+  // a filename only for the one image that is actually emitted on this page.
+  std::array<char, 64> scratch{};
+  for (;;) {
+    uint16_t idLen = 0;
+    if (imagesIn.read(&idLen, sizeof(idLen)) != sizeof(idLen)) break;
+
+    bool idMatches = idLen == wantedId.size();
+    size_t consumed = 0;
+    while (consumed < idLen) {
+      const size_t chunk = std::min<size_t>(scratch.size(), idLen - consumed);
+      if (imagesIn.read(scratch.data(), chunk) != static_cast<int>(chunk)) {
+        imagesIn.close();
+        return false;
+      }
+      if (idMatches && memcmp(scratch.data(), wantedId.data() + consumed, chunk) != 0) idMatches = false;
+      consumed += chunk;
+    }
+
+    uint16_t nameLen = 0;
+    if (imagesIn.read(&nameLen, sizeof(nameLen)) != sizeof(nameLen)) break;
+    if (idMatches) {
+      // Names are generated as image_<n>.png/jpg. Treat a corrupted cache
+      // entry as missing rather than allocating an unbounded string.
+      if (nameLen == 0 || nameLen > 96) {
+        imagesIn.close();
+        return false;
+      }
+      filename.assign(nameLen, '\0');
+      const bool readOk = imagesIn.read(filename.data(), nameLen) == static_cast<int>(nameLen);
+      imagesIn.close();
+      return readOk;
+    }
+    if (nameLen && !skipCacheBytes(imagesIn, nameLen)) break;
+    uint32_t skipStart = 0;
+    uint32_t skipEnd = 0;
+    if (imagesIn.read(&skipStart, sizeof(skipStart)) != sizeof(skipStart) ||
+        imagesIn.read(&skipEnd, sizeof(skipEnd)) != sizeof(skipEnd)) {
+      break;
+    }
+  }
+  imagesIn.close();
+  return false;
+}
+
 class StreamSink : public Fb2ContentSink {
  public:
   // resolveLink(targetId) -> XHTML href to point at (e.g. "chapter_5.xhtml#fb2-...")
@@ -389,8 +466,8 @@ class StreamSink : public Fb2ContentSink {
   // point emitting an <a href=""> that goes nowhere).
   using LinkResolver = std::function<std::string(const std::string&)>;
 
-  StreamSink(Print& out, const std::vector<Fb2::ImageInfoPublic>& images, LinkResolver resolveLink = nullptr)
-      : out_(out), images_(images), resolveLink_(std::move(resolveLink)) {}
+  StreamSink(Print& out, std::string imageIndexPath, LinkResolver resolveLink = nullptr)
+      : out_(out), imageIndexPath_(std::move(imageIndexPath)), resolveLink_(std::move(resolveLink)) {}
 
   void onParagraphBegin() override { writeBytes(out_, "<p>"); }
   void onParagraphEnd() override { writeBytes(out_, "</p>"); }
@@ -417,6 +494,11 @@ class StreamSink : public Fb2ContentSink {
   void onCiteEnd() override { writeBytes(out_, "</blockquote>"); }
   void onEpigraphBegin() override { writeBytes(out_, "<blockquote class=\"epigraph\">"); }
   void onEpigraphEnd() override { writeBytes(out_, "</blockquote>"); }
+  void onTextAuthor(const std::string& text) override {
+    writeBytes(out_, "<p class=\"text-author\">");
+    writeXmlEscaped(out_, text);
+    writeBytes(out_, "</p>");
+  }
 
   void onText(const std::string& text, Fb2InlineStyle style) override {
     const auto has = [style](Fb2InlineStyle bit) {
@@ -441,11 +523,10 @@ class StreamSink : public Fb2ContentSink {
   }
 
   void onImage(const std::string& binaryId) override {
-    const auto it = std::find_if(images_.begin(), images_.end(),
-                                  [&](const Fb2::ImageInfoPublic& img) { return img.id == binaryId; });
-    if (it == images_.end()) return;
+    std::string filename;
+    if (!findIndexedImageFilename(imageIndexPath_, binaryId, filename)) return;
     writeBytes(out_, "<img src=\"../images/");
-    writeXmlEscaped(out_, it->filename, true);
+    writeXmlEscaped(out_, filename, true);
     writeBytes(out_, "\" alt=\"\"/>");
   }
 
@@ -488,7 +569,10 @@ class StreamSink : public Fb2ContentSink {
 
  private:
   Print& out_;
-  const std::vector<Fb2::ImageInfoPublic>& images_;
+  // Own this path. renderChapterOnDemand() passes a concatenated temporary;
+  // retaining a reference to it made image lookups read arbitrary bytes as a
+  // path after the constructor returned.
+  std::string imageIndexPath_;
   LinkResolver resolveLink_;
   bool linkWasEmitted_ = false;  // whether onLinkBegin actually wrote an <a> for the currently-open link
 };
@@ -504,49 +588,116 @@ class StreamSink : public Fb2ContentSink {
 class RangeFilterSink : public Fb2ContentSink {
  public:
   RangeFilterSink(Fb2ContentSink& inner, uint32_t rangeStart, uint32_t rangeEnd)
-      : inner_(inner), rangeStart_(rangeStart), rangeEnd_(rangeEnd) {}
+      : inner_(inner), rangeStart_(rangeStart), rangeEnd_(rangeEnd), emitting_(rangeStart == 0) {}
 
-  void onParagraphBegin() override { if (active()) inner_.onParagraphBegin(); }
-  void onParagraphEnd() override { if (active()) inner_.onParagraphEnd(); }
-  void onSubtitle(const std::string& text) override { if (active()) inner_.onSubtitle(text); }
-  void onEmptyLine() override { if (active()) inner_.onEmptyLine(); }
-  void onHorizontalRule() override { if (active()) inner_.onHorizontalRule(); }
-  void onPoemBegin() override { if (active()) inner_.onPoemBegin(); }
-  void onPoemEnd() override { if (active()) inner_.onPoemEnd(); }
-  void onStanzaBegin() override { if (active()) inner_.onStanzaBegin(); }
-  void onStanzaEnd() override { if (active()) inner_.onStanzaEnd(); }
-  void onVerseLine(const std::string& text) override { if (active()) inner_.onVerseLine(text); }
-  void onCiteBegin() override { if (active()) inner_.onCiteBegin(); }
-  void onCiteEnd() override { if (active()) inner_.onCiteEnd(); }
-  void onEpigraphBegin() override { if (active()) inner_.onEpigraphBegin(); }
-  void onEpigraphEnd() override { if (active()) inner_.onEpigraphEnd(); }
+  void onParagraphBegin() override { beginScope(Scope::Paragraph); }
+  void onParagraphEnd() override { endScope(Scope::Paragraph); }
+  void onSubtitle(const std::string& text) override { if (emitting_) inner_.onSubtitle(text); }
+  void onEmptyLine() override { if (emitting_) inner_.onEmptyLine(); }
+  void onHorizontalRule() override { if (emitting_) inner_.onHorizontalRule(); }
+  void onPoemBegin() override { beginScope(Scope::Poem); }
+  void onPoemEnd() override { endScope(Scope::Poem); }
+  void onStanzaBegin() override { beginScope(Scope::Stanza); }
+  void onStanzaEnd() override { endScope(Scope::Stanza); }
+  void onVerseLine(const std::string& text) override { if (emitting_) inner_.onVerseLine(text); }
+  void onCiteBegin() override { beginScope(Scope::Cite); }
+  void onCiteEnd() override { endScope(Scope::Cite); }
+  void onEpigraphBegin() override { beginScope(Scope::Epigraph); }
+  void onEpigraphEnd() override { endScope(Scope::Epigraph); }
+  void onTextAuthor(const std::string& text) override { if (emitting_) inner_.onTextAuthor(text); }
   void onText(const std::string& text, Fb2InlineStyle style) override {
-    if (active()) inner_.onText(text, style);
+    if (emitting_) inner_.onText(text, style);
   }
   void onImage(const std::string& binaryId) override {
-    // Checked against the count *before* this image, then incremented
-    // after: the range-ending image itself belongs to the next chunk, not
-    // this one, matching how [start, end) slices normally work.
-    if (active()) inner_.onImage(binaryId);
+    // A split can happen in the middle of a paragraph, quote or table.
+    // Recreate every currently-open wrapper before the first image in this
+    // slice and close them immediately after the last one.  The previous
+    // filter merely dropped those callbacks, producing malformed XHTML
+    // (<p> without </p>, etc.) and a later XML parser failure.
+    if (!emitting_ && imageOrdinal_ == rangeStart_) {
+      reopenScopes();
+      emitting_ = true;
+    }
+    if (emitting_) inner_.onImage(binaryId);
     ++imageOrdinal_;
+    if (emitting_ && imageOrdinal_ == rangeEnd_) {
+      closeScopes();
+      emitting_ = false;
+      linkEmitted_ = false;
+    }
   }
-  void onLinkBegin(const std::string& targetId) override { if (active()) inner_.onLinkBegin(targetId); }
-  void onLinkEnd() override { if (active()) inner_.onLinkEnd(); }
-  void onTableBegin() override { if (active()) inner_.onTableBegin(); }
-  void onTableEnd() override { if (active()) inner_.onTableEnd(); }
-  void onTableRowBegin() override { if (active()) inner_.onTableRowBegin(); }
-  void onTableRowEnd() override { if (active()) inner_.onTableRowEnd(); }
+  void onLinkBegin(const std::string& targetId) override {
+    linkEmitted_ = emitting_;
+    if (linkEmitted_) inner_.onLinkBegin(targetId);
+  }
+  void onLinkEnd() override {
+    if (linkEmitted_) inner_.onLinkEnd();
+    linkEmitted_ = false;
+  }
+  void onTableBegin() override { beginScope(Scope::Table); }
+  void onTableEnd() override { endScope(Scope::Table); }
+  void onTableRowBegin() override { beginScope(Scope::TableRow); }
+  void onTableRowEnd() override { endScope(Scope::TableRow); }
   void onTableCell(const std::string& text, const Fb2TableCellAttrs& attrs) override {
-    if (active()) inner_.onTableCell(text, attrs);
+    if (emitting_) inner_.onTableCell(text, attrs);
   }
 
  private:
-  bool active() const { return imageOrdinal_ >= rangeStart_ && imageOrdinal_ < rangeEnd_; }
+  enum class Scope : uint8_t { Paragraph, Poem, Stanza, Cite, Epigraph, Table, TableRow };
+  static constexpr size_t MAX_SCOPES = 16;
+
+  void beginScope(Scope scope) {
+    if (scopeCount_ < MAX_SCOPES) scopes_[scopeCount_++] = scope;
+    if (emitting_) openScope(scope);
+  }
+
+  void endScope(Scope scope) {
+    if (emitting_) closeScope(scope);
+    // FB2 input is well-formed, but tolerate an unexpected end tag without
+    // underflowing the fixed stack used on this RAM-constrained target.
+    if (scopeCount_ > 0) --scopeCount_;
+  }
+
+  void reopenScopes() {
+    for (size_t i = 0; i < scopeCount_; ++i) openScope(scopes_[i]);
+  }
+
+  void closeScopes() {
+    while (scopeCount_ > 0) closeScope(scopes_[--scopeCount_]);
+  }
+
+  void openScope(Scope scope) {
+    switch (scope) {
+      case Scope::Paragraph: inner_.onParagraphBegin(); break;
+      case Scope::Poem: inner_.onPoemBegin(); break;
+      case Scope::Stanza: inner_.onStanzaBegin(); break;
+      case Scope::Cite: inner_.onCiteBegin(); break;
+      case Scope::Epigraph: inner_.onEpigraphBegin(); break;
+      case Scope::Table: inner_.onTableBegin(); break;
+      case Scope::TableRow: inner_.onTableRowBegin(); break;
+    }
+  }
+
+  void closeScope(Scope scope) {
+    switch (scope) {
+      case Scope::Paragraph: inner_.onParagraphEnd(); break;
+      case Scope::Poem: inner_.onPoemEnd(); break;
+      case Scope::Stanza: inner_.onStanzaEnd(); break;
+      case Scope::Cite: inner_.onCiteEnd(); break;
+      case Scope::Epigraph: inner_.onEpigraphEnd(); break;
+      case Scope::Table: inner_.onTableEnd(); break;
+      case Scope::TableRow: inner_.onTableRowEnd(); break;
+    }
+  }
 
   Fb2ContentSink& inner_;
   uint32_t rangeStart_;
   uint32_t rangeEnd_;
   uint32_t imageOrdinal_ = 0;
+  Scope scopes_[MAX_SCOPES]{};
+  size_t scopeCount_ = 0;
+  bool emitting_ = false;
+  bool linkEmitted_ = false;
 };
 
 }  // namespace
@@ -768,6 +919,7 @@ bool Fb2::load(const ProgressFn& onProgress) {
     loaded = true;
     LOG_INF("FB2", "Loaded cached FB2 package: %d chapters", chapterCount);
     maintainCacheBudget();
+    if (onProgress) onProgress(100);
     return true;
   }
 
@@ -788,6 +940,10 @@ bool Fb2::load(const ProgressFn& onProgress) {
   loaded = true;
   LOG_INF("FB2", "Indexed FB2: %d chapters, %zu images (chapters render on demand)", chapterCount, images.size());
   maintainCacheBudget();
+  // The popup remains visible until this function returns. Mark it complete
+  // only after metadata writes and cache-budget maintenance are done, rather
+  // than leaving a finished FB2 preparation visually stuck at 95%.
+  if (onProgress) onProgress(100);
   return true;
 }
 
@@ -837,6 +993,15 @@ bool Fb2::convertToPackage(const ProgressFn& onProgress) {
   }
   if (language.empty()) language = "und";
   coverImageId = scan.metadata.coverBinaryId;
+
+  if (!scan.metadata.annotationText.empty()) {
+    HalFile annotation;
+    if (!Storage.openFileForWrite("FB2", cachePath + ANNOTATION_FILE, annotation)) return fail();
+    const bool annotationOk =
+        annotation.write(scan.metadata.annotationText.data(), scan.metadata.annotationText.size()) == scan.metadata.annotationText.size();
+    annotation.close();
+    if (!annotationOk) return fail();
+  }
 
   {
     const bool imagesOk = persistImageIndex(scan);
@@ -1089,15 +1254,9 @@ uint32_t Fb2::getApproxChapterSize(const std::string& packageCachePath, int chap
         sectionsIn.read(&idLen, sizeof(idLen)) != sizeof(idLen)) {
       break;
     }
-    if (idLen) {
-      std::string skip(idLen, '\0');
-      if (sectionsIn.read(skip.data(), idLen) != idLen) break;
-    }
+    if (idLen && !skipCacheBytes(sectionsIn, idLen)) break;
     if (sectionsIn.read(&titleLen, sizeof(titleLen)) != sizeof(titleLen)) break;
-    if (titleLen) {
-      std::string skip(titleLen, '\0');
-      if (sectionsIn.read(skip.data(), titleLen) != titleLen) break;
-    }
+    if (titleLen && !skipCacheBytes(sectionsIn, titleLen)) break;
     if (sectionsIn.read(&approxTextBytes, sizeof(approxTextBytes)) != sizeof(approxTextBytes)) break;
     uint32_t skipRangeStart = 0, skipRangeEnd = 0;
     if (sectionsIn.read(&skipRangeStart, sizeof(skipRangeStart)) != sizeof(skipRangeStart) ||
@@ -1113,21 +1272,24 @@ uint32_t Fb2::getApproxChapterSize(const std::string& packageCachePath, int chap
   return result;
 }
 
-// Reads the whole persisted section index once and returns a resolver
-// (FB2 section id -> XHTML href) for StreamSink's onLinkBegin(), so an
-// in-book link like <a l:href="#n1"> - typically a footnote reference -
-// points at the right chapter file and anchor instead of rendering as
-// dead plain text. Built fresh per chapter render rather than cached:
-// section/chapter counts are small (tens to a few hundred), so one linear
-// pass costs little, and it avoids holding this alongside everything else
-// already read for the chapter being rendered.
+// Resolves an FB2 section id only when a link is actually emitted.  Keeping a
+// complete id-to-chapter vector per rendered chapter used many short-lived
+// strings and fragmented the C3 heap in illustrated, multi-section books.
+// The section index is already on SD, so a fixed-buffer scan trades a rare
+// link lookup for predictable RAM use.
 StreamSink::LinkResolver buildLinkResolver(const std::string& packageCachePath) {
-  auto idToChapter = std::make_shared<std::vector<std::pair<std::string, int>>>();
+  const std::string sectionsPath = packageCachePath + SECTIONS_INDEX_FILE;
+  return [sectionsPath](const std::string& targetId) -> std::string {
+    if (targetId.empty()) return {};
 
-  HalFile sectionsIn;
-  if (Storage.openFileForRead("FB2", packageCachePath + SECTIONS_INDEX_FILE, sectionsIn) &&
-      readAndCheckCacheHeader(sectionsIn)) {
-    for (int i = 0;; ++i) {
+    HalFile sectionsIn;
+    if (!Storage.openFileForRead("FB2", sectionsPath, sectionsIn) || !readAndCheckCacheHeader(sectionsIn)) {
+      sectionsIn.close();
+      return {};
+    }
+
+    std::array<char, 64> scratch{};
+    for (int chapterIndex = 0;; ++chapterIndex) {
       uint8_t level = 0;
       uint32_t innerStartOffset = 0;
       uint16_t idLen = 0, titleLen = 0;
@@ -1136,33 +1298,50 @@ StreamSink::LinkResolver buildLinkResolver(const std::string& packageCachePath) 
           sectionsIn.read(&idLen, sizeof(idLen)) != sizeof(idLen)) {
         break;
       }
-      std::string id(idLen, '\0');
-      if (idLen && sectionsIn.read(id.data(), idLen) != idLen) break;
+
+      bool isTarget = idLen == targetId.size();
+      uint16_t remaining = idLen;
+      size_t targetOffset = 0;
+      while (remaining > 0) {
+        const size_t chunkSize = std::min<size_t>(remaining, scratch.size());
+        if (sectionsIn.read(scratch.data(), chunkSize) != chunkSize) {
+          remaining = UINT16_MAX;
+          break;
+        }
+        if (isTarget && memcmp(scratch.data(), targetId.data() + targetOffset, chunkSize) != 0) {
+          isTarget = false;
+        }
+        targetOffset += chunkSize;
+        remaining -= static_cast<uint16_t>(chunkSize);
+      }
+      if (remaining != 0) break;
+
       if (sectionsIn.read(&titleLen, sizeof(titleLen)) != sizeof(titleLen)) break;
-      std::string skipTitle(titleLen, '\0');
-      if (titleLen && sectionsIn.read(skipTitle.data(), titleLen) != titleLen) break;
+      remaining = titleLen;
+      while (remaining > 0) {
+        const size_t chunkSize = std::min<size_t>(remaining, scratch.size());
+        if (sectionsIn.read(scratch.data(), chunkSize) != chunkSize) {
+          remaining = UINT16_MAX;
+          break;
+        }
+        remaining -= static_cast<uint16_t>(chunkSize);
+      }
+      if (remaining != 0) break;
+
       uint32_t skipApprox = 0, skipRangeStart = 0, skipRangeEnd = 0;
       if (sectionsIn.read(&skipApprox, sizeof(skipApprox)) != sizeof(skipApprox) ||
           sectionsIn.read(&skipRangeStart, sizeof(skipRangeStart)) != sizeof(skipRangeStart) ||
           sectionsIn.read(&skipRangeEnd, sizeof(skipRangeEnd)) != sizeof(skipRangeEnd)) {
         break;
       }
-      if (!id.empty()) idToChapter->emplace_back(std::move(id), i);
+      if (isTarget) {
+        sectionsIn.close();
+        const uint64_t anchor = fnvHash64(targetId.data(), targetId.size());
+        return chapterHref(chapterIndex) + "#" + anchorName(anchor);
+      }
     }
     sectionsIn.close();
-  }
-
-  return [idToChapter](const std::string& targetId) -> std::string {
-    for (const auto& [id, chapterIndex] : *idToChapter) {
-      if (id != targetId) continue;
-      // Matches the anchor renderChapterOnDemand() gives this same section
-      // when it's the one being rendered (see its own anchor computation) -
-      // has to, since that's the id actually written into that chapter's
-      // <section id="..."> tag.
-      const uint64_t anchor = fnvHash64(id.data(), id.size());
-      return chapterHref(chapterIndex) + "#" + anchorName(anchor);
-    }
-    return {};  // unresolvable: caller renders the link as plain text instead
+    return {};
   };
 }
 
@@ -1220,30 +1399,6 @@ bool Fb2::renderChapterOnDemand(const std::string& packageCachePath, int chapter
   if (!found) return false;
   normalizeText(title);
 
-  std::vector<ImageInfoPublic> images;
-  {
-    HalFile imagesIn;
-    if (Storage.openFileForRead("FB2", packageCachePath + IMAGES_INDEX_FILE, imagesIn) && readAndCheckCacheHeader(imagesIn)) {
-      for (;;) {
-        uint16_t imgIdLen = 0, nameLen = 0;
-        if (imagesIn.read(&imgIdLen, sizeof(imgIdLen)) != sizeof(imgIdLen)) break;
-        ImageInfoPublic image;
-        image.id.assign(imgIdLen, '\0');
-        if (imgIdLen && imagesIn.read(image.id.data(), imgIdLen) != imgIdLen) break;
-        if (imagesIn.read(&nameLen, sizeof(nameLen)) != sizeof(nameLen)) break;
-        image.filename.assign(nameLen, '\0');
-        if (nameLen && imagesIn.read(image.filename.data(), nameLen) != nameLen) break;
-        uint32_t skipStart = 0, skipEnd = 0;
-        if (imagesIn.read(&skipStart, sizeof(skipStart)) != sizeof(skipStart) ||
-            imagesIn.read(&skipEnd, sizeof(skipEnd)) != sizeof(skipEnd)) {
-          break;
-        }
-        images.push_back(std::move(image));
-      }
-      imagesIn.close();
-    }
-  }
-
   HalFile source;
   if (!Storage.openFileForRead("FB2", sourcePath, source)) return false;
   FsFileReader reader(source);
@@ -1266,11 +1421,47 @@ bool Fb2::renderChapterOnDemand(const std::string& packageCachePath, int chapter
     writeBytes(out, "</h" + std::to_string(heading) + ">");
   }
 
+  // An FB2 annotation belongs to <description>, not to a body section.  It
+  // is persisted during indexing and streamed only into the first chapter;
+  // this keeps the original source closed while pagination is running and
+  // bounds temporary storage to a small fixed buffer.
+  if (chapterIndex == 0) {
+    HalFile annotation;
+    if (Storage.openFileForRead("FB2", packageCachePath + ANNOTATION_FILE, annotation)) {
+      std::array<char, 128> chunk = {};
+      bool emitted = false;
+      bool paragraphOpen = false;
+      while (true) {
+        const int bytesRead = annotation.read(chunk.data(), chunk.size());
+        if (bytesRead <= 0) break;
+        for (int i = 0; i < bytesRead; ++i) {
+          const char c = chunk[static_cast<size_t>(i)];
+          if (c == '\r') continue;
+          if (c == '\n') {
+            if (paragraphOpen) writeBytes(out, "</p>");
+            paragraphOpen = false;
+            continue;
+          }
+          if (!paragraphOpen) {
+            if (!emitted) writeBytes(out, "<div class=\"annotation\">");
+            writeBytes(out, "<p>");
+            emitted = true;
+            paragraphOpen = true;
+          }
+          writeXmlEscaped(out, &c, 1);
+        }
+      }
+      if (paragraphOpen) writeBytes(out, "</p>");
+      if (emitted) writeBytes(out, "</div>");
+      annotation.close();
+    }
+  }
+
   Fb2SectionIndexEntry section;  // only innerStartOffset is read by renderSection()
   section.innerStartOffset = innerStartOffset;
   section.level = level;
   Fb2Parser parser;
-  StreamSink sink(out, images, buildLinkResolver(packageCachePath));
+  StreamSink sink(out, packageCachePath + IMAGES_INDEX_FILE, buildLinkResolver(packageCachePath));
   RangeFilterSink rangeSink(sink, imageRangeStart, imageRangeEnd);
   const bool renderOk = parser.renderSection(reader, section, rangeSink);
 
@@ -1294,7 +1485,7 @@ bool Fb2::writeStyleFile() const {
       "h1, h2, h3, h4, h5, h6 { text-align: center; font-weight: bold; margin: 1em 0 0.7em 0; }\n"
       ".subtitle { text-align: center; font-style: italic; }\n"
       "p { margin: 0.25em 0; }\n"
-      ".epigraph, .cite { margin: 0.7em 1.5em; font-style: italic; }\n"
+      ".epigraph, .cite { margin: 0.7em 1.5em; font-style: italic; text-indent: 0; }\n"
       ".poem { margin: 0.7em 1em; }\n"
       ".v { text-indent: 0; text-align: left; margin: 0; }\n"
       ".text-author { text-align: right; font-style: italic; text-indent: 0; }\n"
@@ -1378,13 +1569,11 @@ bool Fb2::writeNcxFile(const Fb2ScanResult& scan) const {
     sectionFirstChapterIndex +=
         static_cast<int>(std::max<uint32_t>(1, (section.imageRefCount + MAX_IMAGES_PER_CHAPTER - 1) /
                                                 MAX_IMAGES_PER_CHAPTER));
-    // Footnotes/comments (<body name="notes">, "comments", etc.) are only
-    // ever reached via an in-text link (see buildLinkResolver()) - they
-    // aren't part of the normal reading flow, so they don't belong in the
-    // table of contents either. The main (unnamed) body is bodyIndex 0's
-    // empty name; anything else gets skipped here.
+    // Footnotes/comments are only reached via in-text links. A non-empty body
+    // name is not itself a footnote marker: multi-book FB2 collections often
+    // name every main body after its volume, and those chapters belong in TOC.
     if (section.bodyIndex >= 0 && static_cast<size_t>(section.bodyIndex) < scan.bodies.size() &&
-        !scan.bodies[section.bodyIndex].name.empty()) {
+        isNotesBody(scan.bodies[section.bodyIndex].name)) {
       continue;
     }
     std::string sectionTitle = section.title;

@@ -177,6 +177,12 @@ void BookReadingStats::recordReadingSpan(const ReadingStatsDateTime& localStart,
 }
 
 void BookReadingStats::formatDuration(uint32_t seconds, char* buf, size_t len) {
+  if (seconds == 0) {
+    // A missing bucket is not a sub-minute reading session.  Showing it as
+    // "< 1 min" made every unused time-of-day and weekday row look populated.
+    snprintf(buf, len, "0 %s", tr(STR_UNIT_MIN_SHORT));
+    return;
+  }
   if (seconds < 60) {
     snprintf(buf, len, "%s", tr(STR_STATS_LESS_THAN_MIN));
     return;

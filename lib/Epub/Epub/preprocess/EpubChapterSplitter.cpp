@@ -8,7 +8,7 @@
 #include <cstring>
 #include <utility>
 
-namespace EpubChapterSplitter {
+namespace EpubStreamingChapterSplitter {
 
 namespace {
 
@@ -255,4 +255,4 @@ std::vector<std::string> splitToFragments(const std::string& sourcePath, const s
   return fragmentNames;
 }
 
-}  // namespace EpubChapterSplitter
+}  // namespace EpubStreamingChapterSplitter

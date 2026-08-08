@@ -264,7 +264,10 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
       // chapter file only produces an SD error and delays the loading popup.
       itemSize = Fb2::getApproxChapterSize(epubPath.substr(0, epubPath.size() - kPackageSuffixLen), i);
       if (itemSize == 0) {
-        LOG_ERR("BMC", "Could not estimate FB2 spine item %d: %s", i, spineEntry.href.c_str());
+        // Image-only or deliberately empty FB2 sections have no text-byte
+        // estimate. They are valid on-demand chapters, not a metadata-cache
+        // failure, so keep this diagnostic out of normal error logs.
+        LOG_DBG("BMC", "FB2 spine item %d has no text-size estimate: %s", i, spineEntry.href.c_str());
       }
     } else if (unpackedPackage) {
       // Unpacked (FB2-converted, or a real unpacked EPUB) package: items

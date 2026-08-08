@@ -11,7 +11,8 @@
 #include <unordered_map>
 
 #include "EpubOpfLite.h"
-#include "HtmlBodySplitter.h"
+#include "Epub/preprocess/EpubChapterSplitter.h"
+#include "Epub/preprocess/EpubOpfRewriter.h"
 
 namespace {
 
@@ -24,10 +25,16 @@ namespace {
 // "would otherwise hang" describe exactly the same set of books.
 constexpr size_t MAX_SANE_SPINE_ITEM_BYTES = 1024 * 1024;
 constexpr size_t TARGET_CHUNK_BYTES = 250 * 1024;
-// Splitting is optional.  Its first pass uses temporary ZIP indexes and
-// strings, so it must not start on a no-PSRAM X4 with fragmented heap.
-constexpr uint32_t SPLITTER_MIN_FREE_HEAP = 160U * 1024U;
-constexpr uint32_t SPLITTER_MIN_MAX_ALLOC = 128U * 1024U;
+// Inspecting a large OPF needs both the temporary decompression buffer and a
+// std::string copy.  The splitter is optional, so do not let a catalogue with
+// hundreds of already-small spine files exhaust a fragmented ESP32 heap just
+// to discover that no split is required.
+constexpr size_t MAX_OPF_BYTES_FOR_OPTIONAL_SPLIT = 48 * 1024;
+// The splitter streams the oversized XHTML from SD in 4 KiB blocks.  It no
+// longer needs a multi-megabyte allocation; keep only enough headroom for its
+// small ZIP indexes, XML parser and page renderer.
+constexpr uint32_t SPLITTER_MIN_FREE_HEAP = 112U * 1024U;
+constexpr uint32_t SPLITTER_MIN_MAX_ALLOC = 64U * 1024U;
 constexpr char CACHE_MAGIC[] = "EPUBSPLIT";
 constexpr size_t CACHE_MAGIC_LEN = 9;
 constexpr uint8_t CACHE_VERSION = 1;
@@ -87,10 +94,19 @@ bool writeWholeFile(const std::string& path, const std::string& content) {
 // any split-specific files get overwritten on top.
 bool unpackWholeZip(const std::string& originalPath, const std::string& destDir) {
   ZipFile zip(originalPath);
+  // enumerateFilePaths keeps the ZIP's central-directory file handle open.
+  // Calling readFileToStream() inside its callback seeks that same handle to
+  // payload data, so enumeration silently stopped after the first entry.  Keep
+  // the names first; each later stream read then opens/seeks the archive cleanly.
+  std::vector<std::string> paths;
+  if (!zip.enumerateFilePaths([&](std::string_view path) {
+        if (!path.empty() && path.back() != '/') paths.emplace_back(path);
+      })) {
+    return false;
+  }
   bool allOk = true;
-  zip.enumerateFilePaths([&](std::string_view path) {
-    if (path.empty() || path.back() == '/') return;  // directory entry, nothing to copy
-    const std::string destPath = destDir + "/" + std::string(path);
+  for (const std::string& path : paths) {
+    const std::string destPath = destDir + "/" + path;
     const size_t lastSlash = destPath.find_last_of('/');
     if (lastSlash != std::string::npos) {
       Storage.mkdir(destPath.substr(0, lastSlash).c_str(), true);
@@ -98,12 +114,12 @@ bool unpackWholeZip(const std::string& originalPath, const std::string& destDir)
     HalFile out;
     if (!Storage.openFileForWrite("EPS", destPath, out)) {
       allOk = false;
-      return;
+      continue;
     }
-    const bool streamOk = zip.readFileToStream(std::string(path).c_str(), out, 4096);
+    const bool streamOk = zip.readFileToStream(path.c_str(), out, 4096);
     out.close();
     if (!streamOk) allOk = false;
-  });
+  }
   return allOk;
 }
 
@@ -220,6 +236,12 @@ std::string resolveReadPathForZip(const std::string& originalPath, const std::st
   ZipFile zip(originalPath);
   std::string opfPath;
   if (!findContentOpfPath(zip, opfPath)) return originalPath;
+  size_t opfSize = 0;
+  if (!zip.getInflatedFileSize(opfPath.c_str(), &opfSize)) return originalPath;
+  if (opfSize > MAX_OPF_BYTES_FOR_OPTIONAL_SPLIT) {
+    LOG_INF("EPS", "Skipping optional EPUB split: content.opf is %u bytes", static_cast<unsigned>(opfSize));
+    return originalPath;
+  }
   std::string opfContent;
   if (!readWholeFile(zip, opfPath, opfContent)) return originalPath;
   EpubOpfLite opf;
@@ -261,15 +283,6 @@ std::string resolveReadPathForZip(const std::string& originalPath, const std::st
   }
   if (oversizedSpineIndex < 0) return originalPath;  // the common case: nothing here needs splitting
 
-  // A regular EPUB only reaches the return above. Keep these two maps out of
-  // that path: a book with hundreds of small chapters otherwise duplicates
-  // every OPF id and path merely to prove that no split is needed.
-  std::unordered_map<std::string, std::string> idToHref;
-  idToHref.reserve(opf.manifest.size());
-  for (const auto& item : opf.manifest) {
-    idToHref.emplace(item.id, resolveHref(opfDir, item.href));
-  }
-
   const auto oversizedItem = findManifestItem(opf.spineIdrefs[oversizedSpineIndex]);
   if (!oversizedItem) return originalPath;
   const std::string oversizedSpinePath = resolveHref(opfDir, oversizedItem->href);
@@ -286,189 +299,57 @@ std::string resolveReadPathForZip(const std::string& originalPath, const std::st
   }
 
   const std::string oversizedHref = oversizedSpinePath;
-  std::string oversizedContent;
-  {
-    HalFile f;
-    if (!Storage.openFileForRead("EPS", packagePath + "/" + oversizedHref, f)) {
-      Storage.removeDir(cachePath.c_str());
-      return originalPath;
-    }
-    const size_t sz = f.fileSize();
-    oversizedContent.resize(sz);
-    f.read(oversizedContent.data(), sz);
-    f.close();
-  }
-
-  const size_t headOpen = oversizedContent.find("<head");
-  const size_t headClose = oversizedContent.find("</head>");
-  const size_t bodyOpenTag = oversizedContent.find("<body");
-  const size_t bodyOpenEnd =
-      bodyOpenTag == std::string::npos ? std::string::npos : oversizedContent.find('>', bodyOpenTag);
-  const size_t bodyClose = oversizedContent.find("</body>");
-  if (headOpen == std::string::npos || headClose == std::string::npos || bodyOpenEnd == std::string::npos ||
-      bodyClose == std::string::npos || bodyClose <= bodyOpenEnd) {
-    LOG_ERR("EPS", "Could not find <head>/<body> in oversized spine item - leaving book unsplit");
-    Storage.removeDir(cachePath.c_str());
-    return originalPath;
-  }
-  const std::string headContent = oversizedContent.substr(headOpen, headClose + 7 - headOpen);
-  const std::string bodyContent = oversizedContent.substr(bodyOpenEnd + 1, bodyClose - bodyOpenEnd - 1);
-
-  std::vector<HtmlBodySplitter::Chunk> chunks;
-  if (!HtmlBodySplitter::split(bodyContent, TARGET_CHUNK_BYTES, chunks) || chunks.size() < 2) {
-    LOG_ERR("EPS", "Oversized spine item did not yield a usable split - leaving book unsplit");
-    Storage.removeDir(cachePath.c_str());
-    return originalPath;
-  }
-
-  std::vector<std::string> chunkNames;
-  std::unordered_map<std::string, size_t> idToChunk;
-  for (size_t i = 0; i < chunks.size(); ++i) {
-    chunkNames.push_back(chunkFileName(basenameOf(oversizedHref), i));
-    for (const auto& id : chunks[i].idsInChunk) idToChunk[id] = i;
-  }
-
   const std::string oversizedDir = dirnameWithSlash(oversizedHref);
-  bool writeFailed = false;
-  for (size_t i = 0; i < chunks.size() && !writeFailed; ++i) {
-    std::string doc = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<html xmlns=\"http://www.w3.org/1999/xhtml\">";
-    doc += headContent;
-    doc += "<body>";
-    doc += chunks[i].html;
-    doc += "</body></html>\n";
-    writeFailed = !writeWholeFile(packagePath + "/" + oversizedDir + chunkNames[i], doc);
-  }
-  if (writeFailed) {
+  const std::string sourcePath = packagePath + "/" + oversizedHref;
+  std::string baseName = basenameOf(oversizedHref);
+  const size_t extension = baseName.find_last_of('.');
+  if (extension != std::string::npos) baseName.resize(extension);
+
+  // The split scanner reads and writes 4 KiB blocks. It keeps only boundary
+  // offsets and ids in RAM, never the multi-megabyte XHTML source itself.
+  std::unordered_map<std::string, int> anchorFragments;
+  auto chunkNames = EpubStreamingChapterSplitter::splitToFragments(
+      sourcePath, packagePath + "/" + oversizedDir, baseName, &anchorFragments);
+  if (chunkNames.size() < 2) {
+    LOG_ERR("EPS", "Oversized spine item did not yield a usable streaming split");
     Storage.removeDir(cachePath.c_str());
     return originalPath;
   }
-  Storage.remove((packagePath + "/" + oversizedHref).c_str());
 
-  // Rewrite every other XHTML/HTML manifest item, and the new split parts
-  // themselves, for cross-references into the file that just moved.
-  for (const auto& item : opf.manifest) {
-    if (item.mediaType.find("html") == std::string::npos) continue;
-    const std::string itemZipPath = resolveHref(opfDir, item.href);
-    if (itemZipPath == oversizedHref) continue;  // that file no longer exists; its replacements are handled below
-    HalFile f;
-    if (!Storage.openFileForRead("EPS", packagePath + "/" + itemZipPath, f)) continue;
-    const size_t sz = f.fileSize();
-    std::string content(sz, '\0');
-    f.read(content.data(), sz);
-    f.close();
-    const std::string before = content;
-    rewriteLinksToSplitFile(content, basenameOf(oversizedHref), idToChunk, chunkNames);
-    if (content != before) writeWholeFile(packagePath + "/" + itemZipPath, content);
-  }
-  for (size_t i = 0; i < chunks.size(); ++i) {
-    const std::string chunkPath = packagePath + "/" + oversizedDir + chunkNames[i];
-    HalFile f;
-    if (!Storage.openFileForRead("EPS", chunkPath, f)) continue;
-    const size_t sz = f.fileSize();
-    std::string content(sz, '\0');
-    f.read(content.data(), sz);
-    f.close();
-    const std::string before = content;
-    rewriteLinksToSplitFile(content, basenameOf(oversizedHref), idToChunk, chunkNames);
-    if (content != before) writeWholeFile(chunkPath, content);
+  std::vector<std::string> chunkHrefs;
+  chunkHrefs.reserve(chunkNames.size());
+  for (const auto& name : chunkNames) chunkHrefs.push_back(dirnameWithSlash(oversizedItem->href) + name);
+
+  std::string originalItemId;
+  const std::string rewrittenOpf =
+      EpubOpfRewriter::rewriteForSplitItem(opfContent, oversizedItem->href, chunkHrefs, &originalItemId);
+  if (rewrittenOpf.empty() || !writeWholeFile(packagePath + "/" + opfPath, rewrittenOpf)) {
+    LOG_ERR("EPS", "Could not rewrite content.opf for streaming split");
+    Storage.removeDir(cachePath.c_str());
+    return originalPath;
   }
 
-  // Rewrite content.opf: regenerate the whole <manifest>...</manifest> and
-  // <spine ...>...</spine> blocks (each is unique and root-level in any
-  // valid OPF, so finding them by tag name alone is reliable) rather than
-  // trying to surgically edit individual <item>/<itemref> elements in
-  // place - everything else in the file (metadata, guide, package
-  // attributes) is copied through untouched.
-  {
-    const size_t manifestStart = opfContent.find("<manifest");
-    const size_t manifestEnd = opfContent.find("</manifest>");
-    const size_t spineStart = opfContent.find("<spine");
-    const size_t spineEndTag = opfContent.find("</spine>");
-    if (manifestStart == std::string::npos || manifestEnd == std::string::npos || spineStart == std::string::npos ||
-        spineEndTag == std::string::npos || spineStart < manifestEnd) {
-      LOG_ERR("EPS", "content.opf doesn't have the expected <manifest>/<spine> shape - leaving book unsplit");
-      Storage.removeDir(cachePath.c_str());
-      return originalPath;
-    }
-    const size_t manifestCloseEnd = manifestEnd + std::string("</manifest>").size();
-    const size_t spineCloseEnd = spineEndTag + std::string("</spine>").size();
-
-    std::string newManifest = "<manifest>";
-    for (const auto& item : opf.manifest) {
-      const std::string itemZipPath = resolveHref(opfDir, item.href);
-      if (itemZipPath != oversizedHref) {
-        newManifest += "<item id=\"" + item.id + "\" href=\"" + item.href + "\" media-type=\"" + item.mediaType + "\"/>";
-        continue;
-      }
-      for (size_t i = 0; i < chunks.size(); ++i) {
-        newManifest += "<item id=\"" + item.id + "_split" + std::to_string(i) + "\" href=\"" +
-                       dirnameWithSlash(item.href) + chunkNames[i] + "\" media-type=\"" + item.mediaType + "\"/>";
-      }
-    }
-    newManifest += "</manifest>";
-
-    std::string newSpine = opfContent.substr(spineStart, opfContent.find('>', spineStart) + 1 - spineStart);
-    for (const auto& idref : opf.spineIdrefs) {
-      const auto it = idToHref.find(idref);
-      const std::string itemZipPath = it == idToHref.end() ? std::string() : it->second;
-      if (itemZipPath != oversizedHref) {
-        newSpine += "<itemref idref=\"" + idref + "\"/>";
-        continue;
-      }
-      for (size_t i = 0; i < chunks.size(); ++i) {
-        newSpine += "<itemref idref=\"" + idref + "_split" + std::to_string(i) + "\"/>";
-      }
-    }
-    newSpine += "</spine>";
-
-    std::string newOpf = opfContent.substr(0, manifestStart);
-    newOpf += newManifest;
-    newOpf += opfContent.substr(manifestCloseEnd, spineStart - manifestCloseEnd);
-    newOpf += newSpine;
-    newOpf += opfContent.substr(spineCloseEnd);
-
-    if (!writeWholeFile(packagePath + "/" + opfPath, newOpf)) {
-      Storage.removeDir(cachePath.c_str());
-      return originalPath;
-    }
-  }
-
-  // Rewrite toc.ncx the same way readers everywhere expect - any
-  // <content src="oversized.html#anchor"/> needs to point at whichever
-  // split part actually contains that anchor now.
+  // Preserve NCX navigation before removing the original target file.
   for (const auto& item : opf.manifest) {
     if (item.mediaType.find("ncx") == std::string::npos) continue;
-    const std::string ncxZipPath = resolveHref(opfDir, item.href);
-    HalFile f;
-    if (!Storage.openFileForRead("EPS", packagePath + "/" + ncxZipPath, f)) continue;
-    const size_t sz = f.fileSize();
-    std::string content(sz, '\0');
-    f.read(content.data(), sz);
-    f.close();
-    const std::string before = content;
-    // toc.ncx uses <content src="..."/> rather than <a href="...">, but the
-    // same "does this file need redirecting to a split part" logic
-    // applies - reuse it by temporarily presenting the attribute the same
-    // way.
-    size_t pos = 0;
-    const std::string needle = "src=\"" + oversizedHref;
-    while ((pos = content.find(needle, pos)) != std::string::npos) {
-      content.replace(pos, 3, "href=\"");  // "src=" (3 chars incl. the shared '=') -> "href="
-      pos += 6;
+    const std::string ncxPath = packagePath + "/" + resolveHref(opfDir, item.href);
+    HalFile ncx;
+    if (!Storage.openFileForRead("EPS", ncxPath, ncx)) continue;
+    const size_t size = ncx.fileSize();
+    std::string content(size, '\0');
+    const bool readOk = ncx.read(content.data(), size) == static_cast<int>(size);
+    ncx.close();
+    if (!readOk) continue;
+    const std::string rewritten =
+        EpubNcxRewriter::redirectReferences(content, oversizedItem->href, chunkHrefs, anchorFragments);
+    if (rewritten != content && !writeWholeFile(ncxPath, rewritten)) {
+      LOG_ERR("EPS", "Could not rewrite NCX for streaming split");
+      Storage.removeDir(cachePath.c_str());
+      return originalPath;
     }
-    rewriteLinksToSplitFile(content, basenameOf(oversizedHref), idToChunk, chunkNames);
-    pos = 0;
-    const std::string hrefToChunkNeedle = "href=\"";
-    // Only the ones just retargeted at a chunk file need converting back;
-    // any genuinely unrelated href="..." elsewhere in the NCX (there
-    // normally aren't any) would also match here, which is harmless - NCX
-    // has no href attribute of its own to collide with.
-    while ((pos = content.find(hrefToChunkNeedle, pos)) != std::string::npos) {
-      content.replace(pos, 5, "src=\"");  // "href=" (5 chars incl. '=') -> "src="
-      pos += 5;
-    }
-    if (content != before) writeWholeFile(packagePath + "/" + ncxZipPath, content);
   }
+
+  Storage.remove(sourcePath.c_str());
 
   // Signature last, only once everything else has succeeded - if the
   // device loses power mid-build, the next open finds no valid signature

@@ -152,6 +152,8 @@ public:
     virtual void onCiteEnd() {}
     virtual void onEpigraphBegin() {}
     virtual void onEpigraphEnd() {}
+    // Attribution inside <cite> or <epigraph>, distinct from quoted text.
+    virtual void onTextAuthor(const std::string& /*text*/) {}
 
     // Called with successive runs of text inside the current block-level
     // element, tagged with whatever inline styles are currently active.

@@ -1317,6 +1317,35 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                     }
                   }
 
+                  // PNGdec allocates its internal inflater with ordinary
+                  // `new`.  Rendering after the complete section has been
+                  // paginated leaves too little contiguous heap for that
+                  // allocation and used to reboot the device.  Build the
+                  // small, screen-sized pixel cache while this parser still
+                  // has its initial heap budget; later page draws only stream
+                  // the .pxc rows from SD.  The temporary framebuffer output
+                  // is harmless: the final page redraw replaces it.
+                  const size_t imageDot = cachedImagePath.rfind('.');
+                  const std::string pixelCachePath =
+                      imageDot == std::string::npos ? cachedImagePath + ".pxc"
+                                                     : cachedImagePath.substr(0, imageDot) + ".pxc";
+                  if (!Storage.exists(pixelCachePath.c_str()) &&
+                      MemoryBudget::hasHeapForEpubInlineImage("EHP", cachedImagePath.c_str())) {
+                    RenderConfig precacheConfig;
+                    precacheConfig.x = 0;
+                    precacheConfig.y = 0;
+                    precacheConfig.maxWidth = displayWidth;
+                    precacheConfig.maxHeight = displayHeight;
+                    precacheConfig.useGrayscale = true;
+                    precacheConfig.useDithering = true;
+                    precacheConfig.useExactDimensions = true;
+                    precacheConfig.cachePath = pixelCachePath;
+                    if (!decoder->decodeToFramebuffer(cachedImagePath, self->renderer, precacheConfig)) {
+                      LOG_ERR("EHP", "Deferred image cache failed; image may be retried on display: %s",
+                              cachedImagePath.c_str());
+                    }
+                  }
+
                   // Flush any pending text block so it appears before the image
                   if (self->partWordBufferIndex > 0) {
                     self->flushPartWordBuffer();

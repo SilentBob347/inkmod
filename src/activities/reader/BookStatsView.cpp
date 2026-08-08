@@ -267,14 +267,10 @@ void drawSectionCard(const GfxRenderer& renderer, const int x, const int y, cons
 }
 
 template <size_t N>
-void drawHorizontalBars(GfxRenderer& renderer, const int x, const int y, const int w, const int h,
-                        const std::array<uint32_t, N>& values, const std::array<StrId, N>& labels,
-                        const StatsLayout& layout) {
+void drawDurationRows(GfxRenderer& renderer, const int x, const int y, const int w, const int h,
+                      const std::array<uint32_t, N>& values, const std::array<StrId, N>& labels,
+                      const StatsLayout& layout) {
   constexpr int labelLeftPadding = 10;
-  constexpr int labelRightPadding = 18;
-  constexpr int barLeftGap = 8;
-  constexpr int rightPadding = 18;
-  const uint32_t maxValue = *std::max_element(values.begin(), values.end());
   const int labelLineH = renderer.getLineHeight(layout.chartLabelFontId);
   const int rowContentH = std::max(labelLineH, layout.barH);
   const int baseContentH = layout.sectionTitleH + layout.chartTopPadding + layout.chartBottomPadding + rowContentH +
@@ -287,22 +283,17 @@ void drawHorizontalBars(GfxRenderer& renderer, const int x, const int y, const i
   const int rowGap = layout.barGap + extraPerSlot;
   const int contentTop = y + layout.sectionTitleH + topPadding;
   const int rowStride = rowContentH + rowGap;
-  int maxLabelW = 0;
-  for (size_t i = 0; i < N; ++i) {
-    maxLabelW = std::max(maxLabelW, renderer.getTextWidth(layout.chartLabelFontId, I18N.get(labels[i])));
-  }
-  const int labelColumnW = std::max(layout.chartLabelW, labelLeftPadding + maxLabelW + labelRightPadding);
-  const int barX = x + labelColumnW + barLeftGap;
-  const int barW = std::max(0, w - labelColumnW - barLeftGap - rightPadding);
   for (size_t i = 0; i < N; ++i) {
     const int rowTop = contentTop + static_cast<int>(i) * rowStride;
     const int labelY = rowTop + (rowContentH - labelLineH) / 2;
-    const int barY = rowTop + (rowContentH - layout.barH) / 2;
-    renderer.drawText(layout.chartLabelFontId, x + labelLeftPadding, labelY, I18N.get(labels[i]));
-    if (maxValue > 0 && values[i] > 0) {
-      const int fillW = std::max(2, static_cast<int>((static_cast<uint64_t>(barW) * values[i]) / maxValue));
-      renderer.fillRect(barX, barY, fillW, layout.barH, true);
-    }
+    char duration[40];
+    char row[80];
+    BookReadingStats::formatDuration(values[i], duration, sizeof(duration));
+    snprintf(row, sizeof(row), "%s: %s", I18N.get(labels[i]), duration);
+    // Text-only rows show an exact, readable duration.  Unlike a relative
+    // bar, a quiet reading period is still meaningful (for example,
+    // "Утро: 2ч 5 мин") and requires no comparison with another row.
+    renderer.drawText(layout.chartLabelFontId, x + labelLeftPadding, labelY, row);
   }
 }
 
@@ -493,11 +484,11 @@ void renderPerBookStatsPage(GfxRenderer& renderer, const MappedInputManager* map
     y += topCardH + layout.cardGap;
 
     drawSectionCard(renderer, cardX, y, cardW, timeOfDayCardH, tr(STR_STATS_TIME_OF_DAY), layout);
-    drawHorizontalBars(renderer, cardX, y, cardW, timeOfDayCardH, stats.timeOfDaySeconds, TIME_BUCKET_LABELS, layout);
+    drawDurationRows(renderer, cardX, y, cardW, timeOfDayCardH, stats.timeOfDaySeconds, TIME_BUCKET_LABELS, layout);
     y += timeOfDayCardH + layout.cardGap;
 
     drawSectionCard(renderer, cardX, y, cardW, dayOfWeekCardH, tr(STR_STATS_DAY_OF_WEEK), layout);
-    drawHorizontalBars(renderer, cardX, y, cardW, dayOfWeekCardH, stats.dayOfWeekSeconds, DAY_LABELS, layout);
+    drawDurationRows(renderer, cardX, y, cardW, dayOfWeekCardH, stats.dayOfWeekSeconds, DAY_LABELS, layout);
   } else {
     const int compactContentHeight =
         std::min(metrics.headerHeight, layout.headerHeight) + layout.topGap + layout.topCardH;
@@ -562,11 +553,11 @@ void renderGlobalStatsPage(GfxRenderer& renderer, const MappedInputManager* mapp
     y += globalCardH + layout.cardGap;
 
     drawSectionCard(renderer, cardX, y, cardW, timeOfDayCardH, tr(STR_STATS_TIME_OF_DAY), layout);
-    drawHorizontalBars(renderer, cardX, y, cardW, timeOfDayCardH, stats.timeOfDaySeconds, TIME_BUCKET_LABELS, layout);
+    drawDurationRows(renderer, cardX, y, cardW, timeOfDayCardH, stats.timeOfDaySeconds, TIME_BUCKET_LABELS, layout);
     y += timeOfDayCardH + layout.cardGap;
 
     drawSectionCard(renderer, cardX, y, cardW, dayOfWeekCardH, tr(STR_STATS_DAY_OF_WEEK), layout);
-    drawHorizontalBars(renderer, cardX, y, cardW, dayOfWeekCardH, stats.dayOfWeekSeconds, DAY_LABELS, layout);
+    drawDurationRows(renderer, cardX, y, cardW, dayOfWeekCardH, stats.dayOfWeekSeconds, DAY_LABELS, layout);
   } else {
     const int compactContentHeight =
         std::min(metrics.headerHeight, layout.headerHeight) + layout.topGap + layout.globalCardH;

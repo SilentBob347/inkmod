@@ -88,6 +88,27 @@ if (parsedSize != fileSize) {
 }
 ```
 
+## Reader session state (`reader_state_v1.bin`)
+
+The in-progress format-neutral reader stores only a fixed 40-byte state record.
+It contains the logical page anchor, page-counter mode, orientation, font scale,
+layout revision and flags. The last four bytes are a CRC32 over the preceding
+36 bytes. A bad magic, version or CRC means the record must be ignored and the
+reader opens at its normal fallback position. This avoids JSON allocation during
+wake and ensures an interrupted SD write cannot silently restore a wrong page.
+
+Byte layout, little-endian: `magic(4)`, `version(1)`, `counterMode(1)`,
+`orientation(1)`, `fontScale(1)`, `chapter(4)`, `byteOffset(8)`,
+`nodeOffset(4)`, `pageNumber(4)`, `flags(4)`, `layoutRevision(4)`, `crc32(4)`.
+
+## New reader chapter source cache (`reader_v1/`)
+
+The staged EPUB reader copies only the chapter being opened to
+`<epub-cache>/reader_v1/chapter_<spine>.xhtml`. It is streamed in 512-byte
+chunks from the EPUB/package, synced, closed, then atomically renamed from a
+temporary file. A failed preparation removes the temporary file and retains a
+previous completed chapter source. The cache never contains a complete book.
+
 ## `section.bin`
 
 ### Version 40

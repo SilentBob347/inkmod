@@ -3,6 +3,9 @@
 #include <GfxRenderer.h>
 #include <Logging.h>
 
+#include <Arduino.h>
+#include <esp_ota_ops.h>
+
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -36,6 +39,8 @@
 #include "components/HeaderDate.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/FirmwareFlasher.h"
+#include "network/OtaBootSwitch.h"
 
 const StrId SettingsActivity::categoryNames[categoryCount] = {StrId::STR_CAT_DISPLAY, StrId::STR_CAT_READER,
                                                               StrId::STR_CAT_CONTROLS, StrId::STR_CAT_SYSTEM};
@@ -751,6 +756,42 @@ void SettingsActivity::toggleCurrentSetting() {
       case SettingAction::SdFirmwareUpdate:
         startActivityForResult(std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInput), resultHandler);
         break;
+      case SettingAction::SwitchOtaSlot: {
+        const esp_partition_t* running = esp_ota_get_running_partition();
+        const esp_partition_t* alternate = running ? esp_ota_get_next_update_partition(running) : nullptr;
+        size_t imageSize = 0;
+        const auto validation = firmware_flash::validateImagePartition(alternate, &imageSize);
+        if (!alternate || validation != firmware_flash::Result::OK) {
+          LOG_ERR("BOOT", "alternate OTA slot is not bootable: %s", firmware_flash::resultName(validation));
+          GUI.drawPopup(renderer, tr(STR_OTHER_SLOT_INVALID));
+          renderer.displayBuffer();
+          delay(900);
+          requestUpdate();
+          break;
+        }
+
+        char body[112];
+        snprintf(body, sizeof(body), tr(STR_BOOT_OTHER_SLOT_CONFIRM), alternate->label,
+                 static_cast<unsigned long>(imageSize / 1024u));
+        startActivityForResult(
+            std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_BOOT_OTHER_SLOT), body),
+            [this, alternate](const ActivityResult& result) {
+              if (result.isCancelled) return;
+              if (!ota_boot::switchTo(alternate)) {
+                LOG_ERR("BOOT", "manual OTA slot switch failed");
+                GUI.drawPopup(renderer, tr(STR_ERROR_GENERAL_FAILURE));
+                renderer.displayBuffer();
+                delay(900);
+                requestUpdate();
+                return;
+              }
+              GUI.drawPopup(renderer, tr(STR_RESTARTING_HINT));
+              renderer.displayBuffer();
+              delay(400);
+              ESP.restart();
+            });
+        break;
+      }
       case SettingAction::Language:
         startActivityForResult(std::make_unique<LanguageSelectActivity>(renderer, mappedInput), resultHandler);
         break;

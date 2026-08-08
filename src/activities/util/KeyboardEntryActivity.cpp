@@ -15,6 +15,26 @@ const char* const KeyboardEntryActivity::shiftString[2] = {"shift", "SHIFT"};
 
 namespace {
 
+bool isUtf8Continuation(const char value) {
+  return (static_cast<uint8_t>(value) & 0xC0U) == 0x80U;
+}
+
+// Keyboard cursor positions are byte indexes because std::string stores UTF-8.
+// These helpers ensure editing actions still operate on complete characters.
+size_t previousUtf8Boundary(const std::string& text, size_t position) {
+  if (position == 0) return 0;
+  --position;
+  while (position > 0 && isUtf8Continuation(text[position])) --position;
+  return position;
+}
+
+size_t nextUtf8Boundary(const std::string& text, size_t position) {
+  if (position >= text.size()) return text.size();
+  ++position;
+  while (position < text.size() && isUtf8Continuation(text[position])) ++position;
+  return position;
+}
+
 // These UTF-8 labels are static flash data. The keyboard never copies a
 // layout to heap RAM; it inserts only the selected one- or two-byte glyph.
 constexpr const char* kRussianLower[3][10] = {
@@ -204,8 +224,9 @@ bool KeyboardEntryActivity::handleKeyPress() {
           hintShowTime = millis();
         }
         if (cursorPos > 0 && !text.empty()) {
-          text.erase(cursorPos - 1, 1);
-          cursorPos--;
+          const size_t eraseStart = previousUtf8Boundary(text, cursorPos);
+          text.erase(eraseStart, cursorPos - eraseStart);
+          cursorPos = eraseStart;
         }
         return true;
       case SpecialKeyType::Ok:
@@ -327,7 +348,7 @@ void KeyboardEntryActivity::loop() {
         togglePos = false;
         requestUpdate();
       } else if (cursorPos > 0) {
-        cursorPos--;
+        cursorPos = previousUtf8Boundary(text, cursorPos);
         requestUpdate();
       }
     }
@@ -364,7 +385,7 @@ void KeyboardEntryActivity::loop() {
       rightLongHandled = false;
     }
     if (cursorMode && !togglePos && cursorPos < text.length()) {
-      cursorPos++;
+      cursorPos = nextUtf8Boundary(text, cursorPos);
       requestUpdate();
     }
     if (cursorMode) return;

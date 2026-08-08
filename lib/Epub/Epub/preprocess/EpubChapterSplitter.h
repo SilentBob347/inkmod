@@ -24,7 +24,7 @@
 // BookMetadataCache, Section, ChapterHtmlSlimParser) is completely
 // unmodified: it just sees more, smaller spine items than the book
 // shipped with.
-namespace EpubChapterSplitter {
+namespace EpubStreamingChapterSplitter {
 
 // A spine item bigger than this (bytes) is a split candidate. Well below
 // where real trouble starts (the book that prompted this was 4.5MB), but
@@ -58,4 +58,4 @@ std::vector<std::string> splitToFragments(const std::string& sourcePath, const s
                                           const std::string& baseName,
                                           std::unordered_map<std::string, int>* anchorFragmentOut = nullptr);
 
-}  // namespace EpubChapterSplitter
+}  // namespace EpubStreamingChapterSplitter

@@ -9,6 +9,7 @@
 #include <PNGdec.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <new>
 
@@ -505,7 +506,7 @@ void SleepActivity::renderDefaultSleepScreen() const {
   renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
 }
 
-void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap) const {
+void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool blackBackground) const {
   int x, y;
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
@@ -546,14 +547,40 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap) const {
   }
 
   LOG_DBG("SLP", "drawing to %d x %d", x, y);
-  renderer.clearScreen();
+  // Fit mode normally leaves white letterbox margins.  On black-bezel
+  // readers a black fill makes a narrow cover look like a physical inset
+  // instead of a small white card floating inside the device.
+  renderer.clearScreen(blackBackground ? 0x00 : 0xFF);
+
+  // Bitmap rendering intentionally leaves white pixels untouched.  Give the
+  // cover its own white canvas first, otherwise the black letterbox shows
+  // through the cover's white background.  The sleep-cover black mode never
+  // crops, but deriving the rectangle from the same fit calculation keeps it
+  // correct if the renderer later receives a pre-cropped cover.
+  const float croppedWidth = (1.0f - cropX) * static_cast<float>(bitmap.getWidth());
+  const float croppedHeight = (1.0f - cropY) * static_cast<float>(bitmap.getHeight());
+  const float scale = std::min(1.0f, std::min(static_cast<float>(pageWidth) / croppedWidth,
+                                              static_cast<float>(pageHeight) / croppedHeight));
+  const int coverWidth = static_cast<int>(std::ceil(croppedWidth * scale));
+  const int coverHeight = static_cast<int>(std::ceil(croppedHeight * scale));
+  const int coverLeft = std::max(0, x);
+  const int coverTop = std::max(0, y);
+  const int coverRight = std::min(pageWidth, x + coverWidth);
+  const int coverBottom = std::min(pageHeight, y + coverHeight);
+  const auto paintCoverCanvas = [&]() {
+    if (blackBackground && coverRight > coverLeft && coverBottom > coverTop) {
+      renderer.fillRect(coverLeft, coverTop, coverRight - coverLeft, coverBottom - coverTop, false);
+    }
+  };
+  paintCoverCanvas();
 
   const bool hasGreyscale = bitmap.hasGreyscale() &&
                             SETTINGS.sleepScreenCoverFilter == InkMODSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER;
 
   renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
 
-  if (SETTINGS.sleepScreenCoverFilter == InkMODSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE) {
+  if (!blackBackground &&
+      SETTINGS.sleepScreenCoverFilter == InkMODSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE) {
     renderer.invertScreen();
   }
 
@@ -562,12 +589,14 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap) const {
   if (hasGreyscale) {
     bitmap.rewindToData();
     renderer.clearScreen(0x00);
+    paintCoverCanvas();
     renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
     renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
     renderer.copyGrayscaleLsbBuffers();
 
     bitmap.rewindToData();
     renderer.clearScreen(0x00);
+    paintCoverCanvas();
     renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
     renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
     renderer.copyGrayscaleMsbBuffers();
@@ -593,7 +622,8 @@ void SleepActivity::renderCoverSleepScreen() const {
     return (this->*renderNoCoverSleepScreen)();
   }
 
-  bool cropped = SETTINGS.sleepScreenCoverMode == InkMODSettings::SLEEP_SCREEN_COVER_MODE::CROP;
+  const bool cropped = SETTINGS.sleepScreenCoverMode == InkMODSettings::SLEEP_SCREEN_COVER_MODE::CROP;
+  const bool blackBackground = SETTINGS.sleepScreenCoverMode == InkMODSettings::SLEEP_SCREEN_COVER_MODE::BLACK_BACKGROUND;
   std::string coverBmpPath = SleepCoverAssets::cachedCoverPathFor(path, cropped);
   if (coverBmpPath.empty() && SleepCoverAssets::prepareFullCoverForPath(path, cropped)) {
     coverBmpPath = SleepCoverAssets::cachedCoverPathFor(path, cropped);
@@ -607,7 +637,7 @@ void SleepActivity::renderCoverSleepScreen() const {
     Bitmap bitmap(file);
     if (bitmap.parseHeaders() == BmpReaderError::Ok) {
       LOG_DBG("SLP", "Rendering sleep cover: %s", coverBmpPath.c_str());
-      renderBitmapSleepScreen(bitmap);
+      renderBitmapSleepScreen(bitmap, blackBackground);
       return;
     }
   }

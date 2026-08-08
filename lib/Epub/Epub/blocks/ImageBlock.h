@@ -28,4 +28,7 @@ class ImageBlock final : public Block {
   std::string imagePath;
   int16_t width;
   int16_t height;
+  // A failed decoder must not be retried for every e-ink grayscale pass.
+  // Retrying a PNG that cannot fit in the C3 heap quickly fragments memory.
+  bool unavailableThisSection = false;
 };

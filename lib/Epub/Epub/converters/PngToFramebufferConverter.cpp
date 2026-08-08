@@ -7,6 +7,7 @@
 #include <MemoryBudget.h>
 #include <PNGdec.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <new>
 
@@ -76,7 +77,6 @@ int32_t pngSeekWithHandle(PNGFILE* pFile, int32_t pos) {
 // is only consumed while actually decoding/querying PNG images. This is critical on
 // the ESP32-C3 where total RAM is ~320 KB.
 constexpr uint32_t PNG_DECODER_APPROX_SIZE = 44U * 1024U;  // ~42 KB + overhead
-
 // PNGdec keeps TWO scanlines in its internal ucPixels buffer (current + previous)
 // and each scanline includes a leading filter byte.
 // Required storage is therefore approximately: 2 * (pitch + 1) + alignment slack.
@@ -349,8 +349,10 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
     warnUnsupportedFeature("bit depth (" + std::to_string(png->getBpp()) + "bpp)", imagePath);
   }
 
-  // Allocate grayscale line buffer on demand (~3.2 KB) - freed after decode
-  const size_t grayBufSize = PNG_MAX_BUFFERED_PIXELS / 2;
+  // One source line is all convertLineToGray() accesses.  Allocating half of
+  // PNGdec's maximum internal buffer here was unnecessary heap pressure and
+  // prevented large FB2s from ever creating their on-SD pixel cache.
+  const size_t grayBufSize = std::max<size_t>(static_cast<size_t>(ctx.srcWidth), 256U);
   ctx.grayLineBuffer = static_cast<uint8_t*>(malloc(grayBufSize));
   if (!ctx.grayLineBuffer) {
     LOG_ERR("PNG", "Failed to allocate gray line buffer");

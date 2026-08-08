@@ -2771,6 +2771,64 @@ function loadImageFromBlob(blob) {
  * Returns a new File if the cover was changed, or the original File
  * unchanged if there was nothing to do (no cover found, or it already fits).
  */
+async function optimizeRemainingFb2Images(fb2Text, alreadyOptimizedId, progressCallback) {
+  const binaryRegex = /<binary\b[^>]*\bid=["']([^"']+)["'][^>]*>([\s\S]*?)<\/binary>/gi;
+  const replacements = [];
+  let match;
+  while ((match = binaryRegex.exec(fb2Text)) !== null) {
+    const tag = match[0];
+    const id = match[1];
+    const contentType = (tag.match(/content-type=["']([^"']+)["']/i) || [])[1] || '';
+    if (id === alreadyOptimizedId || !contentType.toLowerCase().startsWith('image/')) continue;
+
+    try {
+      const base64 = match[2].replace(/\s+/g, '');
+      const loaded = await loadImageFromBlob(base64ToBlob(base64, contentType));
+      const { img, width: origW, height: origH, url } = loaded;
+      if (origW <= MAX_WIDTH && origH <= MAX_HEIGHT) {
+        URL.revokeObjectURL(url);
+        continue;
+      }
+      const scale = Math.min(MAX_WIDTH / origW, MAX_HEIGHT / origH);
+      const newW = Math.round(origW * scale);
+      const newH = Math.round(origH * scale);
+      const canvas = document.createElement('canvas');
+      canvas.width = newW;
+      canvas.height = newH;
+      const ctx = canvas.getContext('2d');
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.fillStyle = '#FFF';
+      ctx.fillRect(0, 0, newW, newH);
+      ctx.drawImage(img, 0, 0, newW, newH);
+      applyGrayscale(ctx, newW, newH);
+      URL.revokeObjectURL(url);
+      const newBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', JPEG_QUALITY / 100));
+      if (!newBlob) throw new Error('JPEG encoding failed');
+      const newBase64 = await blobToBase64(newBlob);
+      replacements.push({
+        index: match.index,
+        length: tag.length,
+        text: tag.replace(/content-type=["'][^"']*["']/i, 'content-type="image/jpeg"')
+                 .replace(/>[\s\S]*<\/binary>/i, '>' + newBase64 + '</binary>')
+      });
+      logImage('image (' + id + ')', origW, origH, contentType.split('/')[1] || 'img',
+               Math.round(base64.length * 0.75), newW, newH, newBlob.size, false, 0, null, 0);
+    } catch (e) {
+      logError('Failed to decode image ' + id + ': ' + e.message);
+    }
+  }
+  if (replacements.length === 0) return fb2Text;
+
+  let cursor = 0;
+  let result = '';
+  for (const replacement of replacements) {
+    result += fb2Text.slice(cursor, replacement.index) + replacement.text;
+    cursor = replacement.index + replacement.length;
+  }
+  return result + fb2Text.slice(cursor);
+}
+
 async function convertFb2File(file, progressCallback) {
   const startTime = Date.now();
   const originalSize = file.size;
@@ -2800,7 +2858,11 @@ async function convertFb2File(file, progressCallback) {
   }
   if (progressCallback) progressCallback(20);
 
-  const coverId = findFb2CoverId(fb2Text);
+  const imageBinaryIds = [];
+  const imageBinaryRegex = /<binary\b[^>]*\bid=["']([^"']+)["'][^>]*>/gi;
+  let imageBinaryMatch;
+  while ((imageBinaryMatch = imageBinaryRegex.exec(fb2Text)) !== null) imageBinaryIds.push(imageBinaryMatch[1]);
+  const coverId = findFb2CoverId(fb2Text) || imageBinaryIds[0];
   if (!coverId) {
     logSkip(file.name, 'no <coverpage> reference found');
     log('No cover found — uploading unchanged.', '', 'INFO');
@@ -2865,7 +2927,8 @@ async function convertFb2File(file, progressCallback) {
     .replace(/content-type=["'][^"']*["']/i, 'content-type="image/jpeg"')
     .replace(/>[\s\S]*<\/binary>/i, `>${newBase64}</binary>`);
 
-  const newFb2Text = fb2Text.slice(0, binary.index) + newBinaryTag + fb2Text.slice(binary.index + binary.length);
+  let newFb2Text = fb2Text.slice(0, binary.index) + newBinaryTag + fb2Text.slice(binary.index + binary.length);
+  newFb2Text = await optimizeRemainingFb2Images(newFb2Text, coverId, progressCallback);
 
   let newFile;
   if (isZip) {

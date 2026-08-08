@@ -280,7 +280,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     // --- Display ---
     add(buildSleepScreenSetting());
     add(SettingInfo::Enum(StrId::STR_SLEEP_COVER_MODE, &InkMODSettings::sleepScreenCoverMode,
-                          {StrId::STR_FIT, StrId::STR_CROP}, "sleepScreenCoverMode", StrId::STR_CAT_DISPLAY));
+                          {StrId::STR_FIT, StrId::STR_CROP, StrId::STR_BLACK_BACKGROUND}, "sleepScreenCoverMode",
+                          StrId::STR_CAT_DISPLAY));
     add(SettingInfo::Enum(StrId::STR_SLEEP_COVER_FILTER, &InkMODSettings::sleepScreenCoverFilter,
                           {StrId::STR_NONE_OPT, StrId::STR_FILTER_CONTRAST, StrId::STR_INVERTED},
                           "sleepScreenCoverFilter", StrId::STR_CAT_DISPLAY));
@@ -882,8 +883,12 @@ inline std::vector<SettingInfo> buildDisplaySleepSettingsList(const std::vector<
   };
 
   addSleepSetting(StrId::STR_SLEEP_SCREEN, StrId::STR_SLEEP_SCREEN_WALLPAPER);
-  addSleepSetting(StrId::STR_SLEEP_COVER_MODE, StrId::STR_SLEEP_COVER_MODE_SHORT);
-  addSleepSetting(StrId::STR_SLEEP_COVER_FILTER, StrId::STR_SLEEP_COVER_FILTER_SHORT);
+  const bool usesCover = SETTINGS.sleepScreen == InkMODSettings::SLEEP_SCREEN_MODE::COVER ||
+                         SETTINGS.sleepScreen == InkMODSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM;
+  if (usesCover) {
+    addSleepSetting(StrId::STR_SLEEP_COVER_MODE, StrId::STR_SLEEP_COVER_MODE_SHORT);
+    addSleepSetting(StrId::STR_SLEEP_COVER_FILTER, StrId::STR_SLEEP_COVER_FILTER_SHORT);
+  }
   addSleepSetting(StrId::STR_QUICK_RESUME_TIMEOUT, StrId::STR_QUICK_RESUME_TIMEOUT);
 
   return sleepSettings;
@@ -900,6 +905,7 @@ inline std::vector<SettingInfo> buildSystemSettingsParentList(const std::vector<
   systemSettings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate));
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_BOOT_OTHER_SLOT, SettingAction::SwitchOtaSlot));
   return systemSettings;
 }
 

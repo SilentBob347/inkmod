@@ -456,6 +456,8 @@ static void renderCharScaled(const GfxRenderer& renderer, GfxRenderer::RenderMod
   // pixel offset from the (already-shifted) cursor position.
   const int baseX = cursorX + glyph->left / 2;
   const int baseY = cursorY - glyph->top / 2;
+  const int screenWidth = renderer.getScreenWidth();
+  const int screenHeight = renderer.getScreenHeight();
 
   if (fontData->is2Bit) {
     // 2-bit packed format: 4 pixels per byte, MSB first, 2 bits per pixel.
@@ -475,7 +477,8 @@ static void renderCharScaled(const GfxRenderer& renderer, GfxRenderer::RenderMod
             if (raw > maxRaw) maxRaw = raw;
           }
         }
-        if (maxRaw >= 2 || coverage >= 2) {
+        if ((maxRaw >= 2 || coverage >= 2) && baseX + dstX >= 0 && baseX + dstX < screenWidth &&
+            baseY + dstY >= 0 && baseY + dstY < screenHeight) {
           renderer.drawPixel(baseX + dstX, baseY + dstY, pixelState);
         }
       }
@@ -497,7 +500,8 @@ static void renderCharScaled(const GfxRenderer& renderer, GfxRenderer::RenderMod
             }
           }
         }
-        if (hasInk) {
+        if (hasInk && baseX + dstX >= 0 && baseX + dstX < screenWidth && baseY + dstY >= 0 &&
+            baseY + dstY < screenHeight) {
           renderer.drawPixel(baseX + dstX, baseY + dstY, pixelState);
         }
       }
@@ -522,6 +526,8 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
   const uint8_t height = glyph->height;
   const int left = glyph->left;
   const int top = glyph->top;
+  const int screenWidth = renderer.getScreenWidth();
+  const int screenHeight = renderer.getScreenHeight();
 
   // Tiled-grayscale band culling: if this glyph's physical y-extent is entirely
   // outside the active strip, skip it before the expensive bitmap decode. This
@@ -575,6 +581,8 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
           // 0 -> black, 1 -> dark grey, 2 -> light grey, 3 -> white
           const uint8_t bmpVal = 3 - ((byte >> bit_index) & 0x3);
 
+          if (screenX < 0 || screenX >= screenWidth || screenY < 0 || screenY >= screenHeight) continue;
+
           if (renderMode == GfxRenderer::BW && bmpVal < 3) {
             // Black (also paints over the grays in BW mode)
             renderer.drawPixel(screenX, screenY, pixelState);
@@ -606,7 +614,8 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
           const uint8_t byte = bitmap[pixelPosition >> 3];
           const uint8_t bit_index = 7 - (pixelPosition & 7);
 
-          if ((byte >> bit_index) & 1) {
+          if (((byte >> bit_index) & 1) && screenX >= 0 && screenX < screenWidth && screenY >= 0 &&
+              screenY < screenHeight) {
             renderer.drawPixel(screenX, screenY, pixelState);
           }
         }

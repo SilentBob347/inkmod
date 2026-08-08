@@ -1,5 +1,7 @@
 #pragma once
 
+#include <esp_partition.h>
+
 #include <cstddef>
 #include <cstdint>
 
@@ -57,6 +59,10 @@ Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, boo
 // lookup). Streams the file in CHUNK-sized reads; the file is rewound on
 // success so the caller can immediately reread it for flashing.
 Result validateImageFile(const char* sdPath, size_t partitionSize);
+
+// Validates an already-written OTA partition without esp_image_verify (which
+// rejects the patched X3/X4 images despite the stock bootloader accepting them).
+Result validateImagePartition(const esp_partition_t* partition, size_t* imageSize = nullptr);
 
 const char* resultName(Result r);
 

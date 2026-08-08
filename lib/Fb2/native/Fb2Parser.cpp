@@ -307,6 +307,7 @@ bool Fb2Parser::renderSection(IByteReader& reader,
 
     bool inSubtitle = false; std::string subtitleBuf;
     bool inVerse = false; std::string verseBuf;
+    bool inTextAuthor = false; std::string textAuthorBuf;
     bool inTableCell = false; std::string cellBuf; Fb2TableCellAttrs cellAttrs;
     bool inTitleTag = false; // skip the section's own <title>; already indexed
 
@@ -342,7 +343,15 @@ bool Fb2Parser::renderSection(IByteReader& reader,
 
         if (tok == Fb2Token::StartTag || tok == Fb2Token::SelfClosing) {
             if (name == "title") { inTitleTag = true; continue; }
-            if (inTitleTag) continue; // swallow everything inside our own title
+            if (inTitleTag) {
+                // The indexed text becomes the synthetic heading, but an
+                // ornamental image in the original FB2 title must survive.
+                if (name == "image") {
+                    if (const char* href = firstOf(xml, {"l:href", "xlink:href", "href"}))
+                        sink.onImage(stripHash(href));
+                }
+                continue;
+            }
 
             if (name == "p") sink.onParagraphBegin();
             else if (name == "empty-line") sink.onEmptyLine();
@@ -351,6 +360,7 @@ bool Fb2Parser::renderSection(IByteReader& reader,
             else if (name == "v") { inVerse = true; verseBuf.clear(); }
             else if (name == "cite") sink.onCiteBegin();
             else if (name == "epigraph") sink.onEpigraphBegin();
+            else if (name == "text-author") { inTextAuthor = true; textAuthorBuf.clear(); }
             else if (name == "subtitle") { inSubtitle = true; subtitleBuf.clear(); }
             else if (name == "strong" || name == "b") boldDepth++;
             else if (name == "emphasis" || name == "i") italicDepth++;
@@ -394,6 +404,7 @@ bool Fb2Parser::renderSection(IByteReader& reader,
             if (inTitleTag) { /* swallowed */ }
             else if (inSubtitle) subtitleBuf += xml.text();
             else if (inVerse) verseBuf += xml.text();
+            else if (inTextAuthor) textAuthorBuf += xml.text();
             else if (inTableCell) cellBuf += xml.text();
             else sink.onText(xml.text(), currentStyle());
         }
@@ -408,6 +419,7 @@ bool Fb2Parser::renderSection(IByteReader& reader,
             else if (name == "v") { sink.onVerseLine(verseBuf); inVerse = false; }
             else if (name == "cite") sink.onCiteEnd();
             else if (name == "epigraph") sink.onEpigraphEnd();
+            else if (name == "text-author") { sink.onTextAuthor(textAuthorBuf); inTextAuthor = false; }
             else if (name == "subtitle") { sink.onSubtitle(subtitleBuf); inSubtitle = false; }
             else if (name == "strong" || name == "b") boldDepth--;
             else if (name == "emphasis" || name == "i") italicDepth--;

@@ -226,6 +226,91 @@ Result validateImageFile(const char* sdPath, size_t partitionSize) {
   return Result::OK;
 }
 
+Result validateImagePartition(const esp_partition_t* partition, size_t* imageSize) {
+  if (imageSize) *imageSize = 0;
+  if (!partition || partition->type != ESP_PARTITION_TYPE_APP) return Result::NO_PARTITION;
+
+  uint8_t header[HEADER_SIZE];
+  if (esp_partition_read(partition, 0, header, sizeof(header)) != ESP_OK) return Result::READ_FAIL;
+  if (header[0] != ESP_IMAGE_MAGIC) return Result::BAD_MAGIC;
+
+  const uint8_t segCount = header[1];
+  const bool hashAppended = header[23] != 0;
+  auto buffer = std::unique_ptr<uint8_t[]>(new (std::nothrow) uint8_t[CHUNK]);
+  if (!buffer) return Result::OOM;
+
+  mbedtls_sha256_context shaCtx;
+  mbedtls_sha256_init(&shaCtx);
+  mbedtls_sha256_starts(&shaCtx, /*is224=*/0);
+  mbedtls_sha256_update(&shaCtx, header, sizeof(header));
+  uint8_t xorAccum = CHECKSUM_SEED;
+  size_t pos = sizeof(header);
+
+  for (uint8_t i = 0; i < segCount; ++i) {
+    uint8_t segmentHeader[SEG_HEADER_SIZE];
+    if (pos + sizeof(segmentHeader) > partition->size ||
+        esp_partition_read(partition, pos, segmentHeader, sizeof(segmentHeader)) != ESP_OK) {
+      mbedtls_sha256_free(&shaCtx);
+      return Result::BAD_SEGMENTS;
+    }
+    mbedtls_sha256_update(&shaCtx, segmentHeader, sizeof(segmentHeader));
+    pos += sizeof(segmentHeader);
+
+    uint32_t segmentLength = 0;
+    std::memcpy(&segmentLength, segmentHeader + 4, sizeof(segmentLength));
+    if (segmentLength > partition->size - pos) {
+      mbedtls_sha256_free(&shaCtx);
+      return Result::BAD_SEGMENTS;
+    }
+    size_t remaining = segmentLength;
+    while (remaining > 0) {
+      const size_t chunkSize = std::min(remaining, CHUNK);
+      if (esp_partition_read(partition, pos, buffer.get(), chunkSize) != ESP_OK) {
+        mbedtls_sha256_free(&shaCtx);
+        return Result::READ_FAIL;
+      }
+      mbedtls_sha256_update(&shaCtx, buffer.get(), chunkSize);
+      for (size_t j = 0; j < chunkSize; ++j) xorAccum ^= buffer[j];
+      pos += chunkSize;
+      remaining -= chunkSize;
+    }
+  }
+
+  const size_t padEnd = (pos + 16) & ~static_cast<size_t>(15);
+  const size_t expectedSize = padEnd + (hashAppended ? SHA_TRAILER : 0);
+  const size_t padLength = padEnd - pos;
+  if (padEnd == 0 || expectedSize > partition->size || padLength > 16) {
+    mbedtls_sha256_free(&shaCtx);
+    return Result::BAD_SIZE;
+  }
+  uint8_t padding[16] = {};
+  if (padLength > 0 && esp_partition_read(partition, pos, padding, padLength) != ESP_OK) {
+    mbedtls_sha256_free(&shaCtx);
+    return Result::READ_FAIL;
+  }
+  mbedtls_sha256_update(&shaCtx, padding, padLength);
+  if ((xorAccum & 0xFF) != padding[padLength - 1]) {
+    mbedtls_sha256_free(&shaCtx);
+    return Result::BAD_CHECKSUM;
+  }
+  if (hashAppended) {
+    uint8_t storedHash[SHA_TRAILER];
+    uint8_t computedHash[SHA_TRAILER];
+    if (esp_partition_read(partition, padEnd, storedHash, sizeof(storedHash)) != ESP_OK) {
+      mbedtls_sha256_free(&shaCtx);
+      return Result::READ_FAIL;
+    }
+    mbedtls_sha256_finish(&shaCtx, computedHash);
+    if (std::memcmp(computedHash, storedHash, sizeof(storedHash)) != 0) {
+      mbedtls_sha256_free(&shaCtx);
+      return Result::BAD_SHA;
+    }
+  }
+  mbedtls_sha256_free(&shaCtx);
+  if (imageSize) *imageSize = expectedSize;
+  return Result::OK;
+}
+
 Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, bool alreadyValidated) {
   // Resolve destination first so we can size-check during validation. The full image-integrity
   // pass below verifies header, segment table, XOR checksum and SHA256 trailer end-to-end before

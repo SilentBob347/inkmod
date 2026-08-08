@@ -1,5 +1,74 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- System settings now include a protected "Boot other firmware slot" action.
+  It validates the inactive OTA image before confirmation and then restarts
+  into it, making rollback possible without exposing a blind slot toggle.
+- Sleep-screen cover mode now includes a black background for letterboxed cover art on dark-bezel readers.
+- Internal reader-core milestone: EPUB metadata and chapter information now
+  have a format-neutral, fixed-buffer catalog adapter. This does not change the
+  current reading screen yet; it prepares the unified EPUB/FB2 reader without
+  adding a second full-book memory copy.
+- FB2 now has the same internal catalog boundary, reusing its on-SD section
+  index instead of scanning or rendering the source again for library data.
+- Internal reader-core now includes a format-neutral `ReaderSession` with an
+  eight-entry fixed page-anchor history; it is not yet the active reader UI.
+- Reader preparation now has a fixed-capacity internal job queue for explicit
+  extract, index, pagination, image, and cache-cleanup phases.
+- EPUB and FB2 now share an internal byte-based progress estimator that stays
+  independent of the selected font and page layout.
+- New reader cache namespaces now have a stable internal book identity derived
+  from the source path and signature, ready for versioned cache migration.
+- Added a format-neutral bounded render-command executor, separating page
+  layout from the future e-ink display adapter.
+- EPUB chapter preparation for the new reader now streams one spine entry into
+  a versioned, atomically-written SD cache source instead of buffering HTML in RAM.
+- The internal reader state now has a compact versioned binary record with a
+  CRC check. It preserves the selected page-counter mode and logical position
+  safely across a future sleep/wake integration.
+
+### Documentation
+- Added a coursework-ready architecture summary with module mapping, embedded
+  memory constraints, verification procedure, and staged migration limits.
+
+### Changed
+- Reading-statistics time-of-day and weekday summaries now show exact text durations instead of relative bars.
+
+### Fixed
+- Opening consecutive chapters in an illustrated FB2 no longer rebuilds a
+  full in-memory cross-reference table for every page, avoiding heap
+  fragmentation and restarts on ESP32-C3.
+- Reading-statistics buckets with no reading time now display `0 min` instead
+  of `< 1 min`; only a real non-zero sub-minute session uses the latter label.
+- Opening a cached, illustration-heavy FB2 no longer loads the complete book-wide image index into RAM for every chapter; only the current chapter's images are retained while it is rendered.
+- Prevented EPUB opening from restarting the device when an unusually large package manifest is inspected after other books: optional streaming preparation now safely skips that non-essential pass.
+- Web uploads now optimise every oversized embedded FB2 illustration, not only the cover image.
+- When a chapter must skip images because of low memory, the reader now stays
+  on the text page instead of replacing it with a blocking warning screen.
+- Backspace in the on-screen keyboard now removes a complete UTF-8 character.
+  Russian and Ukrainian letters no longer leave an unknown-symbol marker in
+  search fields; cursor-mode left/right movement also stays on character edges.
+- Opening an EPUB, TXT, or XTC now handles a reader-object allocation failure
+  as a recoverable error instead of relying on throwing `new` on ESP32-C3.
+- FB2 preparation now reports 100% only after its final metadata and cache
+  maintenance work completes.
+- Looking up FB2 chapter sizes no longer allocates temporary strings while
+  scanning the on-SD section index, reducing heap fragmentation on large books.
+- FB2 virtual chapters split around illustrations now retain balanced
+  paragraphs, quotes, poems, and tables. Illustration-heavy books no longer
+  stop at a later "mismatched tag" XML error after initially opening normally.
+- Glyph drawing now clips at the logical display edge before entering the
+  framebuffer path. Malformed or intentionally offset typography can no longer
+  flood the serial log with out-of-range pixel writes.
+- Valid image-only FB2 sections no longer appear as metadata-cache errors while
+  their reading-progress estimate is being assembled.
+- Oversized EPUB spine files can now use the existing SD-streaming splitter at
+  safe X4 heap levels instead of being rejected before preparation.
+- FB2 collections with named main bodies now retain their real book and chapter
+  titles in the table of contents instead of falling back to `Section N`.
+
 ## [v1.1.2] - 2026-08-07
 
 ### Changed

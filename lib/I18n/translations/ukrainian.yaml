@@ -2,6 +2,10 @@ _language_name: "Українська"
 _language_code: "UK"
 _order: "2"
 
+STR_BOOT_OTHER_SLOT: "Завантажити іншу прошивку"
+STR_BOOT_OTHER_SLOT_CONFIRM: "Завантажити %s (%lu КБ) після перезавантаження?"
+STR_OTHER_SLOT_INVALID: "Інший слот прошивки порожній або пошкоджений"
+
 
 STR_INKMOD: "inkmod"
 STR_BOOTING: "Завантаження"
@@ -187,6 +191,7 @@ STR_COVER: "Обкладинка"
 STR_NONE_OPT: "Немає"
 STR_FIT: "Вписати"
 STR_CROP: "Обрізати"
+STR_BLACK_BACKGROUND: "Чорна заливка"
 STR_NEVER: "Ніколи"
 STR_IN_READER: "У режимі читання"
 STR_ALWAYS: "Завжди"

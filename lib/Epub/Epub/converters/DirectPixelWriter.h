@@ -128,6 +128,13 @@ struct DirectPixelWriter {
     const int phyX = rowPhyXBase + logicalX * phyXStepX;
     const int phyY = rowPhyYBase + logicalX * phyYStepX;
 
+    // Image layout is allowed to place an image partially beyond the logical
+    // viewport.  The old writer only checked the physical row: a transformed
+    // X outside the panel then fed a negative/oversized byte index into the
+    // framebuffer and corrupted adjacent heap.  This guard makes the direct
+    // path match GfxRenderer::drawPixel()'s bounds contract.
+    if (static_cast<unsigned>(phyX) >= static_cast<unsigned>(displayWidthBytes * 8)) return;
+
     // Band-local row. The unsigned compare drops both off-band pixels (strip
     // mode) and any out-of-frame row (full-frame mode) in one branch.
     const int sy = phyY - originY;

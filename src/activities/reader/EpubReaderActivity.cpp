@@ -2575,11 +2575,11 @@ void EpubReaderActivity::render(RenderLock&& lock) {
       if (usedFallbackFont) {
         queueFallbackFontAlert();
       } else if (imagesWereSuppressed) {
-        snprintf(APP_STATE.pendingAlertTitle, sizeof(APP_STATE.pendingAlertTitle), "%s",
-                 tr(STR_LOW_MEMORY_IMAGES_TITLE));
-        snprintf(APP_STATE.pendingAlertBody, sizeof(APP_STATE.pendingAlertBody), "%s", tr(STR_LOW_MEMORY_IMAGES_BODY));
-        APP_STATE.pendingAlertGoHomeOnBack.store(false, std::memory_order_relaxed);
-        APP_STATE.hasPendingAlert.store(true, std::memory_order_release);
+        // Image fallback is recoverable: the section cache already contains
+        // all text. Do not replace the newly opened book with a blocking
+        // alert screen; leave the reader on its first text page and record
+        // the omitted images in the serial log instead.
+        LOG_INF("ERS", "Opened chapter %d without some images (low-memory fallback)", currentSpineIndex);
       }
     } else {
       LOG_DBG("ERS", "Cache found, skipping build... (pages=%u, font=%d fallback=%u free=%u, maxAlloc=%u)",
