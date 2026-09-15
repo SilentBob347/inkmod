@@ -184,8 +184,8 @@ assets/        project artwork
 
 inkMOD is free and open source. Financial support is optional and never unlocks firmware functionality.
 
-- 📢 Telegram: https://t.me/inkmodx4
-- ❤️ Support development: https://send.monobank.ua/jar/9p1oM8v2sa
+- [![Telegram](https://img.shields.io/badge/Join%20inkMOD%20on%20Telegram-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/inkmodx4)
+- [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/V7S125SA30)
 
 Installation instructions and community experience are also maintained in the inkMOD/Xteink discussion on 4PDA.
 
