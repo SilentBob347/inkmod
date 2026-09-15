@@ -7,6 +7,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() { return NO_UPDATE; }
 OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback, void*, std::atomic<bool>*) { return NO_UPDATE; }
 #else
 #include <Logging.h>
+#include <SecureHttpClient.h>
 #include <mbedtls/sha256.h>
 
 #include "FirmwareFlasher.h"
@@ -38,6 +39,29 @@ constexpr char firmwareAssetName[] = "firmware.bin";
 
 constexpr char binSuffix[] = ".bin";
 constexpr size_t VERSION_SEGMENT_COUNT = 4;
+
+// api.github.com currently chains to USERTrust ECC Certification Authority.
+// On ESP32-C3 the ESP-IDF crt bundle can fail the signature verification step
+// under memory pressure before OTA even starts. For X3/X4 we therefore fetch
+// only the release metadata through the existing low-memory wolfSSL transport,
+// while still verifying the server certificate against this pinned root CA.
+// The actual firmware asset keeps the existing authenticated staging flow: the
+// asset SHA256 comes from this verified GitHub API response and is checked
+// before flashing.
+constexpr char githubApiRootCa[] = R"PEM(-----BEGIN CERTIFICATE-----
+MIICjzCCAhWgAwIBAgIQXIuZxVqUxdJxVt7NiYDMJjAKBggqhkjOPQQDAzCBiDELMAkGA1UEBhMC
+VVMxEzARBgNVBAgTCk5ldyBKZXJzZXkxFDASBgNVBAcTC0plcnNleSBDaXR5MR4wHAYDVQQKExVU
+aGUgVVNFUlRSVVNUIE5ldHdvcmsxLjAsBgNVBAMTJVVTRVJUcnVzdCBFQ0MgQ2VydGlmaWNhdGlv
+biBBdXRob3JpdHkwHhcNMTAwMjAxMDAwMDAwWhcNMzgwMTE4MjM1OTU5WjCBiDELMAkGA1UEBhMC
+VVMxEzARBgNVBAgTCk5ldyBKZXJzZXkxFDASBgNVBAcTC0plcnNleSBDaXR5MR4wHAYDVQQKExVU
+aGUgVVNFUlRSVVNUIE5ldHdvcmsxLjAsBgNVBAMTJVVTRVJUcnVzdCBFQ0MgQ2VydGlmaWNhdGlv
+biBBdXRob3JpdHkwdjAQBgcqhkjOPQIBBgUrgQQAIgNiAAQarFRaqfloI+d61SRvU8Za2EurxtW2
+0eZzca7dnNYMYf3boIkDuAUU7FfO7l0/4iGzzvfUinngo4N+LZfQYcTxmdwlkWOrfzCjtHDix6Ez
+nPO/LlxTsV+zfTJ/ijTjeXmjQjBAMB0GA1UdDgQWBBQ64QmG1M8ZwpZ2dEl23OA1xmNjmjAOBgNV
+HQ8BAf8EBAMCAQYwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAwNoADBlAjA2Z6EWCNzklwBB
+HU6+4WMBzzuqQhFkoJ2UOQIReVx7Hfpkue4WQrO/isIJxOzksU0CMQDpKmFHjFJKS04YcPbWRNZu
+9YO6bVi9JNlWSOrvxKJGgYhqOkbRqZtNyWHa0V1Xahg=
+-----END CERTIFICATE-----)PEM";
 
 struct ParsedVersion {
   int segments[VERSION_SEGMENT_COUNT] = {0, 0, 0, 0};
@@ -233,15 +257,49 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   processedSize = 0;
   totalSize = 0;
 
-  esp_err_t esp_err;
   ReleaseJsonParser releaseParser(isMatchingFirmwareAssetName);
+  totalBytesReceived = 0;
+  LOG_DBG("OTA", "Checking for update (current: %s)", INKMOD_VERSION);
 
+#if defined(CONFIG_IDF_TARGET_ESP32C3) && defined(FREEINK_NET_WOLFSSL)
+  // X3/X4: use wolfSSL for the GitHub release API. The ESP-IDF certificate
+  // bundle path can reach PK verification and then fail with an allocation
+  // error on the PSRAM-less C3. wolfSSL keeps a smaller live working set.
+  freeink::SecureHttpClient http;
+  http.setCACert(githubApiRootCa);
+  http.setTimeout(20000);
+  http.setFollowRedirects(0);
+  http.setAllowRedirectDowngrade(false);
+  http.setReuse(false);
+  http.setPreferTls12(true);
+  http.setUserAgent(std::string("inkMOD-ESP32-") + INKMOD_VERSION);
+  http.addHeader("Accept", "application/vnd.github+json");
+  http.addHeader("Accept-Encoding", "identity");
+
+  if (!http.begin(latestReleaseUrl)) {
+    LOG_ERR("OTA", "GitHub API wolfSSL rejected URL");
+    return INTERNAL_UPDATE_ERROR;
+  }
+
+  const int status = http.GET([&](const uint8_t* data, const size_t len) {
+    if (len == 0) return true;
+    totalBytesReceived += len;
+    releaseParser.feed(reinterpret_cast<const char*>(data), len);
+    return true;
+  });
+  const bool complete = http.responseComplete();
+  http.end();
+
+  if (status != 200 || !complete) {
+    LOG_ERR("OTA", "GitHub API wolfSSL failed: status=%d complete=%d bytes=%zu", status, complete ? 1 : 0,
+            totalBytesReceived);
+    return HTTP_ERROR;
+  }
+#else
+  esp_err_t esp_err;
   esp_http_client_config_t client_config = {
       .url = latestReleaseUrl,
       .event_handler = event_handler,
-      // 4096 holds the API response headers; the 32KB body streams through the
-      // parser in chunks so RX needn't be larger. TX only carries our GET.
-      // Both free before installUpdate, so smaller leaves it less fragmentation.
       .buffer_size = 4096,
       .buffer_size_tx = 1024,
       .user_data = &releaseParser,
@@ -249,9 +307,6 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
       .crt_bundle_attach = esp_crt_bundle_attach,
       .keep_alive_enable = true,
   };
-
-  totalBytesReceived = 0;
-  LOG_DBG("OTA", "Checking for update (current: %s)", INKMOD_VERSION);
 
   esp_http_client_handle_t client_handle = esp_http_client_init(&client_config);
   if (!client_handle) {
@@ -278,6 +333,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
     LOG_ERR("OTA", "esp_http_client_cleanup Failed : %s", esp_err_to_name(esp_err));
     return INTERNAL_UPDATE_ERROR;
   }
+#endif
 
   LOG_DBG("OTA", "Response received: %zu bytes total", totalBytesReceived);
   LOG_DBG("OTA", "Parser results: tag=%s firmware=%s", releaseParser.foundTag() ? "yes" : "no",
@@ -390,29 +446,57 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
     totalSize = otaSize > 0 ? otaSize * 2 : 0;
     processedSize = 0;
     int downloadPct = -1;
-    HttpDownloader::DownloadOptions options(false, false, [&]() { return isCancellationRequested(); }, 4096);
-    const auto dl = HttpDownloader::downloadToFile(
-        otaUrl, OTA_STAGING_PATH,
-        [&](size_t downloaded, size_t total) {
-          const size_t expectedTotal = otaSize > 0 ? otaSize : total;
-          processedSize = downloaded;
-          if (onProgress && expectedTotal > 0) {
-            const int pct = static_cast<int>(static_cast<uint64_t>(downloaded) * 100 / expectedTotal);
-            if (pct != downloadPct) {
-              downloadPct = pct;
-              onProgress(ctx);
-            }
-          }
-        },
-        nullptr, "", "", options);
+    auto progress = [&](size_t downloaded, size_t total) {
+      const size_t expectedTotal = otaSize > 0 ? otaSize : total;
+      processedSize = downloaded;
+      if (onProgress && expectedTotal > 0) {
+        const int pct = static_cast<int>(static_cast<uint64_t>(downloaded) * 100 / expectedTotal);
+        if (pct != downloadPct) {
+          downloadPct = pct;
+          onProgress(ctx);
+        }
+      }
+    };
 
-    if (dl == HttpDownloader::ABORTED || isCancellationRequested()) {
-      Storage.remove(OTA_STAGING_PATH);
-      return CANCELLED_ERROR;
+    // The C3 can occasionally lose a long GitHub CDN TLS stream near the end
+    // (wolfSSL read error -125). Keep the authenticated partial file and resume
+    // it with HTTP Range instead of throwing away 4+ MB and starting over.
+    HttpDownloader::DownloadError dl = HttpDownloader::HTTP_ERROR;
+    constexpr int kMaxDownloadAttempts = 4;
+    for (int attempt = 0; attempt < kMaxDownloadAttempts; ++attempt) {
+      if (isCancellationRequested()) {
+        Storage.remove(OTA_STAGING_PATH);
+        return CANCELLED_ERROR;
+      }
+
+      const bool resume = attempt > 0;
+      if (resume) {
+        size_t partialSize = 0;
+        HalFile partial;
+        if (Storage.openFileForRead("OTA", OTA_STAGING_PATH, partial) && partial) {
+          partialSize = partial.fileSize();
+          partial.close();
+        }
+        LOG_INF("OTA", "Retrying staged download %d/%d from byte %zu", attempt + 1,
+                kMaxDownloadAttempts, partialSize);
+        delay(500);
+      }
+
+      // preservePartial=true is essential: on a transient TLS/read failure the
+      // downloader leaves the verified-by-final-SHA staging file on SD.
+      HttpDownloader::DownloadOptions options(true, resume,
+                                               [&]() { return isCancellationRequested(); }, 4096);
+      dl = HttpDownloader::downloadToFile(otaUrl, OTA_STAGING_PATH, progress, nullptr, "", "", options);
+      if (dl == HttpDownloader::OK) break;
+      if (dl == HttpDownloader::ABORTED || isCancellationRequested()) {
+        Storage.remove(OTA_STAGING_PATH);
+        return CANCELLED_ERROR;
+      }
     }
+
     if (dl != HttpDownloader::OK) {
       Storage.remove(OTA_STAGING_PATH);
-      LOG_ERR("OTA", "Authenticated staging download failed: %d", static_cast<int>(dl));
+      LOG_ERR("OTA", "Authenticated staging download failed after retries: %d", static_cast<int>(dl));
       return HTTP_ERROR;
     }
 
@@ -464,11 +548,23 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
     return OK;
   };
 
+#if defined(CONFIG_IDF_TARGET_ESP32C3) && defined(FREEINK_NET_WOLFSSL)
+  // X3/X4 (ESP32-C3): do not try esp_https_ota first. On current GitHub/CDN
+  // certificate chains the system mbedTLS path can fail with X.509 allocation
+  // errors (-0x2880) or leave the socket/TLS allocator in a state where the
+  // immediate wolfSSL fallback cannot even open github.com:443. The release
+  // metadata above was already fetched over verified wolfSSL TLS and contains
+  // GitHub's SHA256 digest for the selected asset, so go straight to the
+  // authenticated SD staging path and verify that digest before flashing.
+  LOG_INF("OTA", "C3: using authenticated wolfSSL staging OTA directly");
+  return installViaAuthenticatedStaging();
+#else
   esp_err = esp_https_ota_begin(&ota_config, &ota_handle);
   if (esp_err != ESP_OK) {
     LOG_ERR("OTA", "HTTP OTA Begin Failed: %s; trying authenticated staging fallback", esp_err_to_name(esp_err));
     return installViaAuthenticatedStaging();
   }
+#endif
 
   int lastReportedPct = -1;
   do {
