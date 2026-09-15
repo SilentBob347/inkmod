@@ -132,6 +132,19 @@ inline bool isTouchReaderMenuTap(const MappedInputManager& input) {
   if (!input.wasScreenTapped(x, y)) return false;
   const int width = input.getRendererWidth();
   const int height = input.getRendererHeight();
+
+  // In landscape the old center-third box is too easy to hit while reaching
+  // for the page edges. Keep the menu gesture deliberately central there:
+  // middle 25% of the long axis and middle 50% of the short axis. Portrait
+  // keeps the familiar center-third behaviour.
+  if (width > height) {
+    const int left = (width * 3) / 8;
+    const int right = width - left;
+    const int top = height / 4;
+    const int bottom = height - top;
+    return x >= left && x < right && y >= top && y < bottom;
+  }
+
   return x >= width / 3 && x < width - width / 3 && y >= height / 3 && y < height - height / 3;
 }
 

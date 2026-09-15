@@ -2,6 +2,8 @@
 
 #include <GfxRenderer.h>
 #include <Logging.h>
+#include <BoardConfig.h>
+#include <HalTiltSensor.h>
 
 #include <Arduino.h>
 #include <esp_ota_ops.h>
@@ -594,12 +596,65 @@ void SettingsActivity::loop() {
 
       if (tx >= listRect.x && tx < listRect.x + listRect.width && ty >= listRect.y && ty < listRect.y + listRect.height &&
           settingsCount > 0) {
-        const int rowHeight = std::max(1, metrics.listRowHeight);
-        const int pageItems = std::max(1, listRect.height / rowHeight);
-        const int selectedListIndex = std::max(0, selectedSettingIndex - 1);
-        const int pageStart = (selectedListIndex / pageItems) * pageItems;
-        const int row = (ty - listRect.y) / rowHeight;
-        const int touched = pageStart + row;
+        int touched = -1;
+
+        if (static_cast<InkMODSettings::UI_THEME>(SETTINGS.uiTheme) == InkMODSettings::UI_THEME::ROUNDEDRAFF) {
+          // RoundedRaff does not use metrics.listRowHeight verbatim on X4 Pro:
+          // drawList() expands ordinary rows to at least 56 px and lays section
+          // headers out with their own height/padding. Mirror that visual geometry
+          // here so touch hitboxes stay on top of the text/cards that are drawn.
+          constexpr int kRoundedGap = 6;
+          constexpr int kSectionUnderlineGap = 4;
+          const int titleLineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+          int normalRowHeight = std::max(metrics.listRowHeight, titleLineHeight + 8);
+          if (BoardConfig::isX4Pro()) normalRowHeight = std::max(normalRowHeight, 56);
+          const int sectionRowHeight = titleLineHeight + kSectionUnderlineGap;
+          const int sectionTopPadding = halTiltSensor.isAvailable() ? 10 : 20;
+
+          bool hasHeaders = false;
+          for (int i = 0; i < settingsCount; ++i) {
+            if ((*currentSettings)[i].type == SettingType::SECTION_HEADER) {
+              hasHeaders = true;
+              break;
+            }
+          }
+          const int rowGap = hasHeaders ? 0 : kRoundedGap;
+          auto rowHeightFor = [&](int i) {
+            return (*currentSettings)[i].type == SettingType::SECTION_HEADER ? sectionRowHeight : normalRowHeight;
+          };
+
+          int totalContentHeight = 0;
+          for (int i = 0; i < settingsCount; ++i) {
+            if (i > 0) totalContentHeight += rowGap;
+            if (i > 0 && (*currentSettings)[i].type == SettingType::SECTION_HEADER) totalContentHeight += sectionTopPadding;
+            totalContentHeight += rowHeightFor(i);
+          }
+          const bool contentFits = totalContentHeight <= listRect.height;
+          const int rowStep = normalRowHeight + rowGap;
+          const int pageItems = contentFits ? std::max(1, settingsCount) : std::max(1, listRect.height / rowStep);
+          const int selectedListIndex = std::max(0, selectedSettingIndex - 1);
+          const int pageStart = (selectedListIndex / pageItems) * pageItems;
+          const int pageEnd = std::min(settingsCount, pageStart + pageItems);
+
+          int rowY = listRect.y;
+          for (int i = pageStart; i < pageEnd; ++i) {
+            if (i > pageStart && (*currentSettings)[i].type == SettingType::SECTION_HEADER) rowY += sectionTopPadding;
+            const int h = rowHeightFor(i);
+            if (ty >= rowY && ty < rowY + h) {
+              touched = i;
+              break;
+            }
+            rowY += h + rowGap;
+          }
+        } else {
+          const int rowHeight = std::max(1, metrics.listRowHeight);
+          const int pageItems = std::max(1, listRect.height / rowHeight);
+          const int selectedListIndex = std::max(0, selectedSettingIndex - 1);
+          const int pageStart = (selectedListIndex / pageItems) * pageItems;
+          const int row = (ty - listRect.y) / rowHeight;
+          touched = pageStart + row;
+        }
+
         if (touched >= 0 && touched < settingsCount) {
           const auto& setting = (*currentSettings)[touched];
           if (setting.type != SettingType::SECTION_HEADER && setting.type != SettingType::INFO) {
