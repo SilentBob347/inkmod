@@ -978,8 +978,13 @@ inline std::vector<SettingInfo> buildControlsSettingsParentList(const std::vecto
   const bool hasTiltPageTurnDirectionSetting = hasSettingByName(allSettings, StrId::STR_TILT_PAGE_TURN_DIRECTION);
 
   std::vector<SettingInfo> settings;
-  settings.reserve(4 + (hasTiltPageTurnSetting ? 1u : 0u) + (hasTiltPageTurnDirectionSetting ? 1u : 0u));
-  addSettingByName(settings, allSettings, StrId::STR_TOUCH_READER_CONTROLS);
+  settings.reserve(4 + (BoardConfig::isX4Pro() ? 1u : 0u) + (hasTiltPageTurnSetting ? 1u : 0u) +
+                   (hasTiltPageTurnDirectionSetting ? 1u : 0u));
+  // Touch reader controls only make sense on the touchscreen X4 Pro.
+  // X3/X4 are buttons-only devices, so do not expose a dead setting there.
+  if (BoardConfig::isX4Pro()) {
+    addSettingByName(settings, allSettings, StrId::STR_TOUCH_READER_CONTROLS);
+  }
   settings.push_back(SettingInfo::Submenu(StrId::STR_POWER_BUTTON, SettingAction::ControlsPowerButton));
   if (BoardConfig::isX4Pro()) {
     settings.push_back(SettingInfo::Submenu(StrId::STR_HOME_BUTTON, SettingAction::ControlsHomeButton));
