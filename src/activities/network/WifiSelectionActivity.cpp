@@ -1,4 +1,5 @@
 #include "WifiSelectionActivity.h"
+#include "BoardConfig.h"
 
 #include "BootLog.h"
 #include <GfxRenderer.h>
@@ -22,6 +23,7 @@
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchListNavigation.h"
 
 namespace {
 
@@ -210,6 +212,38 @@ const char* wifiAuthName(const int authMode) {
     default:
       return "UNKNOWN";
   }
+}
+
+
+// X4 Pro touch-only action helper for compact two-button prompts.  The visible
+// labels stay where they were, but the finger target spans a generous rectangle
+// around each choice so confirmation/error screens do not require hardware keys.
+int promptTouchChoice(MappedInputManager& input, const Rect& screen, int buttonY, int buttonWidth, int buttonSpacing) {
+  if (!input.hasTouch()) return -1;
+  int tx = 0, ty = 0;
+  if (!(input.wasScreenTouchDown(tx, ty) || input.wasScreenTapped(tx, ty))) return -1;
+
+  const int totalWidth = buttonWidth * 2 + buttonSpacing;
+  const int startX = screen.x + (screen.width - totalWidth) / 2;
+  constexpr int padX = 22;
+  constexpr int padTop = 18;
+  constexpr int touchHeight = 56;
+  if (ty < buttonY - padTop || ty >= buttonY - padTop + touchHeight) return -1;
+
+  const int split = startX + buttonWidth + buttonSpacing / 2;
+  if (tx >= startX - padX && tx < split) return 0;
+  if (tx >= split && tx < startX + totalWidth + padX) return 1;
+  return -1;
+}
+
+bool touchBottomAction(MappedInputManager& input, const Rect& screen) {
+  if (!input.hasTouch()) return false;
+  int tx = 0, ty = 0;
+  if (!(input.wasScreenTouchDown(tx, ty) || input.wasScreenTapped(tx, ty))) return false;
+  // Error/connected screens show one centered action.  Treat the lower third
+  // as its finger target, excluding the very edge reserved for system gestures.
+  return tx >= screen.x + 24 && tx < screen.x + screen.width - 24 &&
+         ty >= screen.y + (screen.height * 2) / 3 && ty < screen.y + screen.height - 12;
 }
 
 }  // namespace
@@ -409,12 +443,32 @@ void WifiSelectionActivity::selectNetwork(const int index) {
   // Check if we have saved credentials for this network
   const auto* savedCred = WIFI_STORE.findCredential(selectedSSID);
   if (savedCred && !savedCred->password.empty()) {
-    // Use saved password - connect directly
     enteredPassword = savedCred->password;
     usedSavedPassword = true;
     LOG_INF("WIFI", "Selected network: ssid=%s encrypted=%d saved=1 rssi=%d", selectedSSID.c_str(),
             selectedRequiresPassword, network.rssi);
     LOG_DBG("WiFi", "Using saved password for %s, length: %zu", selectedSSID.c_str(), enteredPassword.size());
+
+    // On X4 Pro let the user verify/edit a saved credential. This also heals
+    // credentials entered during early touch-keyboard builds that may contain
+    // the wrong character even though the SSID itself is saved correctly.
+    if (mappedInput.hasTouch() && selectedRequiresPassword) {
+      state = WifiSelectionState::PASSWORD_ENTRY;
+      const std::string initialPassword = enteredPassword;
+      startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_ENTER_WIFI_PASSWORD),
+                                                                     initialPassword, 64, InputType::Password),
+                             [this](const ActivityResult& result) {
+                               if (result.isCancelled) {
+                                 startWifiScan();
+                               } else {
+                                 enteredPassword = std::get<KeyboardResult>(result.data).text;
+                                 usedSavedPassword = false;
+                                 attemptConnection();
+                               }
+                             });
+      return;
+    }
+
     attemptConnection();
     return;
   }
@@ -443,6 +497,7 @@ void WifiSelectionActivity::selectNetwork(const int index) {
 }
 
 void WifiSelectionActivity::attemptConnection() {
+  x4ProRecoveryRetryCount = 0;
   BootLog::stepf("WIFI", "attemptConnection start: ssid=%s auto=%d saved=%d", selectedSSID.c_str(),
                   autoConnecting ? 1 : 0, usedSavedPassword ? 1 : 0);
 
@@ -523,7 +578,9 @@ void WifiSelectionActivity::attemptConnection() {
   } else {
     BootLog::step("WIFI", "attemptConnection: already WIFI_STA, skipping persistent()/mode() reinit");
   }
-  BootLog::step("WIFI", "attemptConnection: calling WiFi.disconnect(true)");
+  BootLog::step("WIFI", BoardConfig::isX4Pro()
+      ? "attemptConnection: calling WiFi.disconnect(false) [X4 Pro keep netstack]"
+      : "attemptConnection: calling WiFi.disconnect(true)");
   // Two consecutive boot-log captures of this exact hang both stopped right
   // here, at disconnect(true, true) - the eraseap=true variant. That's a
   // known-flaky ESP32 WiFi-driver call, and WiFi.persistent(false) above
@@ -534,10 +591,15 @@ void WifiSelectionActivity::attemptConnection() {
   // Explicit 1000ms timeout (CrossInk uses the same value) instead of the
   // 100ms default, and don't treat a timeout as fatal - continue with the
   // explicit begin() below regardless, same as CrossInk does.
-  if (!WiFi.disconnect(true, false, 1000)) {
+  const bool disconnected = BoardConfig::isX4Pro()
+      ? WiFi.disconnect(false, false, 1000)
+      : WiFi.disconnect(true, false, 1000);
+  if (!disconnected) {
     BootLog::step("WIFI", "attemptConnection: WiFi.disconnect() timed out (1000ms); continuing anyway");
   }
-  BootLog::step("WIFI", "attemptConnection: WiFi.disconnect(true) returned");
+  BootLog::step("WIFI", BoardConfig::isX4Pro()
+      ? "attemptConnection: WiFi.disconnect(false) returned"
+      : "attemptConnection: WiFi.disconnect(true) returned");
   delay(100);
 #ifndef SIMULATOR
   sLastStaDisconnectReason = 0;
@@ -595,6 +657,7 @@ void WifiSelectionActivity::checkConnectionStatus() {
     snprintf(ipStr, sizeof(ipStr), "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
     connectedIP = ipStr;
     autoConnecting = false;
+    x4ProRecoveryRetryCount = 0;
 #ifndef SIMULATOR
     sConnectionAttemptLoggingActive = false;
 #endif
@@ -647,6 +710,42 @@ void WifiSelectionActivity::checkConnectionStatus() {
   }
 
   if (wifiStatusIsConnectionFailure(status)) {
+    // ESP32-S3/X4 Pro occasionally leaves the station supplicant in a stale
+    // state after an AUTH_EXPIRE/AUTH_FAIL/NO_AP_FOUND transition.  One soft
+    // reconnect with the exact same credentials is enough to recover in the
+    // field, while a genuinely wrong password still fails on the second try.
+    // Do NOT bounce WIFI_OFF here: repeated netstack teardown/re-init is the
+    // failure mode we are specifically avoiding on X4 Pro.
+    if (BoardConfig::isX4Pro() && x4ProRecoveryRetryCount == 0) {
+      ++x4ProRecoveryRetryCount;
+#ifndef SIMULATOR
+      const unsigned recoveryReason = static_cast<unsigned>(sLastStaDisconnectReason);
+#else
+      const unsigned recoveryReason = 0;
+#endif
+      LOG_INF("WIFI", "X4 Pro soft recovery retry after status=%d/%s reason=%u", static_cast<int>(status),
+              wifiStatusName(status), recoveryReason);
+#ifndef SIMULATOR
+      sConnectionAttemptLoggingActive = false;
+#endif
+      WiFi.disconnect(false, false, 1000);
+      delay(250);
+#ifndef SIMULATOR
+      sLastStaDisconnectReason = 0;
+      sConnectionAttemptLoggingActive = true;
+#endif
+      connectionStartTime = millis();
+      lastConnectionStatusLogTime = 0;
+      lastLoggedWifiStatus = -1;
+      wl_status_t retryStatus = WL_IDLE_STATUS;
+      if (selectedRequiresPassword && !enteredPassword.empty())
+        retryStatus = WiFi.begin(selectedSSID.c_str(), enteredPassword.c_str());
+      else
+        retryStatus = WiFi.begin(selectedSSID.c_str());
+      LOG_INF("WIFI", "X4 Pro soft recovery WiFi.begin returned status=%d/%s", static_cast<int>(retryStatus),
+              wifiStatusName(retryStatus));
+      return;
+    }
     connectionError = tr(STR_ERROR_GENERAL_FAILURE);
     if (status == WL_NO_SSID_AVAIL) {
       connectionError = tr(STR_ERROR_NETWORK_NOT_FOUND);
@@ -670,6 +769,30 @@ void WifiSelectionActivity::checkConnectionStatus() {
 
   // Check for timeout
   if (millis() - connectionStartTime > CONNECTION_TIMEOUT_MS) {
+    if (BoardConfig::isX4Pro() && x4ProRecoveryRetryCount == 0) {
+      ++x4ProRecoveryRetryCount;
+      LOG_INF("WIFI", "X4 Pro soft recovery retry after connection timeout");
+#ifndef SIMULATOR
+      sConnectionAttemptLoggingActive = false;
+#endif
+      WiFi.disconnect(false, false, 1000);
+      delay(250);
+#ifndef SIMULATOR
+      sLastStaDisconnectReason = 0;
+      sConnectionAttemptLoggingActive = true;
+#endif
+      connectionStartTime = millis();
+      lastConnectionStatusLogTime = 0;
+      lastLoggedWifiStatus = -1;
+      wl_status_t retryStatus = WL_IDLE_STATUS;
+      if (selectedRequiresPassword && !enteredPassword.empty())
+        retryStatus = WiFi.begin(selectedSSID.c_str(), enteredPassword.c_str());
+      else
+        retryStatus = WiFi.begin(selectedSSID.c_str());
+      LOG_INF("WIFI", "X4 Pro soft recovery WiFi.begin returned status=%d/%s", static_cast<int>(retryStatus),
+              wifiStatusName(retryStatus));
+      return;
+    }
     WiFi.disconnect();
     connectionError = tr(STR_ERROR_CONNECTION_TIMEOUT);
     LOG_INF("WIFI", "Connection timed out: ssid=%s elapsed=%lums lastStatus=%d/%s", selectedSSID.c_str(),
@@ -724,6 +847,23 @@ void WifiSelectionActivity::loop() {
 
   // Handle save prompt state
   if (state == WifiSelectionState::SAVE_PROMPT) {
+    if (mappedInput.hasTouch()) {
+      const auto metrics = UITheme::getInstance().getMetrics();
+      const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+      const int height = renderer.getLineHeight(UI_10_FONT_ID);
+      const int top = screen.y + (screen.height - height * 3) / 2;
+      const int choice = promptTouchChoice(mappedInput, screen, top + 80, 60, 30);
+      if (choice >= 0) {
+        savePromptSelection = choice;
+        mappedInput.suppressTouchContact();
+        if (choice == 0) {
+          RenderLock lock(*this);
+          WIFI_STORE.addCredential(selectedSSID, enteredPassword);
+        }
+        onComplete(true);
+        return;
+      }
+    }
     if (mappedInput.wasPressed(MappedInputManager::Button::Up) ||
         mappedInput.wasPressed(MappedInputManager::Button::Left)) {
       if (savePromptSelection > 0) {
@@ -753,6 +893,25 @@ void WifiSelectionActivity::loop() {
 
   // Handle forget prompt state (connection failed with saved credentials)
   if (state == WifiSelectionState::FORGET_PROMPT) {
+    if (mappedInput.hasTouch()) {
+      const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+      const int height = renderer.getLineHeight(UI_10_FONT_ID);
+      const int top = screen.y + (screen.height - height * 3) / 2;
+      const int choice = promptTouchChoice(mappedInput, screen, top + 80, 120, 30);
+      if (choice >= 0) {
+        forgetPromptSelection = choice;
+        mappedInput.suppressTouchContact();
+        if (choice == 1) {
+          RenderLock lock(*this);
+          WIFI_STORE.removeCredential(selectedSSID);
+          const auto network = std::find_if(networks.begin(), networks.end(),
+                                            [this](const WifiNetworkInfo& net) { return net.ssid == selectedSSID; });
+          if (network != networks.end()) network->hasSavedPassword = false;
+        }
+        startWifiScan();
+        return;
+      }
+    }
     if (mappedInput.wasPressed(MappedInputManager::Button::Up) ||
         mappedInput.wasPressed(MappedInputManager::Button::Left)) {
       if (forgetPromptSelection > 0) {
@@ -787,6 +946,12 @@ void WifiSelectionActivity::loop() {
   }
 
   if (state == WifiSelectionState::CONNECTED) {
+    const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+    if (touchBottomAction(mappedInput, screen)) {
+      mappedInput.suppressTouchContact();
+      onComplete(true);
+      return;
+    }
     if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
         mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       onComplete(true);
@@ -796,7 +961,10 @@ void WifiSelectionActivity::loop() {
 
   // Handle connection failed state
   if (state == WifiSelectionState::CONNECTION_FAILED) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
+    const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+    const bool touchDone = touchBottomAction(mappedInput, screen);
+    if (touchDone) mappedInput.suppressTouchContact();
+    if (touchDone || mappedInput.wasPressed(MappedInputManager::Button::Back) ||
         mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       // If we were auto-connecting or using a saved credential, offer to forget
       // the network
@@ -815,14 +983,31 @@ void WifiSelectionActivity::loop() {
 
   // Handle network list state
   if (state == WifiSelectionState::NETWORK_LIST) {
+    bool touchActivate = false;
+    if (mappedInput.hasTouch() && !networks.empty()) {
+      auto& theme = UITheme::getInstance();
+      const auto metrics = theme.getMetrics();
+      const Rect screen = theme.getScreenSafeArea(renderer, true, false);
+      const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
+      const int contentHeight = screen.height - contentTop - metrics.verticalSpacing * 2;
+      int touchNetworkIndex = static_cast<int>(selectedNetworkIndex);
+      auto touch = TouchListNavigation::handle(mappedInput, touchNetworkIndex, static_cast<int>(networks.size()),
+                                               Rect{screen.x, contentTop, screen.width, contentHeight}, metrics.listRowHeight);
+      if (touch.handled) {
+        selectedNetworkIndex = static_cast<size_t>(std::max(0, touchNetworkIndex));
+        if (!touch.activate) { requestUpdate(); return; }
+      }
+      touchActivate = touch.activate;
+    }
+
     // Check for Back button to exit (cancel)
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
       onComplete(false);
       return;
     }
 
-    // Check for Confirm button to select network or rescan
-    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    // Check for Confirm/touch to select network or rescan
+    if (touchActivate || mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       if (!networks.empty()) {
         selectNetwork(selectedNetworkIndex);
       } else {
@@ -998,9 +1183,18 @@ void WifiSelectionActivity::renderConnected(const Rect* screen, const ThemeMetri
   const std::string ipInfo = std::string(tr(STR_IP_ADDRESS_PREFIX)) + connectedIP;
   UITheme::drawCenteredText(renderer, *screen, UI_10_FONT_ID, top + 40, ipInfo.c_str());
 
-  // Use centralized button hints
-  const auto labels = mappedInput.mapLabels("", tr(STR_DONE), "", "");
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  if (mappedInput.hasTouch()) {
+    constexpr int side = 36;
+    constexpr int buttonH = 48;
+    const int buttonY = screen->y + screen->height - buttonH - 18;
+    renderer.drawRect(screen->x + side, buttonY, screen->width - side * 2, buttonH);
+    const char* label = tr(STR_DONE);
+    const int textW = renderer.getTextWidth(UI_10_FONT_ID, label);
+    renderer.drawText(UI_10_FONT_ID, screen->x + (screen->width - textW) / 2, buttonY + 10, label);
+  } else {
+    const auto labels = mappedInput.mapLabels("", tr(STR_DONE), "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  }
 }
 
 void WifiSelectionActivity::renderSavePrompt(const Rect* screen, const ThemeMetrics* metrics) const {
@@ -1040,9 +1234,18 @@ void WifiSelectionActivity::renderSavePrompt(const Rect* screen, const ThemeMetr
     renderer.drawText(UI_10_FONT_ID, startX + buttonWidth + buttonSpacing + 4, buttonY, tr(STR_NO));
   }
 
-  // Use centralized button hints
-  const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  if (mappedInput.hasTouch()) {
+    constexpr int boxH = 44;
+    constexpr int pad = 10;
+    renderer.drawRect(startX - pad, buttonY - 10, buttonWidth + pad * 2, boxH);
+    renderer.drawRect(startX + buttonWidth + buttonSpacing - pad, buttonY - 10, buttonWidth + pad * 2, boxH);
+  }
+
+  // Use centralized button hints on hardware-button devices.
+  if (!mappedInput.hasTouch()) {
+    const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  }
 }
 
 void WifiSelectionActivity::renderConnectionFailed(const Rect* screen, const ThemeMetrics* metrics) const {
@@ -1053,9 +1256,18 @@ void WifiSelectionActivity::renderConnectionFailed(const Rect* screen, const The
                             EpdFontFamily::BOLD);
   UITheme::drawCenteredText(renderer, *screen, UI_10_FONT_ID, top + 20, connectionError.c_str());
 
-  // Use centralized button hints
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_DONE), "", "");
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  if (mappedInput.hasTouch()) {
+    constexpr int side = 36;
+    constexpr int buttonH = 48;
+    const int buttonY = screen->y + screen->height - buttonH - 18;
+    renderer.drawRect(screen->x + side, buttonY, screen->width - side * 2, buttonH);
+    const char* label = tr(STR_DONE);
+    const int textW = renderer.getTextWidth(UI_10_FONT_ID, label);
+    renderer.drawText(UI_10_FONT_ID, screen->x + (screen->width - textW) / 2, buttonY + 10, label);
+  } else {
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_DONE), "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  }
 }
 
 void WifiSelectionActivity::renderForgetPrompt(const Rect* screen, const ThemeMetrics* metrics) const {
@@ -1096,9 +1308,15 @@ void WifiSelectionActivity::renderForgetPrompt(const Rect* screen, const ThemeMe
     renderer.drawText(UI_10_FONT_ID, startX + buttonWidth + buttonSpacing + 4, buttonY, tr(STR_FORGET_BUTTON));
   }
 
-  // Use centralized button hints
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  if (mappedInput.hasTouch()) {
+    constexpr int boxH = 44;
+    constexpr int pad = 10;
+    renderer.drawRect(startX - pad, buttonY - 10, buttonWidth + pad * 2, boxH);
+    renderer.drawRect(startX + buttonWidth + buttonSpacing - pad, buttonY - 10, buttonWidth + pad * 2, boxH);
+  } else {
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  }
 }
 
 void WifiSelectionActivity::onComplete(const bool connected) {

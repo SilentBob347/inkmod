@@ -7,7 +7,7 @@ on:
     branches: [ "main" ]
 
 jobs:
-  build-tiny:
+  build-firmware:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -29,8 +29,14 @@ jobs:
       - name: Validate release metadata
         run: python scripts/release_check.py
 
-      - name: Build developer firmware
-        run: pio run -e developer
+      - name: Build X3/X4 developer firmware
+        run: pio run -e x3x4-developer
 
-      - name: Build release firmware
-        run: pio run -e release
+      - name: Build X3/X4 release firmware
+        run: pio run -e x3x4-release
+
+      - name: Build X4 Pro developer firmware
+        run: pio run -e x4pro-developer
+
+      - name: Build X4 Pro release firmware
+        run: pio run -e x4pro-release

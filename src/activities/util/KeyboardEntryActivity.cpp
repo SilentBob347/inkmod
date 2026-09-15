@@ -4,6 +4,7 @@
 #include <I18n.h>
 
 #include <algorithm>
+#include <cstring>
 #include <vector>
 
 #include "MappedInputManager.h"
@@ -267,8 +268,82 @@ void KeyboardEntryActivity::mapColContentBottom(int& col, bool goingUp) const {
   }
 }
 
+bool KeyboardEntryActivity::findTouchKey(const int x, const int y, int& row, int& col) const {
+  const uint8_t table = activeTouchTable.load(std::memory_order_acquire);
+  const uint8_t count = touchKeyCounts[table];
+  for (uint8_t i = 0; i < count; ++i) {
+    const auto& hit = touchKeys[table][i];
+    if (x >= hit.rect.x && y >= hit.rect.y && x < hit.rect.x + hit.rect.width && y < hit.rect.y + hit.rect.height) {
+      row = hit.row;
+      col = hit.col;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool KeyboardEntryActivity::activateTouchKey(const int row, const int col, const bool longPress) {
+  // row == -2 is the password visibility chip next to the text field.
+  if (row == -2) {
+    if (inputType == InputType::Password) {
+      passwordVisible = !passwordVisible;
+      return true;
+    }
+    return false;
+  }
+
+  if (row < 0 || row >= getTotalRowCount()) return false;
+  const int maxCol = isBottomRow(row) ? BOTTOM_KEY_COUNT : getContentColCount();
+  if (col < 0 || col >= maxCol) return false;
+
+  selectedRow = row;
+  selectedCol = col;
+  cursorMode = false;
+  togglePos = false;
+  hintVisible = false;
+
+  if (longPress) {
+    if (isBottomRow(selectedRow) && selectedCol == static_cast<int>(SpecialKeyType::Del)) {
+      text.clear();
+      cursorPos = 0;
+      return true;
+    }
+    if (isBottomRow(selectedRow) && selectedCol == static_cast<int>(SpecialKeyType::Mode) && !symMode && !urlMode &&
+        inputType != InputType::Url) {
+      cycleLanguage();
+      return true;
+    }
+    const char* alt = getAlternativeText();
+    if (alt[0] != '\0') {
+      insertString(alt);
+      return true;
+    }
+    // No alternate action: fall back to a normal activation, as the
+    // CrossPoint touch keyboard does for keys without a long-press variant.
+  }
+
+  return handleKeyPress();
+}
+
 void KeyboardEntryActivity::loop() {
   const int totalRows = getTotalRowCount();
+
+  // Touch keyboard. MappedInputManager already converts the X4 Pro panel
+  // coordinates into the same logical coordinates used for rendering.
+  int touchX = 0;
+  int touchY = 0;
+  int touchRow = -1;
+  int touchCol = -1;
+  if (mappedInput.wasScreenLongPress(touchX, touchY) && findTouchKey(touchX, touchY, touchRow, touchCol)) {
+    // wasScreenLongPress() already suppresses the release, so this cannot
+    // turn into a second tap when the finger is lifted.
+    if (activateTouchKey(touchRow, touchCol, true)) requestUpdate();
+    return;
+  }
+  if (mappedInput.wasScreenTapped(touchX, touchY) && findTouchKey(touchX, touchY, touchRow, touchCol)) {
+    if (activateTouchKey(touchRow, touchCol, false)) requestUpdate();
+    return;
+  }
 
   if (!cursorMode && mappedInput.wasPressed(MappedInputManager::Button::Up)) {
     upHeld = true;
@@ -454,6 +529,8 @@ void KeyboardEntryActivity::render(RenderLock&&) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int controlFontId = uiControlFontId();
   const int hintFontId = uiHintFontId();
+  Rect passwordToggleTouchRect{};
+  bool hasPasswordToggleTouch = false;
 
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, title.c_str());
 
@@ -606,6 +683,8 @@ void KeyboardEntryActivity::render(RenderLock&&) {
     const int toggleX = pageWidth - effectiveMargin - toggleWidth;
     const int toggleY = inputStartY + inputHeight;
     const bool toggleSelected = cursorMode && togglePos;
+    passwordToggleTouchRect = Rect{toggleX - 4, toggleY - 4, toggleWidth + 8, lineHeight + 8};
+    hasPasswordToggleTouch = true;
 
     if (toggleSelected) {
       renderer.fillRect(toggleX - 2, toggleY, toggleWidth + 5, lineHeight + 3, true);
@@ -640,15 +719,19 @@ void KeyboardEntryActivity::render(RenderLock&&) {
     }
   }
 
-  const int keyHeight = std::max(metrics.keyboardKeyHeight, renderer.getLineHeight(controlFontId) + 8);
-  const int bottomKeyHeight = std::max(metrics.keyboardBottomKeyHeight, renderer.getLineHeight(controlFontId) + 8);
+  const bool touchKeyboard = gpio.hasTouch();
+  const int keyHeight = std::max(touchKeyboard ? 52 : metrics.keyboardKeyHeight,
+                                 renderer.getLineHeight(controlFontId) + (touchKeyboard ? 12 : 8));
+  const int bottomKeyHeight = std::max(touchKeyboard ? 46 : metrics.keyboardBottomKeyHeight,
+                                       renderer.getLineHeight(controlFontId) + (touchKeyboard ? 12 : 8));
   const int keySpacing = metrics.keyboardKeySpacing;
   const int contentCols = getContentColCount();
   // Side button hints occupy the right edge on this device. Center every
   // keyboard row in the remaining area rather than the full framebuffer, so
   // the last keys never draw underneath the physical-button column.
   const int keyboardAvailableWidth = availableWidth;
-  const int keyboardWidth = keyboardAvailableWidth * metrics.keyboardWidthPercent / 100;
+  const int keyboardWidthPercent = touchKeyboard ? 96 : metrics.keyboardWidthPercent;
+  const int keyboardWidth = keyboardAvailableWidth * keyboardWidthPercent / 100;
   const int keyWidth = (keyboardWidth - (contentCols - 1) * keySpacing) / contentCols;
   const int keyboardContentX = gpio.deviceIsX3() ? metrics.sideButtonHintsWidth + sideHintClearance : 0;
   const int leftMargin =
@@ -683,7 +766,23 @@ void KeyboardEntryActivity::render(RenderLock&&) {
       tipMessages.push_back(tr(STR_KB_HINT_SECONDARY_CHAR));
       tipMessages.push_back(tr(STR_KB_HINT_URL_SNIPPETS));
     } else {
-      tipMessages.push_back(shiftState > 0 ? tr(STR_KB_HINT_LOWER_SECONDARY) : tr(STR_KB_HINT_UPPER_SECONDARY));
+      // Keep the familiar case hint on touch devices too, but name the control
+      // the user actually sees: SHIFT instead of the old SELECT button.
+      if (touchKeyboard) {
+        static std::string touchShiftHint;
+        touchShiftHint = shiftState > 0 ? tr(STR_KB_HINT_LOWER_SECONDARY) : tr(STR_KB_HINT_UPPER_SECONDARY);
+        const char* words[] = {"ВЫБРАТЬ", "ВИБРАТИ", "SELECT"};
+        for (const char* word : words) {
+          const auto pos = touchShiftHint.find(word);
+          if (pos != std::string::npos) {
+            touchShiftHint.replace(pos, strlen(word), "SHIFT");
+            break;
+          }
+        }
+        tipMessages.push_back(touchShiftHint.c_str());
+      } else {
+        tipMessages.push_back(shiftState > 0 ? tr(STR_KB_HINT_LOWER_SECONDARY) : tr(STR_KB_HINT_UPPER_SECONDARY));
+      }
     }
     if (!text.empty()) tipMessages.push_back(tr(STR_KB_HINT_CLEAR_TEXT));
   }
@@ -727,6 +826,18 @@ void KeyboardEntryActivity::render(RenderLock&&) {
   const KeyDef(*layout)[COLS] = symMode ? symLayout : (inputType == InputType::Url ? urlLayout : abcLayout);
   const int contentRows = getContentRowCount();
 
+  // Build the next touch table from the exact rectangles being drawn. Publish
+  // it only after the whole frame is complete so loop() never sees half a
+  // keyboard during a render on the other core.
+  const uint8_t publishTable = static_cast<uint8_t>(1U - activeTouchTable.load(std::memory_order_relaxed));
+  uint8_t publishCount = 0;
+  auto addTouchKey = [&](const Rect& rect, const int row, const int col) {
+    if (publishCount >= TOUCH_KEY_CAPACITY) return;
+    touchKeys[publishTable][publishCount++] = TouchKey{rect, static_cast<int8_t>(row), static_cast<int8_t>(col)};
+  };
+
+  if (hasPasswordToggleTouch) addTouchKey(passwordToggleTouchRect, -2, 0);
+
   for (int row = 0; row < contentRows; row++) {
     const int rowY = keyboardStartY + row * (keyHeight + keySpacing);
     const int rowLeftMargin = urlMode ? urlLeftMargin : leftMargin;
@@ -756,6 +867,7 @@ void KeyboardEntryActivity::render(RenderLock&&) {
         GUI.drawKeyboardKey(renderer, Rect{keyX, rowY, keyWidth, keyHeight}, primary, activeKeySelected,
                             showSecondary ? secondary : nullptr);
       }
+      addTouchKey(Rect{keyX, rowY, keyWidth, keyHeight}, row, col);
     }
   }
 
@@ -783,6 +895,7 @@ void KeyboardEntryActivity::render(RenderLock&&) {
     const bool activeKeySelected = isSelected && !cursorMode;
     GUI.drawKeyboardKey(renderer, Rect{keyX, bottomRowY, bottomKeyWidth, bottomKeyHeight}, bottomKeys[i].label,
                         activeKeySelected, nullptr, bottomKeys[i].themeType);
+    addTouchKey(Rect{keyX, bottomRowY, bottomKeyWidth, bottomKeyHeight}, contentRows, i);
   }
 
   if (cursorMode) {
@@ -819,6 +932,9 @@ void KeyboardEntryActivity::render(RenderLock&&) {
                           selShowSecondary ? selSecondary : nullptr, KeyboardKeyType::Normal, true);
     }
   }
+
+  touchKeyCounts[publishTable] = publishCount;
+  activeTouchTable.store(publishTable, std::memory_order_release);
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

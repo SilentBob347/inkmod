@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <Wire.h>
+#include <Rtc.h>
 
 #include "HalGPIO.h"
 
@@ -14,6 +15,10 @@ class HalClock {
   // software clock backed by the ESP32's internal timekeeping (X4), which is populated by
   // syncFromNTP() and needs a fresh NTP sync after every real power loss.
   bool _useHardwareRtc = false;
+  // X4 Pro has a BM8563 (PCF8563-compatible) RTC on the shared touch I2C bus.
+  // The FreeInk SDK already knows its board profile, pins (SDA39/SCL38) and address (0x51).
+  bool _useSdkRtc = false;
+  mutable Rtc _sdkRtc;
   // True when the software clock (X4) is currently running on a value seeded by
   // seedFallbackTime() rather than a real hardware RTC read or an NTP sync from this boot.
   bool _usingFallbackTime = false;
@@ -39,7 +44,8 @@ class HalClock {
 
   // True if this device has no battery-backed RTC chip and instead relies on the
   // software clock, which loses its value on every real power loss and needs an
-  // NTP sync after each such reset (see syncFromNTP()).
+  // NTP sync after each such reset (see syncFromNTP()). X4 Pro returns false here
+  // because it uses its on-board BM8563 RTC.
   bool needsPeriodicNTPSync() const { return _available && !_useHardwareRtc; }
 
   // Get current hour (0-23) and minute (0-59).

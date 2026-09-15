@@ -84,9 +84,79 @@ void XtcReaderActivity::onExit() {
   xtc.reset();
 }
 
+bool XtcReaderActivity::handleShortcutAction(const uint8_t rawAction) {
+  const auto action = static_cast<InkMODSettings::SHORT_PWRBTN>(rawAction);
+  switch (action) {
+    case InkMODSettings::SHORT_PWRBTN::PAGE_TURN:
+      if (!xtc) return true;
+      if (currentPage < xtc->getPageCount()) {
+        ++currentPage;
+        if (currentPage >= xtc->getPageCount()) markBookCompletedIfNeeded();
+        requestUpdate();
+      } else {
+        onGoHome();
+      }
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::FILE_TRANSFER:
+      activityManager.goToFileTransfer(xtc ? xtc->getPath() : "");
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::CALIBRE_WIRELESS:
+      activityManager.goToCalibreWireless(xtc ? xtc->getPath() : "");
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::JOIN_NETWORK:
+      activityManager.goToJoinNetworkFileTransfer(xtc ? xtc->getPath() : "");
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::CREATE_HOTSPOT:
+      activityManager.goToHotspotFileTransfer(xtc ? xtc->getPath() : "");
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::FILE_BROWSER:
+      activityManager.goToFileBrowser(xtc ? xtc->getPath() : "");
+      return true;
+    default:
+      return false;
+  }
+}
+
 void XtcReaderActivity::loop() {
-  // Enter chapter selection activity
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+  // XTC used to be the odd reader out: only the hardware buttons were wired
+  // to page turning/chapter selection. Keep the same touch contract as
+  // EPUB/FB2/TXT on X4 Pro.
+  bool touchPrev = false;
+  bool touchNext = false;
+  bool touchMenu = false;
+  if (mappedInput.hasTouch()) {
+    if (SETTINGS.touchReaderControls == InkMODSettings::TOUCH_READER_SWIPE) {
+      const auto dir = mappedInput.wasSwipe();
+      touchNext = dir == MappedInputManager::SwipeDir::Left;
+      touchPrev = dir == MappedInputManager::SwipeDir::Right;
+    } else {
+      int tx = 0, ty = 0;
+      if (mappedInput.wasScreenTapped(tx, ty)) {
+        const int width = mappedInput.getRendererWidth();
+        const int height = mappedInput.getRendererHeight();
+        const int zoneWidth = width / 3;
+        const bool center = tx >= zoneWidth && tx < width - zoneWidth &&
+                            ty >= height / 3 && ty < height - height / 3;
+        if (center) {
+          touchMenu = true;
+        } else if (SETTINGS.touchReaderControls != InkMODSettings::TOUCH_READER_OFF &&
+                   SETTINGS.touchReaderControls != InkMODSettings::TOUCH_READER_SWIPE) {
+          const bool inverted =
+              SETTINGS.touchReaderControls == InkMODSettings::TOUCH_READER_INVERTED_TAP;
+          if (tx < zoneWidth) {
+            touchPrev = !inverted;
+            touchNext = inverted;
+          } else if (tx >= width - zoneWidth) {
+            touchNext = !inverted;
+            touchPrev = inverted;
+          }
+        }
+      }
+    }
+  }
+
+  // Confirm or a center-screen tap enters chapter selection.
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) || touchMenu) {
     if (xtc && xtc->hasChapters() && !xtc->getChapters().empty()) {
       startActivityForResult(
           std::make_unique<XtcReaderChapterSelectionActivity>(renderer, mappedInput, xtc, currentPage),
@@ -95,6 +165,7 @@ void XtcReaderActivity::loop() {
               currentPage = std::get<PageResult>(result.data).page;
             }
           });
+      return;
     }
   }
 
@@ -126,7 +197,7 @@ void XtcReaderActivity::loop() {
                                      : mappedInput.wasReleased(MappedInputManager::Button::PageBack);
   const bool sideNext = sideUsePress ? mappedInput.wasPressed(MappedInputManager::Button::PageForward)
                                      : mappedInput.wasReleased(MappedInputManager::Button::PageForward);
-  const bool frontPrev = mappedInput.wasReleased(MappedInputManager::Button::Left);
+  const bool frontPrev = mappedInput.wasReleased(MappedInputManager::Button::Left) || touchPrev;
   const bool powerReleased = mappedInput.wasReleased(MappedInputManager::Button::Power);
   if (powerReleased && longPowerPageTurnHandled) {
     longPowerPageTurnHandled = false;
@@ -177,7 +248,7 @@ void XtcReaderActivity::loop() {
     longPowerPageTurnHandled = true;
   }
   const bool powerPageTurn = shortPowerTurn || longPowerTurn || timedLongPowerTurn;
-  const bool frontNext = mappedInput.wasReleased(MappedInputManager::Button::Right) || powerPageTurn;
+  const bool frontNext = mappedInput.wasReleased(MappedInputManager::Button::Right) || powerPageTurn || touchNext;
 
   const bool frontLongPressAction = SETTINGS.longPressButtonBehavior == InkMODSettings::CHAPTER_SKIP ||
                                     SETTINGS.longPressButtonBehavior == InkMODSettings::FONT_SIZE_CHANGE;
@@ -539,6 +610,18 @@ void XtcReaderActivity::renderPage() {
     // configured refresh cycle says it is due.
     ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
 
+    // X4 Pro / UC8279: do not run the native grayscale overlay after the B/W
+    // base. The overlay leaves gray edge charge that the following differential
+    // page turn cannot fully scrub, which shows up as ghosting. Render the same
+    // XTCH page as a clean 1-bit base on Pro; X3/X4 retain native four-level
+    // grayscale. This matches the EPUB/FB2/TXT ghost-free policy on X4 Pro.
+    if (mappedInput.hasTouch()) {
+      free(plane1);
+      LOG_DBG("XTR", "Rendered page %lu/%lu (X4 Pro ghost-free BW from 2-bit source)",
+              currentPage + 1, xtc->getPageCount());
+      return;
+    }
+
     // Pass 2: LSB grayscale plane.
     renderer.clearScreen(0x00);
     if (!streamPass(XtcGrayPass::Lsb)) {
@@ -673,6 +756,16 @@ void XtcReaderActivity::renderPage() {
 
     // Display BW with conditional refresh based on pagesUntilFullRefresh
     ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
+
+    // X4 Pro / UC8279: as in the streaming XTCH path above, stop at the clean
+    // B/W base. The old grayscale overlay is the source of accumulated ghosting
+    // on Pro. Other devices keep the original four-level grayscale path.
+    if (mappedInput.hasTouch()) {
+      free(pageBuffer);
+      LOG_DBG("XTR", "Rendered page %lu/%lu (X4 Pro ghost-free BW from 2-bit source)",
+              currentPage + 1, xtc->getPageCount());
+      return;
+    }
 
     // Pass 2: LSB buffer - mark DARK gray only (XTH value 1)
     // In LUT: 0 bit = apply gray effect, 1 bit = untouched

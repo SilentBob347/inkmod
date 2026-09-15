@@ -1,4 +1,5 @@
 #include "InkMODWebServerActivity.h"
+#include "util/TaskWatchdog.h"
 
 #include <DNSServer.h>
 #include <ESPmDNS.h>
@@ -10,7 +11,11 @@
 #include <cstddef>
 
 #include "MappedInputManager.h"
+#include "BoardConfig.h"
 #include "NetworkModeSelectionActivity.h"
+#if FREEINK_CAP_USB_MSC
+#include "UsbDriveActivity.h"
+#endif
 #include "SdCardFontSystem.h"
 #include "SilentRestart.h"
 #include "WifiSelectionActivity.h"
@@ -100,18 +105,11 @@ void InkMODWebServerActivity::onExit() {
   LOG_DBG("WEBACT", "Free heap at onExit start: %d bytes", ESP.getFreeHeap());
 
   state = WebServerActivityState::SHUTTING_DOWN;
+
+  // Stop local services exactly once before touching the radio.
   stopDnsServer();
   MDNS.end();
-
-  // Stop local services before disconnecting/restarting WiFi.
   stopWebServer();
-  MDNS.end();
-  if (dnsServer) {
-    LOG_DBG("WEBACT", "Stopping DNS server...");
-    dnsServer->stop();
-    delete dnsServer;
-    dnsServer = nullptr;
-  }
   delay(50);
 
   // Skip reboot if WiFi was never activated (e.g. user backed out of mode selection).
@@ -122,7 +120,19 @@ void InkMODWebServerActivity::onExit() {
       WiFi.disconnect(false);
     }
     delay(30);
-    silentRestart();
+
+    // X4 Pro: keep the ESP32-S3 netstack initialised when leaving Web mode.
+    // Repeated WIFI_OFF -> WIFI_STA rebuilds are the same pattern that caused
+    // netstack registration failures in KOSync. If Web mode was an AP, switch
+    // back to STA without fully deinitialising WiFi; otherwise STA is already
+    // the desired idle mode. X3/X4 keep the established reboot behaviour.
+    if (BoardConfig::isX4Pro()) {
+      if (isApMode && WiFi.getMode() != WIFI_STA) {
+        WiFi.mode(WIFI_STA);
+      }
+    } else {
+      silentRestart();
+    }
   }
 
   LOG_DBG("WEBACT", "Free heap at onExit end: %d bytes", ESP.getFreeHeap());
@@ -136,6 +146,10 @@ void InkMODWebServerActivity::onNetworkModeSelected(const NetworkMode mode) {
     modeName = "Create Hotspot";
   } else if (mode == NetworkMode::NEARBY_STATS_SYNC) {
     modeName = "Nearby Stats Sync";
+#if FREEINK_CAP_USB_MSC
+  } else if (mode == NetworkMode::USB_DRIVE) {
+    modeName = "USB Drive";
+#endif
   }
   LOG_DBG("WEBACT", "Network mode selected: %s", modeName);
 
@@ -146,6 +160,14 @@ void InkMODWebServerActivity::onNetworkModeSelected(const NetworkMode mode) {
     activityManager.goToNearbyStatsSync();
     return;
   }
+
+#if FREEINK_CAP_USB_MSC
+  if (mode == NetworkMode::USB_DRIVE) {
+    startActivityForResult(std::make_unique<UsbDriveActivity>(renderer, mappedInput),
+                           [this](const ActivityResult&) { exitToOrigin(); });
+    return;
+  }
+#endif
 
   if (mode == NetworkMode::CONNECT_CALIBRE) {
     startActivityForResult(
@@ -372,7 +394,7 @@ void InkMODWebServerActivity::loop() {
       }
 
       // Reset watchdog BEFORE processing - HTTP header parsing can be slow
-      esp_task_wdt_reset();
+      resetTaskWatchdogIfSubscribed();
 
       // Process HTTP requests in tight loop for maximum throughput
       // More iterations = more data processed per main loop cycle
@@ -381,7 +403,7 @@ void InkMODWebServerActivity::loop() {
         webServer->handleClient();
         // Reset watchdog every 32 iterations
         if ((i & 0x1F) == 0x1F) {
-          esp_task_wdt_reset();
+          resetTaskWatchdogIfSubscribed();
         }
         // Yield and check for exit button every 64 iterations
         if ((i & 0x3F) == 0x3F) {

@@ -1,6 +1,7 @@
 #include "FileBrowserActivity.h"
 
 #include <Arduino.h>
+#include <BoardConfig.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
@@ -19,6 +20,7 @@
 #include "InkMODHumor.h"
 #include "FileBrowserActionActivity.h"
 #include "MappedInputManager.h"
+#include <Serialization.h>
 #include "activities/util/ConfirmationActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
@@ -34,6 +36,8 @@ constexpr unsigned long COMPLETED_FEEDBACK_MS = 1000;
 constexpr int ROOT_HINT_GAP = 20;
 constexpr uint32_t FILE_BROWSER_APPEND_MIN_FREE_AFTER_ALLOC = 48U * 1024U;
 constexpr uint32_t FILE_BROWSER_APPEND_MIN_MAX_ALLOC_AFTER_ALLOC = 16U * 1024U;
+constexpr char FILE_BROWSER_POSITION_PATH[] = "/.inkmod/file_browser_position.bin";
+constexpr uint8_t FILE_BROWSER_POSITION_VERSION = 1;
 
 bool isDefaultSleepFolderPath(const std::string& path) { return path == "/sleep" || path == "/.sleep"; }
 
@@ -155,6 +159,42 @@ void collectMetadataPathsRecursively(const std::string& dirPath, std::vector<std
   dir.close();
 }
 
+bool loadLastFileBrowserPosition(std::string& directory, std::string& selectedEntry) {
+  auto file = Storage.open(FILE_BROWSER_POSITION_PATH, O_RDONLY);
+  if (!file) return false;
+
+  uint8_t version = 0;
+  const bool ok = serialization::tryReadPod(file, version) && version == FILE_BROWSER_POSITION_VERSION &&
+                  serialization::tryReadString(file, directory) &&
+                  serialization::tryReadString(file, selectedEntry);
+  file.close();
+  if (!ok || directory.empty() || directory.front() != '/') {
+    directory.clear();
+    selectedEntry.clear();
+    return false;
+  }
+  directory = normalizeDirectoryPath(std::move(directory));
+  return true;
+}
+
+void saveLastFileBrowserPosition(const std::string& directory, const std::string& selectedEntry) {
+  if (directory.empty()) return;
+
+  auto file = Storage.open(FILE_BROWSER_POSITION_PATH, O_WRONLY | O_CREAT | O_TRUNC);
+  if (!file) {
+    LOG_ERR("FileBrowser", "Failed to save browser position");
+    return;
+  }
+
+  const bool ok = serialization::tryWritePod(file, FILE_BROWSER_POSITION_VERSION) &&
+                  serialization::tryWriteString(file, normalizeDirectoryPath(directory)) &&
+                  serialization::tryWriteString(file, selectedEntry);
+  const bool closed = file.close();
+  if (!ok || !closed) {
+    LOG_ERR("FileBrowser", "Failed to write browser position");
+  }
+}
+
 std::string getFileName(std::string filename);
 }  // namespace
 
@@ -237,12 +277,20 @@ void FileBrowserActivity::onEnter() {
   Activity::onEnter();
 
   selectorIndex = 0;
+  std::string restoredEntry;
+  if (restoreLastLocation) {
+    std::string restoredPath;
+    if (loadLastFileBrowserPosition(restoredPath, restoredEntry)) {
+      basepath = std::move(restoredPath);
+    }
+  }
 
   lockNextConfirmRelease = mappedInput.isPressed(MappedInputManager::Button::Confirm);
 
   auto root = Storage.open(basepath.c_str());
   if (!root) {
     basepath = "/";
+    restoredEntry.clear();
     loadFiles();
     requestUpdate();
     return;
@@ -263,12 +311,20 @@ void FileBrowserActivity::onEnter() {
     selectorIndex = findEntry(fileName);
   } else {
     loadFiles();
+    if (!restoredEntry.empty() && !files.empty()) {
+      selectorIndex = findEntry(restoredEntry);
+    }
   }
 
   requestUpdate();
 }
 
 void FileBrowserActivity::onExit() {
+  if (mode == Mode::Books) {
+    const std::string selectedEntry =
+        (!files.empty() && selectorIndex < files.size()) ? files[selectorIndex] : std::string{};
+    saveLastFileBrowserPosition(basepath, selectedEntry);
+  }
   Activity::onExit();
   files.clear();
 }
@@ -776,15 +832,7 @@ void FileBrowserActivity::loop() {
     }
   }
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    if (longPressConfirmHandled) {
-      longPressConfirmHandled = false;
-      return;
-    }
-    if (lockNextConfirmRelease) {
-      lockNextConfirmRelease = false;
-      return;
-    }
+  auto activateSelectedEntry = [this](const bool allowLongPress) {
     if (files.empty()) return;
 
     const std::string& entry = files[selectorIndex];
@@ -800,7 +848,7 @@ void FileBrowserActivity::loop() {
       return;
     }
 
-    if (mode == Mode::Books && mappedInput.getHeldTime() >= GO_HOME_MS) {
+    if (allowLongPress && mode == Mode::Books && mappedInput.getHeldTime() >= GO_HOME_MS) {
       if (isDirectory) {
         showDirectoryActionMenu(entry);
       } else {
@@ -862,14 +910,94 @@ void FileBrowserActivity::loop() {
       }
     }
     return;
+  };
+
+  if (mappedInput.hasTouch() && !files.empty()) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const int pathReserved = renderer.getLineHeight(SMALL_FONT_ID) + metrics.verticalSpacing;
+    const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+    const int contentHeight = renderer.getScreenHeight() - contentTop - metrics.buttonHintsHeight -
+                              metrics.verticalSpacing - pathReserved;
+    const bool compact = SETTINGS.fileBrowserDisplay == InkMODSettings::FILE_BROWSER_DISPLAY_2_LINES;
+    const int rowHeight = compact ? MinimalTheme::compactFileBrowserRowHeightFor(renderer)
+                                  : std::max(1, metrics.listRowHeight);
+    const int touchPageItems = std::max(1, contentHeight / std::max(1, rowHeight));
+    const int pageStart = (static_cast<int>(selectorIndex) / touchPageItems) * touchPageItems;
+
+    auto indexAtTouch = [&](const int tx, const int ty) -> int {
+      if (tx < 0 || tx >= renderer.getScreenWidth() || ty < contentTop || ty >= contentTop + contentHeight) return -1;
+      const int touched = pageStart + (ty - contentTop) / std::max(1, rowHeight);
+      return touched >= 0 && touched < static_cast<int>(files.size()) ? touched : -1;
+    };
+
+    // Touch scrolling is page-oriented in the file browser. The global touch
+    // fallback intentionally maps a vertical swipe to Up/Down button navigation,
+    // but that only moves one file. Consume the real swipe here first and jump
+    // by one visible page, preserving the original button behaviour separately.
+    const auto touchSwipe = mappedInput.wasSwipe();
+    if (touchSwipe == MappedInputManager::SwipeDir::Up) {
+      selectorIndex = static_cast<size_t>(ButtonNavigator::nextPageIndex(
+          static_cast<int>(selectorIndex), static_cast<int>(files.size()), touchPageItems));
+      requestUpdate();
+      return;
+    }
+    if (touchSwipe == MappedInputManager::SwipeDir::Down) {
+      selectorIndex = static_cast<size_t>(ButtonNavigator::previousPageIndex(
+          static_cast<int>(selectorIndex), static_cast<int>(files.size()), touchPageItems));
+      requestUpdate();
+      return;
+    }
+
+    // X4 Pro: long-press a file/folder to open the same action menu that was
+    // traditionally opened by holding the physical Select/Confirm button.
+    int tx = 0, ty = 0;
+    if (mode == Mode::Books && mappedInput.wasScreenLongPress(tx, ty)) {
+      const int touched = indexAtTouch(tx, ty);
+      if (touched >= 0) {
+        selectorIndex = static_cast<size_t>(touched);
+        requestUpdate();
+        const std::string& entry = files[selectorIndex];
+        if (!entry.empty() && entry.back() == '/') showDirectoryActionMenu(entry, true);
+        else showFileActionMenu(entry, true);
+      }
+      return;
+    }
+
+    if (mappedInput.wasScreenTapped(tx, ty)) {
+      const int touched = indexAtTouch(tx, ty);
+      if (touched >= 0) {
+        selectorIndex = static_cast<size_t>(touched);
+        requestUpdate();
+        activateSelectedEntry(false);
+      }
+      return;
+    }
   }
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    if (longPressBackHandled) {
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    if (longPressConfirmHandled) {
+      longPressConfirmHandled = false;
+      return;
+    }
+    if (lockNextConfirmRelease) {
+      lockNextConfirmRelease = false;
+      return;
+    }
+    activateSelectedEntry(true);
+    return;
+  }
+
+  // Touch Back on X4 Pro is a gesture, not a held hardware button.  Do not
+  // gate it on getHeldTime(): that value belongs to the physical-button state
+  // and can contain an unrelated/stale hold duration.  This was why the global
+  // Back swipe worked on other screens but appeared dead in the file browser.
+  const bool touchBackGesture = mappedInput.hasTouch() && mappedInput.wasBackGesture();
+  if (touchBackGesture || mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    if (longPressBackHandled && !touchBackGesture) {
       longPressBackHandled = false;
       return;
     }
-    if (mappedInput.getHeldTime() < GO_HOME_MS) {
+    if (touchBackGesture || mappedInput.getHeldTime() < GO_HOME_MS) {
       if (basepath != "/") {
         const std::string oldPath = basepath;
 
@@ -1031,7 +1159,7 @@ void FileBrowserActivity::render(RenderLock&&) {
                                             files.empty() ? "" : tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
-  if (mode == Mode::Books && basepath == "/") {
+  if (mode == Mode::Books && basepath == "/" && !BoardConfig::isX4Pro()) {
     const int usedPathWidth = renderer.getTextWidth(SMALL_FONT_ID, basepath.c_str());
     const int hintMaxWidth = pathMaxWidth - usedPathWidth - ROOT_HINT_GAP;
     const auto hint = renderer.truncatedText(SMALL_FONT_ID, tr(STR_TOGGLE_HIDDEN_FILES_HINT), hintMaxWidth);

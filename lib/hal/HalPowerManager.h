@@ -65,6 +65,11 @@ class HalPowerManager {
   // distinction mattered here.
   uint64_t getLastChargeEpochSeconds() const;
 
+  // Explicitly record a known charging/USB session using the current wall clock.
+  // Used on X4 Pro where the board has no proven dedicated VBUS-detect GPIO.
+  // Returns false until RTC/NTP has supplied a sane wall-clock value.
+  bool markChargingNow() const;
+
   // Called once at startup with the value persisted from the previous
   // session (InkMODState::lastChargeEpochSeconds), so "since last charge"
   // has something to show before this boot's own trackChargingState()

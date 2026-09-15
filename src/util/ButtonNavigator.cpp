@@ -1,5 +1,7 @@
 #include "ButtonNavigator.h"
 
+#include <algorithm>
+
 const MappedInputManager* ButtonNavigator::mappedInput = nullptr;
 
 void ButtonNavigator::onNext(const Callback& callback) {
@@ -40,9 +42,13 @@ void ButtonNavigator::onPress(const Buttons& buttons, const Callback& callback) 
 }
 
 void ButtonNavigator::onRelease(const Buttons& buttons, const Callback& callback) {
-  const bool wasReleased = std::any_of(buttons.begin(), buttons.end(), [](const MappedInputManager::Button button) {
+  bool wasReleased = std::any_of(buttons.begin(), buttons.end(), [](const MappedInputManager::Button button) {
     return mappedInput != nullptr && mappedInput->wasReleased(button);
   });
+
+  // Vertical touch swipes are intentionally NOT converted into one-row
+  // ButtonNavigator movement. Touch-capable menus use direct taps; activities
+  // with long lists/files handle vertical swipes explicitly as page scrolling.
 
   if (wasReleased) {
     if (lastContinuousNavTime == 0) {

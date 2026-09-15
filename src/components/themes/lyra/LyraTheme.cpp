@@ -1,5 +1,6 @@
 #include "LyraTheme.h"
 
+#include <BoardConfig.h>
 #include <GfxRenderer.h>
 #include <Epub.h>
 #include <FsHelpers.h>
@@ -376,6 +377,9 @@ void LyraTheme::drawListWithMetrics(const GfxRenderer& renderer, Rect rect, int 
     const int subtitleLineHeight = renderer.getLineHeight(SMALL_FONT_ID);
     rowHeight = std::max(rowHeight, subtitleOffsetY + subtitleLineHeight + kSubtitleBottomPadding);
   }
+  if (BoardConfig::isX4Pro()) {
+    rowHeight = std::max(rowHeight, hasSubtitle ? 68 : 56);
+  }
   const auto isHeaderRow = [&isHeader](int index) { return isHeader != nullptr && isHeader(index); };
   const int sectionHeaderTopPadding = halTiltSensor.isAvailable() ? 10 : 20;
   constexpr int sectionHeaderFontId = UI_10_FONT_ID;
@@ -526,7 +530,8 @@ void LyraTheme::drawListWithMetrics(const GfxRenderer& renderer, Rect rect, int 
 }
 
 void LyraTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
-                                const char* btn4, const bool allowInvertedText) const {
+                                const char* btn4, const bool allowInvertedText, const bool forceOnTouch) const {
+  if (BoardConfig::isX4Pro() && !forceOnTouch) return;
   const GfxRenderer::Orientation orig_orientation = renderer.getOrientation();
   const bool invertText = allowInvertedText && orig_orientation == GfxRenderer::Orientation::PortraitInverted;
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
@@ -597,6 +602,7 @@ void LyraTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
 }
 
 void LyraTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const {
+  if (BoardConfig::isX4Pro()) return;
   const int screenWidth = renderer.getScreenWidth();
   constexpr int buttonWidth = LyraMetrics::values.sideButtonHintsWidth;
   constexpr int buttonHeight = 78;

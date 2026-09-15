@@ -51,6 +51,8 @@ static constexpr int GLOBAL_STATS_FILE_SIZE = static_cast<int>(GlobalReadingStat
 static constexpr char GLOBAL_STATS_PATH[] = "/.inkmod/global_stats.bin";
 static constexpr char GLOBAL_STATS_BAK_PATH[] = "/.inkmod/global_stats.bin.bak";
 static constexpr char SYNCED_STATS_DIR[] = "/.inkmod/synced_stats";
+static constexpr char SERVER_SUMMARY_FILE[] = "server_summary.bin";
+static constexpr char SERVER_SUMMARY_PATH[] = "/.inkmod/synced_stats/server_summary.bin";
 static bool s_blockDestructiveSave = false;
 
 uint32_t readLe32(const uint8_t* data, const int offset) {
@@ -315,49 +317,73 @@ bool GlobalReadingStats::hasSyncedStats() {
 }
 
 GlobalReadingStats GlobalReadingStats::loadAggregated(const GlobalReadingStats& localStats) {
+  // Keep inkMOD's rich per-device statistics as the source of the detailed
+  // buckets/history. CrossPoint's /stats/summary may legitimately contain only
+  // aggregate totals; returning it wholesale would zero "time of day", "day of
+  // week" and streak/history on the UI.
+  GlobalReadingStats serverSummary;
+  const StatsLoadOutcome summaryOutcome = loadFromFile(SERVER_SUMMARY_PATH, serverSummary);
+  const bool hasServerSummary = summaryOutcome.result == StatsLoadResult::Ok;
+
   GlobalReadingStats stats = localStats;
   FsFile dir = Storage.open(SYNCED_STATS_DIR);
-  if (!dir) return stats;
+  if (dir && dir.isDirectory()) {
+    char name[128];
+    const std::string localFileName = localSyncedStatsFileName();
+    uint16_t loadedCount = 0;
+    uint16_t skippedCount = 0;
+    for (FsFile file = dir.openNextFile(); file; file = dir.openNextFile()) {
+      const bool isDirectory = file.isDirectory();
+      const size_t nameLen = file.getName(name, sizeof(name));
 
-  if (!dir.isDirectory()) {
-    dir.close();
-    return stats;
-  }
-
-  char name[128];
-  const std::string localFileName = localSyncedStatsFileName();
-  uint16_t loadedCount = 0;
-  uint16_t skippedCount = 0;
-  for (FsFile file = dir.openNextFile(); file; file = dir.openNextFile()) {
-    const bool isDirectory = file.isDirectory();
-    const size_t nameLen = file.getName(name, sizeof(name));
-
-    // Older firmware or manual copies may leave this device's own file here.
-    // Skip it because local stats are already included from global_stats.bin.
-    if (!isDirectory && nameLen > 0 && (localFileName.empty() || strcmp(name, localFileName.c_str()) != 0)) {
-      GlobalReadingStats syncedStats;
-      const StatsLoadOutcome outcome = loadFromOpenFile(file, syncedStats);
-      if (outcome.result == StatsLoadResult::Ok) {
-        addStats(stats, syncedStats);
-        loadedCount++;
-      } else if (outcome.result == StatsLoadResult::NewerFormat) {
-        skippedCount++;
-        LOG_DBG("GSTATS", "Skipping newer-format synced stats file: %s (v%u, %u bytes)", name, outcome.version,
-                static_cast<unsigned>(outcome.fileSize));
-      } else {
-        skippedCount++;
-        LOG_DBG("GSTATS", "Skipping invalid synced stats file: %s", name);
+      // global_stats.bin already contributes this device, and server_summary.bin
+      // is not a peer snapshot. Never add either one a second time.
+      const bool isLocalSnapshot =
+          !localFileName.empty() && nameLen > 0 && strcmp(name, localFileName.c_str()) == 0;
+      const bool isServerSummary = nameLen > 0 && strcmp(name, SERVER_SUMMARY_FILE) == 0;
+      if (!isDirectory && nameLen > 0 && !isLocalSnapshot && !isServerSummary) {
+        GlobalReadingStats syncedStats;
+        const StatsLoadOutcome outcome = loadFromOpenFile(file, syncedStats);
+        if (outcome.result == StatsLoadResult::Ok) {
+          addStats(stats, syncedStats);
+          loadedCount++;
+        } else if (outcome.result == StatsLoadResult::NewerFormat) {
+          skippedCount++;
+          LOG_DBG("GSTATS", "Skipping newer-format synced stats file: %s (v%u, %u bytes)", name, outcome.version,
+                  static_cast<unsigned>(outcome.fileSize));
+        } else {
+          skippedCount++;
+          LOG_DBG("GSTATS", "Skipping invalid synced stats file: %s", name);
+        }
       }
+
+      file.close();
     }
+    dir.close();
 
-    file.close();
+    if (loadedCount > 0 || skippedCount > 0) {
+      LOG_DBG("GSTATS", "Aggregated %u synced stats file(s), skipped %u", static_cast<unsigned>(loadedCount),
+              static_cast<unsigned>(skippedCount));
+    }
+  } else if (dir) {
+    dir.close();
   }
-  dir.close();
 
-  if (loadedCount > 0 || skippedCount > 0) {
-    LOG_DBG("GSTATS", "Aggregated %u synced stats file(s), skipped %u", static_cast<unsigned>(loadedCount),
-            static_cast<unsigned>(skippedCount));
+  if (hasServerSummary) {
+    // The server is authoritative for additive all-device totals and avoids
+    // double counting stale/missing peer files. Preserve the rich local/peer
+    // buckets above because those are inkMOD-specific and may not exist in the
+    // CrossPoint summary response.
+    stats.totalSessions = serverSummary.totalSessions;
+    stats.totalReadingSeconds = serverSummary.totalReadingSeconds;
+    stats.totalPagesTurned = serverSummary.totalPagesTurned;
+    stats.completedBooks = serverSummary.completedBooks;
+    stats.longestReadingStreak = std::max(stats.longestReadingStreak, serverSummary.longestReadingStreak);
+    LOG_DBG("GSTATS", "Applied CrossPoint aggregate totals: sessions=%u seconds=%u pages=%u completed=%u",
+            static_cast<unsigned>(stats.totalSessions), static_cast<unsigned>(stats.totalReadingSeconds),
+            static_cast<unsigned>(stats.totalPagesTurned), static_cast<unsigned>(stats.completedBooks));
   }
+
   return stats;
 }
 

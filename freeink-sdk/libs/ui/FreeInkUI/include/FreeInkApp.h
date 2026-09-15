@@ -310,6 +310,52 @@ public:
         props);
   }
 
+  void capsuleSlider(const CapsuleSliderProps &props, int16_t height = 0,
+                     LayoutAnchor anchor = LayoutAnchor::Top) {
+    CapsuleSliderProps themed = props;
+    if (themed.radius == RADIUS_INHERIT) themed.radius = theme_.capsuleRadius;
+    ui::capsuleSlider(frame_, take(anchor, height > 0 ? height : theme_.rowHeight, theme_.spaceSm), themed);
+  }
+
+  void sliderRow(const SliderRowProps &props, int16_t controlHeight = 0,
+                 LayoutAnchor anchor = LayoutAnchor::Top) {
+    SliderRowProps themed = props;
+    if (textStyleUnset(themed.labelText)) { themed.labelText = theme_.smallText; themed.labelText.bold = true; }
+    if (textStyleUnset(themed.valueText)) themed.valueText = theme_.smallText;
+    if (textStyleUnset(themed.buttonText)) { themed.buttonText = theme_.titleText; themed.buttonText.bold = true; }
+    themed.captionGap = theme_.spaceMd; themed.gap = theme_.spaceMd;
+    if (themed.buttonRadius == RADIUS_INHERIT) themed.buttonRadius = theme_.controlRadius;
+    if (themed.capsuleRadius == RADIUS_INHERIT) themed.capsuleRadius = theme_.capsuleRadius;
+    if (controlHeight <= 0) controlHeight = static_cast<int16_t>(theme_.minTouchSize + 12);
+    ui::sliderRow(frame_, take(anchor, sliderRowHeight(frame_.target(), themed, controlHeight), theme_.spaceMd), themed);
+  }
+
+  void tileGrid(const TileGridProps &props, LayoutAnchor anchor = LayoutAnchor::Top) {
+    TileGridProps themed = props;
+    if (textStyleUnset(themed.text)) themed.text = theme_.smallText;
+    if (themed.radius == RADIUS_INHERIT) themed.radius = theme_.controlRadius;
+    if (themed.tileHeight <= 0) themed.tileHeight = static_cast<int16_t>(theme_.minTouchSize * 2 - 4);
+    ui::tileGrid(frame_, take(anchor, tileGridHeight(themed.count, themed.columns, themed.tileHeight, themed.gap), theme_.spaceSm), themed);
+  }
+
+  Rect sheet(const SheetProps &props, int16_t height) {
+    SheetProps themed = props;
+    if (themed.radius == RADIUS_INHERIT) themed.radius = theme_.sheetRadius;
+    const Rect full = frame_.device().screen();
+    const Rect safe = frame_.safeRect();
+    const int16_t topInset = safe.y > full.y ? static_cast<int16_t>(safe.y - full.y) : 0;
+    const int16_t bottomInset = full.bottom() > safe.bottom() ? static_cast<int16_t>(full.bottom() - safe.bottom()) : 0;
+    const Rect rect = themed.anchor == SheetEdge::Top
+      ? Rect{full.x, full.y, full.width, static_cast<int16_t>(height + topInset)}
+      : Rect{full.x, static_cast<int16_t>(full.bottom() - height - bottomInset), full.width, static_cast<int16_t>(height + bottomInset)};
+    ui::sheet(frame_, rect, themed);
+    const Rect content = sheetContentRect(rect, themed);
+    const int16_t topMargin = content.y > safe.y ? static_cast<int16_t>(content.y - safe.y) : 0;
+    const int16_t bottomMargin = safe.bottom() > content.bottom() ? static_cast<int16_t>(safe.bottom() - content.bottom()) : 0;
+    setContentMargin(Insets{topMargin, 0, bottomMargin, 0});
+    return body();
+  }
+
   void dropdown(const DropdownProps &props,
                 LayoutAnchor anchor = LayoutAnchor::Top) {
     ui::dropdown(frame_, take(anchor, theme_.rowHeight, theme_.spaceSm), props);

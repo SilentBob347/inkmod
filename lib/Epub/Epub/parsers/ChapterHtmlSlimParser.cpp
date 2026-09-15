@@ -2028,6 +2028,28 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
         self->pendingListMarkerDepth = self->depth;
       }
     }
+  } else if (strcmp(name, "span") == 0 && !self->ancestorStack_.empty() &&
+             (self->ancestorStack_.back().tag == "body" ||
+              (self->ancestorStack_.back().tag == "span" &&
+               !self->promotedBodySpanDepths_.empty() &&
+               self->promotedBodySpanDepths_.back() == self->ancestorStack_.back().depth))) {
+    // Tolerate converter output such as:
+    //   <body><span><span id="id2"><div>...</div><p>...</p></span></span></body>
+    // Some converters recursively nest several <span> wrappers around whole
+    // block sections. XML accepts this, HTML does not. The previous workaround
+    // promoted only the first body-level span, leaving inner wrapper spans in
+    // inline mode; when they contained hundreds of <p>/<div> children the
+    // inline/block state could diverge and section building aborted. Promote
+    // the whole consecutive body->span->span wrapper chain transparently.
+    // A normal span inside a paragraph/div is still handled as an inline span.
+    if (self->partWordBufferIndex > 0) self->flushPartWordBuffer();
+    self->currentCssStyle = cssStyle;
+    const auto accumulated = self->blockStyleStack.back().getCombinedBlockStyle(
+        userAlignmentBlockStyle, BlockStyle::CombineAxis::Horizontal);
+    self->blockStyleStack.push_back(accumulated);
+    self->startNewTextBlock(accumulated.withoutBottom());
+    self->promotedBodySpanDepths_.push_back(self->depth);
+    self->updateEffectiveInlineStyle();
   } else if (matches(name, UNDERLINE_TAGS, std::size(UNDERLINE_TAGS))) {
     // Flush buffer before style change so preceding text gets current style
     if (self->partWordBufferIndex > 0) {
@@ -2492,7 +2514,9 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
 
   const bool styleWillChange =
       willPopStyleStack || willClearBold || willClearItalic || willClearUnderline || willClearStrikethrough;
-  const bool headerOrBlockTag = isHeaderOrBlock(name);
+  const bool promotedBodySpan = strcmp(name, "span") == 0 && !self->promotedBodySpanDepths_.empty() &&
+                                self->promotedBodySpanDepths_.back() == self->depth - 1;
+  const bool headerOrBlockTag = isHeaderOrBlock(name) || promotedBodySpan;
   const bool tableStructuralTag = isTableStructuralTag(name);
 
   if (self->tableDepth > 1 && strcmp(name, "table") == 0) {
@@ -2622,6 +2646,9 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
       self->blockStyleStack.pop_back();
     }
   }
+  if (promotedBodySpan && !self->promotedBodySpanDepths_.empty()) {
+    self->promotedBodySpanDepths_.pop_back();
+  }
 }
 
 bool ChapterHtmlSlimParser::parseAndBuildPages() {
@@ -2635,6 +2662,7 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
   blockStyleStack.clear();
   blockStyleStack.reserve(8);
   blockStyleStack.push_back(rootBlockStyle);
+  promotedBodySpanDepths_.clear();
 
   auto paragraphAlignmentBlockStyle = BlockStyle();
   paragraphAlignmentBlockStyle.textAlignDefined = true;

@@ -1,4 +1,5 @@
 #include "WebDAVHandler.h"
+#include "util/TaskWatchdog.h"
 
 #include <Arduino.h>
 #include <Epub.h>
@@ -99,7 +100,7 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
 
   } else if (raw.status == RAW_WRITE) {
     if (_putFile && _putOk) {
-      esp_task_wdt_reset();
+      resetTaskWatchdogIfSubscribed();
       size_t written = _putFile.write(raw.buf, raw.currentSize);
       if (written != raw.currentSize) {
         _putOk = false;
@@ -255,7 +256,7 @@ void WebDAVHandler::handlePropfind(WebServer& s) {
 
       file.close();
       yield();
-      esp_task_wdt_reset();
+      resetTaskWatchdogIfSubscribed();
       file = root.openNextFile();
     }
   }
@@ -639,7 +640,7 @@ void WebDAVHandler::handleCopy(WebServer& s) {
 
   bool copyOk = true;
   while (srcFile.available()) {
-    esp_task_wdt_reset();
+    resetTaskWatchdogIfSubscribed();
     int bytesRead = srcFile.read(buf.get(), COPY_BUFFER_SIZE);
     if (bytesRead <= 0) break;
     size_t written = dstFile.write(buf.get(), bytesRead);

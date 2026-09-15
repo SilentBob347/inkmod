@@ -1,10 +1,13 @@
 #include "ActivityManager.h"
 
+#include <HalDisplay.h>
 #include <HalPowerManager.h>
 
 #include <algorithm>
 
 #include "InkMODState.h"
+#include "InkMODSettings.h"
+#include "GlobalActions.h"
 #include "OpdsServerStore.h"
 #include "boot_sleep/BootActivity.h"
 #include "boot_sleep/SleepActivity.h"
@@ -21,6 +24,7 @@
 #include "settings/OpdsServerListActivity.h"
 #include "settings/SettingsActivity.h"
 #include "util/FullScreenMessageActivity.h"
+#include "util/FrontlightPanelActivity.h"
 
 void ActivityManager::begin() {
   xTaskCreate(&renderTaskTrampoline, "ActivityManagerRender",
@@ -46,6 +50,7 @@ void ActivityManager::renderTaskLoop() {
     RenderLock lock;
     if (currentActivity) {
       HalPowerManager::Lock powerLock;  // Ensure we don't go into low-power mode while rendering
+      display.setInverted(SETTINGS.screenInverted != 0);
       currentActivity->render(std::move(lock));
     }
     // Notify any task blocked in requestUpdateAndWait() that the render is done.
@@ -60,9 +65,88 @@ void ActivityManager::renderTaskLoop() {
   }
 }
 
+bool ActivityManager::executeConfiguredHomeShortcut(const uint8_t rawAction) {
+  const auto action = static_cast<InkMODSettings::SHORT_PWRBTN>(rawAction);
+  if (action == InkMODSettings::SHORT_PWRBTN::IGNORE) return false;
+
+  // Prefer the currently visible activity so reader-only actions (bookmark,
+  // stats, clipping, page turn, etc.) can reuse the exact same code path as
+  // the configurable Power shortcuts. Global actions are the safe fallback.
+  if (currentActivity && currentActivity->handleShortcutAction(rawAction)) return true;
+  return handleGlobalShortcutAction(action);
+}
+
+bool ActivityManager::performHomeNavigation() {
+  if (!currentActivity || currentActivity->name == "Home") return false;
+  if (currentActivity->handleHomeGesture()) return true;
+  goHome();
+  return true;
+}
+
 void ActivityManager::loop() {
   if (currentActivity) {
     mappedInput.setPowerAsConfirmInReaderMode(currentActivity->allowPowerAsConfirmInReaderMode());
+
+    // X4 Pro global touch gestures, kept outside individual activities exactly
+    // so inkMOD's existing activity logic remains untouched.  Do not inspect
+    // global gestures on the first input frame after an activity transition:
+    // a release that occurred during a long synchronous book/cache load is
+    // first observed only after the new activity is already active.
+    const bool quarantineGlobalTouch = mappedInput.hasTouch() && globalTouchGestureQuarantineFrames > 0;
+    if (quarantineGlobalTouch) {
+      --globalTouchGestureQuarantineFrames;
+    } else if (mappedInput.hasHomeKey()) {
+      const uint32_t now = millis();
+
+      // The SDK emits the long-press event while the key is still held and
+      // suppresses the later short-tap event, so this cannot accidentally
+      // trigger Home on release. A hold also cancels any pending first tap.
+      if (mappedInput.wasHomeKeyHold()) {
+        pendingHomeSingleTap = false;
+        if (executeConfiguredHomeShortcut(SETTINGS.homeLongPressAction)) return;
+      }
+
+      // If the first tap was not followed by a second tap in time, preserve
+      // the original one-tap Home behaviour. No delay is introduced at all
+      // when the user leaves the double-tap shortcut set to Ignore.
+      if (pendingHomeSingleTap && now - pendingHomeSingleTapMs > HOME_DOUBLE_TAP_WINDOW_MS) {
+        pendingHomeSingleTap = false;
+        if (performHomeNavigation()) return;
+      }
+
+      if (mappedInput.wasHomeGesture()) {
+        if (SETTINGS.homeDoublePressAction == InkMODSettings::SHORT_PWRBTN::IGNORE) {
+          if (performHomeNavigation()) return;
+        } else if (pendingHomeSingleTap && now - pendingHomeSingleTapMs <= HOME_DOUBLE_TAP_WINDOW_MS) {
+          pendingHomeSingleTap = false;
+          if (executeConfiguredHomeShortcut(SETTINGS.homeDoublePressAction)) return;
+        } else {
+          pendingHomeSingleTap = true;
+          pendingHomeSingleTapMs = now;
+          return;
+        }
+      }
+    } else if (currentActivity->name != "Home" && mappedInput.wasHomeGesture()) {
+      // Boards without a capacitive Home key retain the original bottom-edge
+      // Home gesture with no double-tap state machine.
+      if (currentActivity->handleHomeGesture()) return;
+      goHome();
+      return;
+    }
+
+    bool statusBarTap = false;
+    if (mappedInput.hasTouch() &&
+        (currentActivity->name == "Home" || currentActivity->name == "FileBrowser" ||
+         currentActivity->name == "Settings" || currentActivity->name == "NetworkModeSelection")) {
+      int tx = 0, ty = 0;
+      statusBarTap = mappedInput.wasScreenTapped(tx, ty) && ty < 44;
+    }
+    if (!quarantineGlobalTouch && currentActivity->name != "FrontlightPanel" &&
+        (statusBarTap || mappedInput.wasLightPanelGesture())) {
+      pushActivity(std::make_unique<FrontlightPanelActivity>(renderer, mappedInput));
+      return;
+    }
+
     // Note: do not hold a lock here, the loop() method must be responsible for acquire one if needed
     currentActivity->loop();
   } else {
@@ -95,6 +179,7 @@ void ActivityManager::loop() {
       } else {
         currentActivity = std::move(stackActivities.back());
         stackActivities.pop_back();
+        armGlobalTouchGestureQuarantine();
         LOG_DBG("ACT", "Popped from activity stack, new size = %zu", stackActivities.size());
         // Handle result if necessary
         if (currentActivity->resultHandler) {
@@ -150,6 +235,7 @@ void ActivityManager::loop() {
 
       lock.unlock();  // onEnter may acquire its own lock
       currentActivity->onEnter();
+      armGlobalTouchGestureQuarantine();
 
       // onEnter may request another pending action, we will handle it in the next loop iteration
       continue;
@@ -191,6 +277,7 @@ void ActivityManager::replaceActivity(std::unique_ptr<Activity>&& newActivity) {
     // No current activity, safe to launch immediately
     currentActivity = std::move(newActivity);
     currentActivity->onEnter();
+    armGlobalTouchGestureQuarantine();
   }
 }
 

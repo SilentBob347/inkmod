@@ -11,6 +11,7 @@
 #include "LegacyRenderDiagnostics.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchListNavigation.h"
 
 namespace {
 
@@ -142,6 +143,24 @@ void EpubReaderMenuActivity::onEnter() {
 void EpubReaderMenuActivity::onExit() { Activity::onExit(); }
 
 void EpubReaderMenuActivity::loop() {
+  bool touchActivate = false;
+  // X4 Pro/touch: direct row activation and vertical page swipes.
+  {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+    const int contentTop =
+        screen.y + metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
+    const int contentHeight = screen.height - contentTop - metrics.verticalSpacing;
+    auto touch = TouchListNavigation::handle(mappedInput, selectedIndex, static_cast<int>(menuItems.size()),
+                                              Rect{screen.x, contentTop, screen.width, contentHeight},
+                                              metrics.listRowHeight);
+    if (touch.handled) {
+      requestUpdate();
+      touchActivate = touch.activate;
+      if (!touchActivate) return;
+    }
+  }
+
   // Handle navigation
   buttonNavigator.onNext([this] {
     selectedIndex = ButtonNavigator::nextIndex(selectedIndex, static_cast<int>(menuItems.size()));
@@ -153,7 +172,7 @@ void EpubReaderMenuActivity::loop() {
     requestUpdate();
   });
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+  if (touchActivate || mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     const auto selectedAction = menuItems[selectedIndex].action;
     if (selectedAction == MenuAction::ROTATE_SCREEN) {
       // Cycle orientation preview locally; actual rotation happens on menu exit.

@@ -59,6 +59,7 @@ class TxtReaderActivity final : public Activity {
   void render(RenderLock&&) override;
   bool isReaderActivity() const override { return true; }
   bool canSnapshotForSleepOverlay() const override { return true; }
+  bool handleShortcutAction(uint8_t rawAction) override;
   std::string getCurrentBookPath() const override { return txt ? txt->getPath() : std::string{}; }
 
   // Renders the last saved page to the frame buffer without flushing to display.

@@ -16,6 +16,9 @@ bool save(const KOReaderCredentialStore& store, const char* path) {
   doc["serverUrl"] = store.getServerUrl();
   doc["matchMethod"] = static_cast<uint8_t>(store.getMatchMethod());
   doc["sendMetadata"] = store.getSendMetadata();
+  doc["syncBookmarks"] = store.getSyncBookmarks();
+  doc["syncClippings"] = store.getSyncClippings();
+  doc["syncStats"] = store.getSyncStats();
   doc["syncBehavior"] = static_cast<uint8_t>(store.getSyncBehavior());
 
   FsFile file;
@@ -75,6 +78,12 @@ bool load(KOReaderCredentialStore& store, const char* json, bool* needsResave) {
   uint8_t method = doc["matchMethod"] | (uint8_t)0;
   store.setMatchMethod(static_cast<DocumentMatchMethod>(method));
   store.setSendMetadata(doc["sendMetadata"] | false);
+  // Extended CrossPoint sync is opt-in for migrated installations. This keeps
+  // the already-stable progress sync path byte-for-byte unchanged until the
+  // user explicitly enables bookmarks/clippings/stats.
+  store.setSyncBookmarks(doc["syncBookmarks"] | false);
+  store.setSyncClippings(doc["syncClippings"] | false);
+  store.setSyncStats(doc["syncStats"] | false);
 
   if (hasSyncBehavior) {
     const uint8_t behavior = doc["syncBehavior"] | static_cast<uint8_t>(KOReaderSyncBehavior::SMART);

@@ -29,8 +29,26 @@ void BackupStatsActivity::render(RenderLock&&) {
   if (state == WARNING) {
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 20, tr(STR_BACKUP_STATS_CONFIRM), true);
 
-    const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_CONFIRM), "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    if (mappedInput.hasTouch()) {
+      // These are real actions on X4 Pro, not passive hardware-key hints.
+      // Draw two large touch buttons just like ConfirmationActivity.
+      constexpr int side = 20;
+      constexpr int gap = 12;
+      constexpr int buttonH = 48;
+      const int buttonW = (pageWidth - side * 2 - gap) / 2;
+      const int buttonY = pageHeight - buttonH - 12;
+      const char* leftLabel = tr(STR_CANCEL);
+      const char* rightLabel = tr(STR_CONFIRM);
+      renderer.drawRect(side, buttonY, buttonW, buttonH);
+      renderer.drawRect(side + buttonW + gap, buttonY, buttonW, buttonH);
+      const int leftW = renderer.getTextWidth(UI_10_FONT_ID, leftLabel);
+      const int rightW = renderer.getTextWidth(UI_10_FONT_ID, rightLabel);
+      renderer.drawText(UI_10_FONT_ID, side + (buttonW - leftW) / 2, buttonY + 10, leftLabel);
+      renderer.drawText(UI_10_FONT_ID, side + buttonW + gap + (buttonW - rightW) / 2, buttonY + 10, rightLabel);
+    } else {
+      const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_CONFIRM), "", "");
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    }
     renderer.displayBuffer();
     return;
   }
@@ -61,8 +79,35 @@ void BackupStatsActivity::runBackup() {
 
 void BackupStatsActivity::loop() {
   if (state == WARNING) {
+    if (mappedInput.hasTouch()) {
+      int tx = 0, ty = 0;
+      if (mappedInput.wasScreenTouchDown(tx, ty) || mappedInput.wasScreenTapped(tx, ty)) {
+        const int pageWidth = renderer.getScreenWidth();
+        const int pageHeight = renderer.getScreenHeight();
+        constexpr int side = 20;
+        constexpr int gap = 12;
+        constexpr int buttonH = 48;
+        const int buttonW = (pageWidth - side * 2 - gap) / 2;
+        const int buttonY = pageHeight - buttonH - 12;
+        if (ty >= buttonY && ty < buttonY + buttonH) {
+          if (tx >= side && tx < side + buttonW) {
+            mappedInput.suppressTouchContact();
+            goBack();
+            return;
+          }
+          const int rightX = side + buttonW + gap;
+          if (tx >= rightX && tx < rightX + buttonW) {
+            mappedInput.suppressTouchContact();
+            runBackup();
+            return;
+          }
+        }
+      }
+    }
+
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       runBackup();
+      return;
     }
 
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {

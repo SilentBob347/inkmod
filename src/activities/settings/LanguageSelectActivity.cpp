@@ -10,6 +10,7 @@
 #include "I18nKeys.h"
 #include "MappedInputManager.h"
 #include "fontIds.h"
+#include "util/TouchListNavigation.h"
 
 void LanguageSelectActivity::onEnter() {
   Activity::onEnter();
@@ -27,6 +28,34 @@ void LanguageSelectActivity::onEnter() {
 void LanguageSelectActivity::onExit() { Activity::onExit(); }
 
 void LanguageSelectActivity::loop() {
+  if (mappedInput.hasTouch()) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const auto safeArea = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+    const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+    const int contentHeight = safeArea.y + safeArea.height - contentTop - metrics.verticalSpacing;
+
+    int tx = 0, ty = 0;
+    if (mappedInput.wasScreenTouchDown(tx, ty)) {
+      const int rowHeight = std::max(1, metrics.listRowHeight);
+      const int pageItems = std::max(1, contentHeight / rowHeight);
+      const int pageStart = (std::max(0, selectedIndex) / pageItems) * pageItems;
+
+      if (tx >= safeArea.x && tx < safeArea.x + safeArea.width &&
+          ty >= contentTop && ty < contentTop + contentHeight) {
+        const int row = (ty - contentTop) / rowHeight;
+        const int touched = pageStart + row;
+        if (touched >= 0 && touched < totalItems) {
+          selectedIndex = touched;
+          // Select immediately on touch-down and consume the release so changing
+          // language cannot leak the same contact into the previous screen.
+          mappedInput.suppressTouchContact();
+          handleSelection();
+          return;
+        }
+      }
+    }
+  }
+
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     onBack();
     return;
@@ -36,7 +65,6 @@ void LanguageSelectActivity::loop() {
     handleSelection();
     return;
   }
-
 
   // Handle navigation
   buttonNavigator.onNextRelease([this] {

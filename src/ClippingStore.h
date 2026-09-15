@@ -25,6 +25,9 @@ class ClippingStore {
                    const std::string& bookType);
   AddResult add(const Clipping& clipping);
   bool removeAt(size_t index);
+  // Merge an item received from remote sync without treating the matching
+  // range as a user toggle and without appending it to the Kindle export.
+  bool upsertFromSync(const Clipping& clipping);
   void clearAll();
 
   const std::vector<Clipping>& getClippings() const { return clippings_; }

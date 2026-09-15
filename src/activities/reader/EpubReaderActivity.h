@@ -251,6 +251,7 @@ class EpubReaderActivity final : public Activity {
   bool preventAutoSleep() override { return automaticPageTurnActive; }
   bool isReaderActivity() const override { return true; }
   bool canSnapshotForSleepOverlay() const override { return true; }
+  bool handleShortcutAction(uint8_t rawAction) override;
   std::string getCurrentBookPath() const override { return epub ? epub->getPath() : std::string{}; }
   // Same cleanup the in-reader SYNC menu action already does before handing
   // off to KOReaderSyncActivity (see the MenuAction::SYNC case in

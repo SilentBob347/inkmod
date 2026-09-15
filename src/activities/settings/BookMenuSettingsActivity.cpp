@@ -9,6 +9,7 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchListNavigation.h"
 
 void BookMenuSettingsActivity::onEnter() {
   Activity::onEnter();
@@ -31,12 +32,28 @@ void BookMenuSettingsActivity::moveSelected(const int d) {
 }
 
 void BookMenuSettingsActivity::loop() {
+  bool touchActivate = false;
+  if (mappedInput.hasTouch() && !layout.empty()) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const int pageWidth = renderer.getScreenWidth();
+    const int pageHeight = renderer.getScreenHeight();
+    const int top = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+    constexpr int HELP_BAND_HEIGHT = 38;
+    constexpr int HELP_GAP = 4;
+    const int helpBottom = pageHeight - metrics.buttonHintsHeight;
+    const int helpTop = helpBottom - HELP_BAND_HEIGHT;
+    const int listHeight = std::max(0, helpTop - HELP_GAP - top);
+    auto touch = TouchListNavigation::handle(mappedInput, selectedIndex, static_cast<int>(layout.size()),
+                                             Rect{0, top, pageWidth, listHeight}, metrics.listRowHeight);
+    if (touch.handled && !touch.activate) { requestUpdate(); return; }
+    touchActivate = touch.activate;
+  }
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     finish();
     return;
   }
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) && !layout.empty()) {
+  if ((touchActivate || mappedInput.wasReleased(MappedInputManager::Button::Confirm)) && !layout.empty()) {
     layout[selectedIndex].enabled = !layout[selectedIndex].enabled;
     persist();
     requestUpdate();

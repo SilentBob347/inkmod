@@ -45,6 +45,9 @@ class FileBrowserActivity final : public Activity {
   bool lockNextConfirmRelease = false;
 
   Mode mode = Mode::Books;
+  // True only when the normal Books browser was opened without an explicit
+  // start path. In that case we restore the last visited directory/selection.
+  bool restoreLastLocation = false;
 
   // Files state
   std::string basepath = "/";
@@ -57,10 +60,11 @@ class FileBrowserActivity final : public Activity {
   size_t findEntry(const std::string& name) const;
 
  public:
-  explicit FileBrowserActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string initialPath = "/",
+  explicit FileBrowserActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string initialPath = {},
                                Mode mode = Mode::Books)
       : Activity("FileBrowser", renderer, mappedInput),
         mode(mode),
+        restoreLastLocation(mode == Mode::Books && initialPath.empty()),
         basepath(initialPath.empty() ? "/" : std::move(initialPath)) {}
   void onEnter() override;
   void onExit() override;

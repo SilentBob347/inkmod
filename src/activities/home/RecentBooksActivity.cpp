@@ -15,6 +15,7 @@
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchListNavigation.h"
 
 namespace {
 constexpr size_t MAX_LIST_RECENT_BOOKS = 10;
@@ -82,6 +83,56 @@ void RecentBooksActivity::loop() {
   }
 
   int listSize = static_cast<int>(recentBooks.size());
+
+  // X4 Pro: long-press directly on a recent-book row opens the same
+  // action menu as holding Confirm. This keeps touch and button behaviour
+  // identical and suppresses the following release so the book is not
+  // opened underneath the menu.
+  if (mappedInput.hasTouch() && listSize > 0) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const auto safeArea = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+    const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+    const int contentHeight = safeArea.y + safeArea.height - contentTop - metrics.verticalSpacing;
+    // drawList() uses the taller two-line row when a recent book has an author.
+    // On X4 Pro that row is clamped to at least 68 px. The touch hit-test must
+    // use the same height or taps/holds land on a different visual row.
+    const bool hasSubtitle = selectorIndex < recentBooks.size() && !recentBooks[selectorIndex].author.empty();
+    const int touchRowHeight = std::max(1, hasSubtitle ? std::max(metrics.listWithSubtitleRowHeight, 68)
+                                                       : std::max(metrics.listRowHeight, 56));
+    int tx = 0, ty = 0;
+    if (mappedInput.wasScreenLongPress(tx, ty) && tx >= safeArea.x && tx < safeArea.x + safeArea.width &&
+        ty >= contentTop && ty < contentTop + contentHeight) {
+      const int row = (ty - contentTop) / touchRowHeight;
+      if (row >= 0 && row < listSize) {
+        selectorIndex = static_cast<size_t>(row);
+        requestUpdate();
+        showBookActionMenu(selectorIndex, false);
+        return;
+      }
+    }
+  }
+
+  if (listSize > 0) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const auto safeArea = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+    const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+    const int contentHeight = safeArea.y + safeArea.height - contentTop - metrics.verticalSpacing;
+    const bool hasSubtitle = selectorIndex < recentBooks.size() && !recentBooks[selectorIndex].author.empty();
+    const int touchRowHeight = std::max(1, hasSubtitle ? std::max(metrics.listWithSubtitleRowHeight, 68)
+                                                       : std::max(metrics.listRowHeight, 56));
+    int touchIndex = static_cast<int>(selectorIndex);
+    auto touch = TouchListNavigation::handle(mappedInput, touchIndex, listSize,
+                                              Rect{safeArea.x, contentTop, safeArea.width, contentHeight},
+                                              touchRowHeight);
+    if (touch.handled) {
+      selectorIndex = static_cast<size_t>(touchIndex);
+      requestUpdate();
+      if (touch.activate && selectorIndex < recentBooks.size()) {
+        onSelectBook(recentBooks[selectorIndex].path);
+      }
+      return;
+    }
+  }
 
   buttonNavigator.onNextRelease([this, listSize] {
     selectorIndex = ButtonNavigator::nextIndex(static_cast<int>(selectorIndex), listSize);

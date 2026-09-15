@@ -10,6 +10,7 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchListNavigation.h"
 
 namespace {
 constexpr unsigned long BOOKMARK_DELETE_HOLD_MS = 1000;
@@ -39,6 +40,17 @@ void BookmarksHomeActivity::onExit() {
 }
 
 void BookmarksHomeActivity::loop() {
+  bool touchActivate = false;
+  if (mappedInput.hasTouch() && !books.empty()) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const auto safeArea = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+    const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+    const int contentHeight = safeArea.y + safeArea.height - contentTop - metrics.verticalSpacing;
+    auto touch = TouchListNavigation::handle(mappedInput, selectedIndex, static_cast<int>(books.size()),
+                                             Rect{safeArea.x, contentTop, safeArea.width, contentHeight}, metrics.listRowHeight);
+    if (touch.handled && !touch.activate) { requestUpdate(); return; }
+    touchActivate = touch.activate;
+  }
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     onGoHome();
     return;
@@ -51,7 +63,7 @@ void BookmarksHomeActivity::loop() {
     return;
   }
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+  if (touchActivate || mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     if (longPressOpenHandled) {
       longPressOpenHandled = false;
       return;

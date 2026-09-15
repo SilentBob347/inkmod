@@ -169,3 +169,5 @@ uint16_t HalDisplay::getDisplayHeight() const { return einkDisplay.getDisplayHei
 uint16_t HalDisplay::getDisplayWidthBytes() const { return einkDisplay.getDisplayWidthBytes(); }
 
 uint32_t HalDisplay::getBufferSize() const { return einkDisplay.getBufferSize(); }
+
+void HalDisplay::setInverted(bool inverted) { einkDisplay.setInverted(inverted); }

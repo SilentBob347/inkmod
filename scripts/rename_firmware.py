@@ -114,11 +114,12 @@ def _get_release_version(env):
 
 def rename_firmware(source, target, env):
     env_name = env['PIOENV']
+    artifact_variant = _get_project_option(env, 'custom_artifact_variant') or env_name
     project_dir = env['PROJECT_DIR']
     src = str(target[0])
     build_dir = os.path.dirname(src)
 
-    default_dst = os.path.join(build_dir, f'firmware-{env_name}.bin')
+    default_dst = os.path.join(build_dir, f'firmware-{artifact_variant}.bin')
     _copy_artifact(src, default_dst)
 
     if _is_rc_artifact_build(env):
@@ -127,8 +128,12 @@ def rename_firmware(source, target, env):
 
     release_version = _get_release_version(env)
     if release_version:
-        release_env_name = _get_project_option(env, 'custom_rc_variant') or env_name
-        release_dst = os.path.join(build_dir, f'firmware-{release_env_name}-{release_version}.bin')
+        release_variant = (
+            _get_project_option(env, 'custom_artifact_variant')
+            or _get_project_option(env, 'custom_rc_variant')
+            or env_name
+        )
+        release_dst = os.path.join(build_dir, f'firmware-{release_variant}-{release_version}.bin')
         _copy_artifact(src, release_dst)
 
 

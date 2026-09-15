@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <BootLog.h>
+#include <BoardConfig.h>
 #include <Epub.h>
 #include <FontCacheManager.h>
 #include <FontDecompressor.h>
@@ -8,6 +9,7 @@
 #include <HalClock.h>
 #include <HalDisplay.h>
 #include <HalGPIO.h>
+#include <HalFrontlight.h>
 #include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <HalSystem.h>
@@ -17,9 +19,12 @@
 #include <Logging.h>
 #include <SPI.h>
 #include <WiFi.h>
+#include <XteinkDetect.h>
 #include <builtinFonts/all.h>
 #include <ctime>
 #include <new>
+
+#include "platform/UsbSerialJtagHandoff.h"
 
 #ifdef SIMULATOR
 using esp_reset_reason_t = int;
@@ -97,8 +102,8 @@ inline esp_sleep_wakeup_cause_t esp_sleep_get_wakeup_cause() { return ESP_SLEEP_
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
 
-MappedInputManager mappedInputManager(gpio);
 GfxRenderer renderer(display);
+MappedInputManager mappedInputManager(gpio, &renderer);
 ActivityManager activityManager(renderer, mappedInputManager);
 FontDecompressor fontDecompressor;
 SdCardFontSystem sdFontSystem;
@@ -319,6 +324,21 @@ void silentRestart() {
   ESP.restart();
 }
 
+
+void restartToHomeAfterStorageHandoff() {
+  if (deepSleepInProgress) return;
+  silentRebootTarget = SILENT_REBOOT_TARGET_HOME;
+  silentRebootMagic = SILENT_REBOOT_MAGIC;
+  LOG_DBG("MAIN", "Restart after storage handoff (target=home)");
+  GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
+  delay(50);
+  // X4 Pro USB MSC uses the ESP32-S3 OTG peripheral on the same physical
+  // USB pins as Serial/JTAG. A plain ESP.restart() can leave the host/PHY
+  // handoff in a bad state, so restore Serial/JTAG ownership first.
+  handoffUsbOtgToSerialJtag();
+  ESP.restart();
+}
+
 void silentRestartToReader() {
   if (deepSleepInProgress) return;  // sleeping supersedes the heap-defrag reboot
   silentRebootTarget = SILENT_REBOOT_TARGET_READER;
@@ -417,7 +437,7 @@ bool isGlobalPowerButtonAction(const InkMODSettings::SHORT_PWRBTN action) {
 
 // UNUSED as of the SYNC_PROGRESS removal from the power-button action lists
 // (see SettingsList.h and the SYNC_PROGRESS case in
-// handleGlobalPowerButtonAction() below) - kept only in case a
+// handleGlobalShortcutAction() below) - kept only in case a
 // reader-independent sync entry point is worth revisiting later. Do not wire
 // this back up to a button without also re-solving why it kept hanging: it
 // went through peak-memory OOM, then a RenderLock deadlock, then a
@@ -519,7 +539,7 @@ InkMODSettings::SHORT_PWRBTN getPowerButtonAction() {
   return action;
 }
 
-bool handleGlobalPowerButtonAction(const InkMODSettings::SHORT_PWRBTN action) {
+bool handleGlobalShortcutAction(const InkMODSettings::SHORT_PWRBTN action) {
   switch (action) {
     case InkMODSettings::SHORT_PWRBTN::SLEEP:
       enterDeepSleep();
@@ -586,6 +606,15 @@ bool handleGlobalPowerButtonAction(const InkMODSettings::SHORT_PWRBTN action) {
         return false;
       }
       activityManager.goToHotspotFileTransfer();
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::TOGGLE_FRONTLIGHT:
+      // Global action so a short Power press can light the device even from
+      // Home/menus, before the user can see the on-screen frontlight control.
+      // On boards without a frontlight this is a harmless no-op.
+      if (!Frontlight.present()) {
+        return false;
+      }
+      Frontlight.setOn(!Frontlight.isOn());
       return true;
     default:
       return false;
@@ -678,6 +707,23 @@ void enterDeepSleep(bool fromTimeout) {
 }
 
 void setupDisplayAndFonts(bool seamless = false) {
+#if !FREEINK_MCU_C3 && !defined(SIMULATOR)
+  // CrossPoint 1.6.0 parity for X4 Pro / ESP32-S3: the controller probe must
+  // run before display.begin() chooses and initializes the panel driver.
+  // C3 devices already do this from HalGPIO::begin().
+  static bool controllerResolved = false;
+  if (!controllerResolved) {
+    controllerResolved = true;
+    BootLog::step("MAIN", "X4 Pro: probing display controller before display.begin()");
+    const bool promoted = freeink::applyXteinkDisplayController();
+    BootLog::stepf("MAIN", "X4 Pro: display probe promoted=%d controller=%d", promoted ? 1 : 0,
+                   static_cast<int>(BoardConfig::ACTIVE.displayController));
+    if (promoted) {
+      LOG_DBG("MAIN", "Panel controller: UltraChip UC81xx variant detected");
+    }
+  }
+#endif
+
   BootLog::step("MAIN", "setupDisplayAndFonts: calling display.begin()");
 #ifdef SIMULATOR
   (void)seamless;
@@ -851,6 +897,10 @@ void outOfMemoryHandler() {
 }
 
 void setup() {
+  // X4 Pro: keep the board master power rail asserted before USB/Serial init.
+  // This is the same first-step policy used by CrossPoint 1.6.0.
+  BoardConfig::holdPowerRails();
+
   t1 = millis();
   std::set_new_handler(outOfMemoryHandler);
 
@@ -912,8 +962,29 @@ void setup() {
   HalSystem::checkPanic();
 
   SETTINGS.loadFromFile();
+  Frontlight.begin(SETTINGS.frontlightBrightness, SETTINGS.frontlightWarmth,
+                   SETTINGS.frontlightOn != 0 && SETTINGS.frontlightRestoreOnWake != 0);
   APP_STATE.loadFromFile();
   powerManager.seedLastChargeEpochSeconds(APP_STATE.lastChargeEpochSeconds);
+
+#if FREEINK_DEVICE_X4PRO
+  // X4 Pro has no validated dedicated VBUS-detect GPIO. A native USB/JTAG reset
+  // is nevertheless definitive evidence that the device was just on USB, so
+  // treat it as a charging session. USB-MSC also calls markChargingNow() before
+  // its software restart, and that RTC_DATA_ATTR timestamp lands here.
+  if (rawResetReason == ESP_RST_USB || rawResetReason == ESP_RST_JTAG) {
+    powerManager.markChargingNow();
+  }
+#endif
+
+  // If the runtime/RTC copy is newer than the SD copy (notably after leaving
+  // X4 Pro USB-MSC), persist it now instead of waiting for the 5-minute fallback.
+  const uint64_t bootChargeEpoch = powerManager.getLastChargeEpochSeconds();
+  if (bootChargeEpoch > APP_STATE.lastChargeEpochSeconds) {
+    APP_STATE.lastChargeEpochSeconds = bootChargeEpoch;
+    APP_STATE.saveToFile();
+  }
+
   RECENT_BOOKS.loadFromFile();
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   KOREADER_STORE.loadFromFile();
@@ -937,10 +1008,12 @@ void setup() {
                                    SETTINGS.shortPwrBtn == InkMODSettings::SHORT_PWRBTN::SLEEP);
       break;
     case HalGPIO::WakeupReason::AfterUSBPower:
-      // TEMP: continue booting while diagnosing post-flash/reset behavior.
-      // Normal behavior is to go back to sleep when USB power causes a cold boot.
-      LOG_INF("BOOT", "AfterUSBPower route: TEMP continuing boot instead of deep sleep");
-      break;
+      // A cold boot caused only by external USB power should not leave the
+      // reader fully awake. Render the configured sleep screen and return to
+      // deep sleep; the power button remains the explicit wake source.
+      LOG_INF("BOOT", "AfterUSBPower route: returning to deep sleep");
+      enterDeepSleep(false);
+      return;
     case HalGPIO::WakeupReason::AfterFlash:
       // After flashing, just proceed to boot
       LOG_INF("BOOT", "AfterFlash route: continuing boot");
@@ -1014,7 +1087,14 @@ void setup() {
   // Placed after the splash/quick-resume screen is already painted, so a cold boot's
   // brief silent WiFi dip (only happens when there's no valid time yet - see the
   // function) happens behind a visible screen instead of a black/frozen one.
+#if FREEINK_DEVICE_X4PRO
+  // CrossPoint X4 Pro boots directly from the splash into the routed activity.
+  // Keep inkMOD's cold-boot NTP helper off the Pro path until the board is fully
+  // up; touching WiFi here can stall ESP32-S3 before Home is painted.
+  BootLog::step("WIFI", "X4 Pro: skipping silent boot-time WiFi/NTP sync");
+#else
   attemptSilentBootTimeSync(bootTimeSyncCandidate);
+#endif
 
   // Pre-warm WiFi into a stable STA/disconnected state here, in the quiet
   // early-boot window, rather than lazily inside
@@ -1033,6 +1113,12 @@ void setup() {
   // check) - trading a small amount of extra idle-radio power draw for the
   // rest of the session against not touching this call again outside of
   // boot's quiet window.
+#if FREEINK_DEVICE_X4PRO
+  // CrossPoint 1.6.0 does not run inkMOD's boot-time WiFi pre-warm on X4 Pro.
+  // Route to Home/Reader first; WiFi is still available normally when an
+  // activity explicitly requests it later.
+  BootLog::step("WIFI", "X4 Pro: skipping boot WiFi pre-warm");
+#else
   if (WiFi.getMode() != WIFI_STA) {
     BootLog::step("WIFI", "boot pre-warm: WiFi.mode(WIFI_OFF) -> persistent(false) -> mode(WIFI_STA) -> disconnect(true)");
     WiFi.mode(WIFI_OFF);
@@ -1042,6 +1128,7 @@ void setup() {
     WiFi.disconnect(true);
     BootLog::step("WIFI", "boot pre-warm: done");
   }
+#endif
 
   if (recoveryFirmwareMode) {
     // Skip normal home/reader routing: jump straight into the SD firmware picker.
@@ -1177,7 +1264,7 @@ void loop() {
 
   // Check for any user activity (button press or release) or active background work
   static unsigned long lastActivityTime = millis();
-  if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || halTiltSensor.hadActivity() ||
+  if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.wasTouchActivity() || halTiltSensor.hadActivity() ||
       activityManager.preventAutoSleep()) {
     lastActivityTime = millis();         // Reset inactivity timer
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
@@ -1228,7 +1315,7 @@ void loop() {
     return;
   }
 
-  if (millis() >= allowSleepAt && handleGlobalPowerButtonAction(getPowerButtonAction())) {
+  if (millis() >= allowSleepAt && handleGlobalShortcutAction(getPowerButtonAction())) {
     lastActivityTime = millis();
     return;
   }

@@ -26,6 +26,12 @@ class HomeActivity final : public Activity {
   ButtonNavigator buttonNavigator;
   int selectorIndex = 0;
   int lastCarouselBookIndex = 0;  // remembered position when leaving carousel row
+  // X4 Pro carousel owns a short horizontal drag that starts on a visible
+  // cover. Keeping this state local to Home avoids lowering the global swipe
+  // threshold (which would change gestures in the reader and other screens).
+  bool carouselTouchTracking = false;
+  int carouselTouchStartX = 0;
+  int carouselTouchStartY = 0;
   bool recentsLoading = false;
   bool recentsLoaded = false;
   bool firstRenderDone = false;

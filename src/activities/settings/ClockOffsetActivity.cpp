@@ -109,6 +109,87 @@ void ClockOffsetActivity::adjustActiveField(int delta) {
 }
 
 void ClockOffsetActivity::loop() {
+  if (mappedInput.hasTouch()) {
+    int tx = 0, ty = 0;
+    if (mappedInput.wasScreenTouchDown(tx, ty)) {
+      const auto& metrics = UITheme::getInstance().getMetrics();
+      const int pageWidth = renderer.getScreenWidth();
+      const int pageHeight = renderer.getScreenHeight();
+      const int centreY = pageHeight / 2 - 40;
+      const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+      const int fieldHeight = lineHeight + 2;
+      constexpr int fieldPaddingX = 6;
+      constexpr int labelGap = 16;
+      constexpr int fieldGap = 12;
+      constexpr int colonGap = 5;
+      auto widthOf = [&](const char* text) {
+        return renderer.getTextWidth(UI_12_FONT_ID, text, EpdFontFamily::BOLD);
+      };
+
+      const int labelWidth = widthOf("UTC");
+      const int signBoxW = std::max(widthOf("+"), widthOf("-")) + fieldPaddingX * 2;
+      const int hoursBoxW = std::max(widthOf("14"), widthOf("12")) + fieldPaddingX * 2;
+      const int colonWidth = widthOf(":");
+      const int minutesBoxW =
+          std::max({widthOf("00"), widthOf("15"), widthOf("30"), widthOf("45")}) + fieldPaddingX * 2;
+      const int totalWidth =
+          labelWidth + labelGap + signBoxW + fieldGap + hoursBoxW + colonGap + colonWidth + colonGap + minutesBoxW;
+
+      int x = (pageWidth - totalWidth) / 2 + labelWidth + labelGap;
+      const Rect signRect{x - 8, centreY - 10, signBoxW + 16, fieldHeight + 20};
+      x += signBoxW + fieldGap;
+      const Rect hoursRect{x - 8, centreY - 10, hoursBoxW + 16, fieldHeight + 20};
+      x += hoursBoxW + colonGap + colonWidth + colonGap;
+      const Rect minutesRect{x - 8, centreY - 10, minutesBoxW + 16, fieldHeight + 20};
+
+      const int buttonY = std::min(pageHeight - metrics.buttonHintsHeight - 64, centreY + 105);
+      constexpr int buttonW = 82;
+      constexpr int buttonH = 48;
+      constexpr int buttonGap = 26;
+      const int minusX = pageWidth / 2 - buttonGap / 2 - buttonW;
+      const int plusX = pageWidth / 2 + buttonGap / 2;
+      const Rect minusRect{minusX, buttonY, buttonW, buttonH};
+      const Rect plusRect{plusX, buttonY, buttonW, buttonH};
+
+      auto contains = [&](const Rect& r) {
+        return tx >= r.x && tx < r.x + r.width && ty >= r.y && ty < r.y + r.height;
+      };
+
+      if (contains(signRect)) {
+        activeField = FIELD_SIGN;
+        mappedInput.suppressTouchContact();
+        requestUpdate();
+        return;
+      }
+      if (contains(hoursRect)) {
+        activeField = FIELD_HOURS;
+        mappedInput.suppressTouchContact();
+        requestUpdate();
+        return;
+      }
+      if (contains(minutesRect)) {
+        activeField = FIELD_MINUTES;
+        mappedInput.suppressTouchContact();
+        requestUpdate();
+        return;
+      }
+      if (contains(minusRect)) {
+        adjustActiveField(-1);
+        saveToSettings();
+        mappedInput.suppressTouchContact();
+        requestUpdate();
+        return;
+      }
+      if (contains(plusRect)) {
+        adjustActiveField(+1);
+        saveToSettings();
+        mappedInput.suppressTouchContact();
+        requestUpdate();
+        return;
+      }
+    }
+  }
+
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     finish();
     return;
@@ -205,6 +286,29 @@ void ClockOffsetActivity::render(RenderLock&&) {
       snprintf(preview, sizeof(preview), "%s %s", tr(STR_CURRENT_TIME), timeBuf);
       renderer.drawCenteredText(UI_10_FONT_ID, centreY + 60, preview);
     }
+  }
+
+  // Touch-first controls for X4 Pro: select a field by tapping it, then use
+  // large +/- buttons. Physical button navigation remains unchanged.
+  if (mappedInput.hasTouch()) {
+    const int buttonY = std::min(pageHeight - metrics.buttonHintsHeight - 64, centreY + 105);
+    constexpr int buttonW = 82;
+    constexpr int buttonH = 48;
+    constexpr int buttonGap = 26;
+    const int minusX = pageWidth / 2 - buttonGap / 2 - buttonW;
+    const int plusX = pageWidth / 2 + buttonGap / 2;
+
+    renderer.fillRectDither(minusX, buttonY, buttonW, buttonH, Color::White);
+    renderer.drawRect(minusX, buttonY, buttonW, buttonH, true);
+    const int minusTextW = widthOf("-");
+    renderer.drawText(UI_12_FONT_ID, minusX + (buttonW - minusTextW) / 2,
+                      buttonY + (buttonH - lineHeight) / 2, "-", true, EpdFontFamily::BOLD);
+
+    renderer.fillRectDither(plusX, buttonY, buttonW, buttonH, Color::White);
+    renderer.drawRect(plusX, buttonY, buttonW, buttonH, true);
+    const int plusTextW = widthOf("+");
+    renderer.drawText(UI_12_FONT_ID, plusX + (buttonW - plusTextW) / 2, buttonY + (buttonH - lineHeight) / 2, "+",
+                      true, EpdFontFamily::BOLD);
   }
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_NEXT_FIELD), tr(STR_DIR_UP), tr(STR_DIR_DOWN));

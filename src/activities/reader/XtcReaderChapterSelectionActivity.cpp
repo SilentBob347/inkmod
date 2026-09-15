@@ -67,6 +67,46 @@ void XtcReaderChapterSelectionActivity::loop() {
     result.isCancelled = true;
     setResult(std::move(result));
     finish();
+    return;
+  }
+
+  if (mappedInput.hasTouch() && totalItems > 0) {
+    const auto swipe = mappedInput.wasSwipe();
+    if (swipe == MappedInputManager::SwipeDir::Up) {
+      selectorIndex = ButtonNavigator::nextPageIndex(selectorIndex, totalItems, pageItems);
+      requestUpdate();
+      return;
+    }
+    if (swipe == MappedInputManager::SwipeDir::Down) {
+      selectorIndex = ButtonNavigator::previousPageIndex(selectorIndex, totalItems, pageItems);
+      requestUpdate();
+      return;
+    }
+    int tx = 0, ty = 0;
+    if (mappedInput.wasScreenTapped(tx, ty)) {
+      const auto orientation = renderer.getOrientation();
+      const bool isLandscapeCw = orientation == GfxRenderer::Orientation::LandscapeClockwise;
+      const bool isLandscapeCcw = orientation == GfxRenderer::Orientation::LandscapeCounterClockwise;
+      const bool isPortraitInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
+      const int hintGutterWidth = (isLandscapeCw || isLandscapeCcw) ? 30 : 0;
+      const int contentX = isLandscapeCw ? hintGutterWidth : 0;
+      const int contentWidth = renderer.getScreenWidth() - hintGutterWidth;
+      const int contentY = isPortraitInverted ? 50 : 0;
+      const int listTop = 58 + contentY;
+      if (tx >= contentX && tx < contentX + contentWidth && ty >= listTop) {
+        const int row = (ty - listTop) / 30;
+        if (row >= 0 && row < pageItems) {
+          const int pageStart = (selectorIndex / pageItems) * pageItems;
+          const int index = pageStart + row;
+          if (index >= 0 && index < totalItems) {
+            selectorIndex = index;
+            setResult(PageResult{chapters[selectorIndex].startPage});
+            finish();
+            return;
+          }
+        }
+      }
+    }
   }
 
   buttonNavigator.onNextRelease([this, totalItems] {

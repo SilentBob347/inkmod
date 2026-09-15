@@ -36,6 +36,40 @@ void EpubReaderFootnotesActivity::loop() {
     return;
   }
 
+  if (!footnotes.empty() && mappedInput.hasTouch()) {
+    const auto orientation = renderer.getOrientation();
+    const bool isPortraitInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
+    const int contentY = isPortraitInverted ? 50 : 0;
+    constexpr int lineHeight = 36;
+    const int visibleCount = std::max(1, (renderer.getScreenHeight() - contentY) / lineHeight);
+
+    const auto swipe = mappedInput.wasSwipe();
+    if (swipe == MappedInputManager::SwipeDir::Up || swipe == MappedInputManager::SwipeDir::Down) {
+      const int maxOffset = std::max(0, static_cast<int>(footnotes.size()) - visibleCount);
+      const int delta = swipe == MappedInputManager::SwipeDir::Up ? visibleCount : -visibleCount;
+      scrollOffset = std::clamp(scrollOffset + delta, 0, maxOffset);
+      // Keep a visible selection so Confirm still operates predictably after a touch scroll.
+      selectedIndex = std::clamp(selectedIndex, scrollOffset,
+                                 std::min(static_cast<int>(footnotes.size()) - 1,
+                                          scrollOffset + visibleCount - 1));
+      requestUpdate();
+      return;
+    }
+
+    int tx = 0, ty = 0;
+    const int listTop = 60 + contentY;
+    if (mappedInput.wasScreenTapped(tx, ty) && ty >= listTop) {
+      const int row = (ty - listTop) / lineHeight;
+      const int index = scrollOffset + row;
+      if (row >= 0 && row < visibleCount && index >= 0 && index < static_cast<int>(footnotes.size())) {
+        selectedIndex = index;
+        setResult(FootnoteResult{footnotes[selectedIndex].href});
+        finish();
+        return;
+      }
+    }
+  }
+
   buttonNavigator.onNext([this] {
     if (!footnotes.empty()) {
       selectedIndex = (selectedIndex + 1) % footnotes.size();

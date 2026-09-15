@@ -234,13 +234,16 @@ void SettingsActivity::rebuildSettingsLists() {
   systemGlobalStatsSettings = buildSystemGlobalStatsSettingsList(allSettings);
   controlsSettings = buildControlsSettingsParentList(allSettings);
   controlsPowerSettings = buildControlsPowerSettingsList(allSettings);
+  controlsHomeButtonSettings = buildControlsHomeButtonSettingsList(allSettings);
   controlsFrontButtonSettings = buildControlsFrontButtonSettingsList(allSettings);
   controlsSideButtonSettings = buildControlsSideButtonSettingsList(allSettings);
 
-  if (controlsPowerSettings.size() < 2 || controlsPowerSettings.size() > 3 || controlsFrontButtonSettings.size() != 6 ||
-      controlsSideButtonSettings.size() != 3) {
-    LOG_ERR("SET", "Unexpected controls submenu counts: power=%u front=%u side=%u",
+  if (controlsPowerSettings.size() < 2 || controlsPowerSettings.size() > 3 ||
+      (BoardConfig::isX4Pro() && controlsHomeButtonSettings.size() != 2) ||
+      controlsFrontButtonSettings.size() != 6 || controlsSideButtonSettings.size() != 3) {
+    LOG_ERR("SET", "Unexpected controls submenu counts: power=%u home=%u front=%u side=%u",
             static_cast<uint32_t>(controlsPowerSettings.size()),
+            static_cast<uint32_t>(controlsHomeButtonSettings.size()),
             static_cast<uint32_t>(controlsFrontButtonSettings.size()),
             static_cast<uint32_t>(controlsSideButtonSettings.size()));
   }
@@ -270,6 +273,9 @@ void SettingsActivity::setCurrentSettingsForCategory() {
       switch (activeSubmenu) {
         case SettingAction::ControlsPowerButton:
           currentSettings = &controlsPowerSettings;
+          break;
+        case SettingAction::ControlsHomeButton:
+          currentSettings = &controlsHomeButtonSettings;
           break;
         case SettingAction::ControlsFrontButtons:
           currentSettings = &controlsFrontButtonSettings;
@@ -322,6 +328,8 @@ StrId SettingsActivity::activeSubmenuTitleId() const {
       return StrId::STR_READER_PAGE_LAYOUT;
     case SettingAction::ControlsPowerButton:
       return StrId::STR_POWER_BUTTON;
+    case SettingAction::ControlsHomeButton:
+      return StrId::STR_HOME_BUTTON;
     case SettingAction::ControlsFrontButtons:
       return StrId::STR_FRONT_BUTTONS;
     case SettingAction::ControlsSideButtons:
@@ -549,6 +557,66 @@ void SettingsActivity::loop() {
     requestUpdate();
   }
 
+  // X4 Pro touch: tabs and settings rows activate exactly the same actions as Confirm.
+  // Keep this at the activity level so the existing inkMOD settings lists/themes stay intact.
+  if (mappedInput.hasTouch()) {
+    int tx = 0, ty = 0;
+    // X4 Pro: act on touch-down instead of waiting for a perfectly still tap.
+    // This makes the whole visible row easy to hit even if the finger moves a few pixels.
+    if (mappedInput.wasScreenTouchDown(tx, ty)) {
+      const auto& metrics = UITheme::getInstance().getMetrics();
+      const auto safeArea = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+      const int tabTop = metrics.topPadding + metrics.headerHeight;
+      const int tabBottom = tabTop + metrics.tabBarHeight;
+
+      if (ty >= tabTop && ty < tabBottom && tx >= safeArea.x && tx < safeArea.x + safeArea.width) {
+        const int relX = tx - safeArea.x;
+        const int category = std::clamp((relX * categoryCount) / std::max(1, safeArea.width), 0, categoryCount - 1);
+        if (category != selectedCategoryIndex || activeSubmenu != SettingAction::None) {
+          mappedInput.suppressTouchContact();
+          enterCategory(category);
+          selectedSettingIndex = 0;
+          requestUpdate();
+        }
+        return;
+      }
+
+      Rect listRect{safeArea.x, metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing,
+                    safeArea.width,
+                    safeArea.y + safeArea.height - (metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight +
+                                                    metrics.verticalSpacing * 2)};
+      const StrId submenuTitleId = activeSubmenuTitleId();
+      if (submenuTitleId != StrId::STR_NONE_OPT) {
+        const int headerOffset = renderer.getLineHeight(UI_10_FONT_ID) + metrics.verticalSpacing;
+        listRect.y += headerOffset;
+        listRect.height = std::max(0, listRect.height - headerOffset);
+      }
+
+      if (tx >= listRect.x && tx < listRect.x + listRect.width && ty >= listRect.y && ty < listRect.y + listRect.height &&
+          settingsCount > 0) {
+        const int rowHeight = std::max(1, metrics.listRowHeight);
+        const int pageItems = std::max(1, listRect.height / rowHeight);
+        const int selectedListIndex = std::max(0, selectedSettingIndex - 1);
+        const int pageStart = (selectedListIndex / pageItems) * pageItems;
+        const int row = (ty - listRect.y) / rowHeight;
+        const int touched = pageStart + row;
+        if (touched >= 0 && touched < settingsCount) {
+          const auto& setting = (*currentSettings)[touched];
+          if (setting.type != SettingType::SECTION_HEADER && setting.type != SettingType::INFO) {
+            selectedSettingIndex = touched + 1;
+            // Consume this contact before an action opens another activity so the
+            // eventual release cannot leak into the newly opened screen.
+            mappedInput.suppressTouchContact();
+            toggleCurrentSetting();
+            applyUiTextSize(renderer);
+            requestUpdate();
+          }
+        }
+        return;
+      }
+    }
+  }
+
   // Physical front button 3 (raw LEFT) / 4 (raw RIGHT): switch the
   // top-level Settings category after 0.5 s from anywhere, including a submenu.
   // One hold = one step; cyclic wrap at the ends and no repeat while the button stays down.
@@ -597,18 +665,18 @@ void SettingsActivity::loop() {
   }
 
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    // Back should mean hierarchy, not focus navigation. Inside an internal
+    // submenu it returns to the parent Settings category in one step. At the
+    // top Settings level it leaves Settings immediately, regardless of which
+    // row currently has keyboard focus. The old row -> tab -> Home sequence
+    // made touch navigation feel like three separate Back presses.
     if (activeSubmenu != SettingAction::None) {
       closeSubmenu();
       requestUpdate();
       return;
     }
-    if (selectedSettingIndex > 0) {
-      selectedSettingIndex = 0;
-      requestUpdate();
-    } else {
-      SETTINGS.saveToFile();
-      onGoHome();
-    }
+    SETTINGS.saveToFile();
+    onGoHome();
     return;
   }
 

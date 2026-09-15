@@ -11,6 +11,7 @@
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchListNavigation.h"
 
 namespace {
 // Editable fields: Name, URL, Username, Password, Filename.
@@ -48,12 +49,25 @@ void OpdsSettingsActivity::onEnter() {
 void OpdsSettingsActivity::onExit() { Activity::onExit(); }
 
 void OpdsSettingsActivity::loop() {
+  bool touchActivate = false;
+  if (mappedInput.hasTouch()) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const auto safeArea = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+    const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + metrics.tabBarHeight;
+    const int contentHeight = safeArea.y + safeArea.height - contentTop - metrics.verticalSpacing * 2;
+    int touchIndex = static_cast<int>(selectedIndex);
+    auto touch = TouchListNavigation::handle(mappedInput, touchIndex, getMenuItemCount(),
+                                             Rect{safeArea.x, contentTop, safeArea.width, contentHeight}, metrics.listRowHeight);
+    selectedIndex = static_cast<decltype(selectedIndex)>(touchIndex);
+    if (touch.handled && !touch.activate) { requestUpdate(); return; }
+    touchActivate = touch.activate;
+  }
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     finish();
     return;
   }
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+  if (touchActivate || mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     handleSelection();
     return;
   }

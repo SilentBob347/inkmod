@@ -1,227 +1,200 @@
-<h1 align="center">⚠️ DISCLAIMER ⚠️</h1>
-
-<p align="center">
-<b>By installing inkMOD, you acknowledge that you are doing so entirely at your own risk.</b>
-</p>
-
-<p align="center">
-The developers and contributors of inkMOD accept <b>no responsibility or liability</b> for any damage, loss of functionality, software corruption, or bricked hardware that may occur to your device during or after the installation process.
-</p>
-
-<p align="center">
-<i>Proceed with caution and ensure you follow all instructions carefully.</i>
-</p>
-
-
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/inkmod-logo-dark.png">
     <source media="(prefers-color-scheme: light)" srcset="assets/inkmod-logo-light.png">
-    <img alt="inkMOD — Custom Firmware for Xteink X4 / X3"
-         src="assets/inkmod-logo-light.png"
-         width="280">
+    <img alt="inkMOD — Custom Firmware for Xteink X3, X4 and X4 Pro"
+         src="assets/inkmod-logo-light.png" width="300">
   </picture>
 </p>
 
-<h1 align="center">inkMOD — Custom Firmware for Xteink X4 / X3</h1>
+<h1 align="center">inkMOD</h1>
 
 <p align="center">
-  Open-source custom firmware for Xteink X4 and Xteink X3
+Open-source custom firmware for <b>Xteink X3, X4 and X4 Pro</b>
 </p>
 
-**inkMOD** is an open-source custom firmware for **Xteink X4 and Xteink X3** e-readers with native **FB2, FB2.ZIP and EPUB** support, Russian and Ukrainian localization, dictionaries, improved typography, sleep covers, reading statistics, web file management and browser-side book optimization.
+<p align="center">
+FB2 / FB2.ZIP / EPUB · dictionaries · custom fonts · OPDS · statistics · web tools · touch support on X4 Pro
+</p>
 
-The project focuses on extending the capabilities of the Xteink X4/X3 while keeping the firmware fast and stable on memory-constrained hardware.
+> [!WARNING]
+> Installing custom firmware always carries risk. Use the firmware image for the **correct device family**, keep a known-good recovery image, and do not erase factory calibration/NVS unless a recovery procedure explicitly requires it. The project and its contributors are not responsible for damaged or unusable devices.
 
-## Features
+## Supported devices
 
-### 📚 Book formats
+| Device | MCU | Main input | Hardware notes | Release image |
+| --- | --- | --- | --- | --- |
+| **Xteink X3** | ESP32-C3 | Physical buttons | Hardware RTC; supported display revisions | `firmware-x3x4-vX.Y.Z.bin` |
+| **Xteink X4** | ESP32-C3 | Physical buttons | Supported SSD1677 / UC8179 / UC8279 revisions | `firmware-x3x4-vX.Y.Z.bin` |
+| **Xteink X4 Pro** | ESP32-S3 + PSRAM | Capacitive touch + Home key | GT911 touch, warm/cold frontlight, USB mass-storage support | `firmware-x4pro-vX.Y.Z.bin` |
 
-- Native **FB2** and **FB2.ZIP** reading without preliminary EPUB conversion.
-- EPUB support with browser-side optimization through **EPUBKIT**.
-- TXT, XTC and XTCH support.
-- ZIP archives can be identified dynamically by their contents instead of relying only on the filename extension.
-- Streaming, memory-conscious handling of large FB2/FB2.ZIP and EPUB chapters on Xteink X3/X4 without intentionally stripping book formatting or images.
+**Do not flash the X3/X4 image to X4 Pro or the X4 Pro image to X3/X4.** The firmware also performs device-family checks where possible, but the correct image should always be selected before flashing.
 
-### 🔤 Reading & Typography
+## What inkMOD includes
 
-- Word hyphenation for improved text layout.
-- Custom reader fonts.
-- Unicode fallback for missing characters when possible.
-- Improved handling of large chapters and image-heavy books.
-- Expanded FB2 semantic styling: annotations, epigraphs, headings, subtitles, quotations, poems, stanzas and text authors.
-- FB2 `<emphasis>` follows the book markup, including mixed italic/regular text inside styled blocks.
-- Wrapped verse lines keep a distinct continuation indent instead of being flattened into ordinary prose.
-- Logical FB2 chapters can span multiple internal spine fragments while retaining a stable chapter page total.
-- `Paragraph spacing: None` keeps ordinary prose compact while preserving heading and structural spacing when embedded book styles are enabled.
-- Long-press page controls can jump by logical chapter boundaries or by 10 pages.
-- Text clippings for EPUB and FB2.
-- Save and manage selected text excerpts directly on the device.
-- Create Clipping can be assigned to configurable physical-button actions / long presses.
-- Faster held-button navigation in clipping selection and other supported navigation screens.
-- Customizable book menu ordering and visibility.
-- General menu/list navigation supports held-button repeat after roughly 0.5 s, while specialized screens keep their own accelerated behavior.
+### Reading and book formats
 
-### 📖 Dictionaries
+- Native **FB2** and **FB2.ZIP** support.
+- **EPUB** reading with browser-side EPUBKIT preparation/optimization.
+- **TXT, XTC and XTCH** support.
+- ZIP content detection for supported books instead of relying only on the file extension.
+- Streaming and memory-conscious processing for large books.
+- Improved FB2 structure and typography: annotations, epigraphs, headings, subtitles, quotations, poems, stanzas, authors and `<emphasis>`.
+- Custom reader fonts, hyphenation and Unicode fallback.
+- Bookmarks, text clippings, table of contents, search and configurable reader menu.
+- Logical chapter/page counting across internally split large chapters.
 
-- Dictionary lookup directly while reading.
+### X4 Pro touch interface
+
+X4 Pro is a first-class supported target, not a button-only compatibility build.
+
+- Direct touch navigation throughout Home, settings, file browser, Wi-Fi, OPDS and reader screens.
+- Reader page turning by tap or swipe, with configurable touch mode.
+- Long-press text selection and dictionary lookup.
+- Touch keyboard and direct row/button activation.
+- Left-edge **Back** gesture and capacitive Home-key integration.
+- Touch Control Center with frontlight brightness/warmth, night mode, refresh and reader-touch controls.
+- Touch-aware bookmarks, statistics, dictionary, clipping selection and dialogs.
+- Lyra Carousel supports short horizontal swipes that begin on the visible book cover; Home menu taps keep their normal behaviour.
+- Recent-books list uses direct row touch/long-press.
+- The built-in easter egg includes on-screen touch controls.
+
+### Library and files
+
+- File browser with folders, search and book/file information.
+- **The last browser directory and selected item are remembered**, so returning from a book no longer starts at the top of the library again. This behaviour is shared by **X3, X4 and X4 Pro**.
+- OPDS browsing, caching and downloads.
+- Recent books and multiple Home layouts: Lyra, Lyra Carousel, RoundedRaff, Minimal and Dashboard.
+- PNG/BMP handling for images and sleep screens.
+
+### Dictionaries
+
+- Dictionary lookup from the reader.
 - Multiple installed dictionaries.
-- StarDict dictionary support.
-- Long dictionary articles with page navigation.
-- Reworked dictionary article pagination: measured test cases dropped from roughly 21–25 seconds to about 2 ms for pagination after font metrics are prepared.
-- Improved lookup of words containing punctuation and line-break hyphenation.
-- StarDict synonym table support.
+- StarDict support, including synonym tables.
+- Fast paginated dictionary articles.
+- Improved punctuation and line-break-hyphen lookup.
 - Browser-side dictionary preparation and upload.
 
-### 🌐 Web Interface
+### Web interface
 
-- File and directory management.
-- Upload individual files or complete directory trees.
-- File rename support.
-- **EPUBKIT** browser-side EPUB optimizer for Xteink X3/X4.
-- Dictionary preparation and upload.
+- File and directory upload/management.
+- Directory-tree upload and rename support.
+- Browser-side **EPUBKIT** optimizer.
+- Browser-side preparation for EPUB, FB2 and supported ZIP books.
+- Dictionary preparation/upload.
 - Sleep-screen generator.
-- PNG transparency support.
-- Edge-connected background removal.
-- Direct upload and application of generated sleep screens.
-- `.ttf` / `.otf` → `.cpfont` font conversion with automatic upload to the device.
+- PNG transparency/background processing.
+- `.ttf` / `.otf` to `.cpfont` conversion and upload.
 
-### 🎨 Interface & Themes
+### Sleep screens and statistics
 
-Multiple home-screen themes are available, including:
-
-- Lyra
-- Lyra Carousel
-- RoundedRaff
-- Minimal
-- Dashboard
-
-The interface also includes:
-
-- Full Russian localization.
-- Full Ukrainian localization.
-- Default and enlarged interface text modes.
-- Improved search and on-screen keyboard layouts.
-- Dedicated English, Russian and Ukrainian keyboards.
-
-### 🌙 Sleep Screens
-
-- Current book cover.
-- Calendar.
-- Custom image.
-- Custom overlay.
-- Separate timeout sleep-screen behavior.
-- Quick Resume support.
-- Improved FB2 cover generation.
-- Improved handling of small cover images to prevent low-quality fullscreen upscaling.
-
-### 📊 Reading Statistics
-
-- Reading-time tracking.
-- Session statistics.
-- Reading progress.
+- Current-book cover, calendar and custom sleep images.
+- Separate timeout sleep-screen behaviour and Quick Resume.
+- Reading-time, session and per-book statistics.
 - Completed-book tracking.
-- Book/file information available directly from the File Browser.
-- PNG and BMP are handled consistently as images, including format reporting and sleep-screen selection.
+- KOReader progress synchronization / Quick Sync.
 
-### 🕐 Clock & Time
+### Reliability and recovery
 
-**Xteink X4**
+- Diagnostics screen with memory, storage, reset reason and firmware/device information.
+- Crash breadcrumbs and `/crash_report.txt` for guarded failures.
+- Factory-calibration based X3/X4 panel-revision selection.
+- Emergency SD-card recovery through `inkmod-recovery.bin` on supported X3/X4 builds.
+- Separate release binaries for ESP32-C3 (X3/X4) and ESP32-S3 (X4 Pro).
 
-The X4 has no hardware RTC, so inkMOD synchronizes the clock through Wi-Fi and preserves the last successfully synchronized time for offline operation.
+See [`RECOVERY.md`](RECOVERY.md) before experimenting with firmware recovery.
 
-**Xteink X3**
+## Current release
 
-Native hardware RTC support is used.
+The source tree is currently versioned as **inkMOD 1.1.8**.
 
-The clock can also be disabled completely in Settings.
+Highlights of 1.1.8 include:
 
-### 🔧 Diagnostics & Reliability
+- full X4 Pro target and touch/frontlight integration;
+- separate X3/X4 and X4 Pro release artifacts;
+- X4 Pro touch navigation polish across Home, reader, settings and utility screens;
+- short cover-based swipe navigation in Lyra Carousel;
+- remembered file-browser directory and selection on all supported models;
+- OPDS/cache, KOReader sync and browser-side book-preparation improvements;
+- continued FB2/EPUB rendering and stability work.
 
-- **System → Device → Diagnostics** screen.
-- Free RAM information.
-- Maximum free memory block.
-- SD card/storage information.
-- Human-readable reset reason.
-- Crash-report status.
-- `/crash_report.txt` generation for guarded restarts and memory-related failures.
-- Additional release crash breadcrumbs for troubleshooting.
-- Memory-conscious FB2/FB2.ZIP processing designed for ESP32-C3 hardware.
+Detailed history is in [`CHANGELOG.md`](CHANGELOG.md). Release-specific notes are in [`RELEASE_NOTES_1.1.8.md`](RELEASE_NOTES_1.1.8.md).
 
-### 🔄 OTA Updates
-
-inkMOD can check this repository directly for new firmware releases.
-
-Production releases are built automatically through GitHub Actions and published to GitHub Releases as:
-
-`firmware-release-vX.Y.Z.bin`
-
-Developer and production builds are kept separate so release firmware remains clean while diagnostic builds remain available for testing.
-
-For the complete development history and detailed changes, see [`CHANGELOG.md`](CHANGELOG.md).
-
----
-
-# Building
+## Building from source
 
 inkMOD uses **PlatformIO**.
 
 ```bash
-# Install dependencies into the PlatformIO Python environment
+python -m pip install -U platformio
 pip install -r requirements.txt
-
-# Developer build
-pio run -e developer
-
-# Build and flash Developer firmware through USB
-pio run -e developer -t upload
-
-# Production Release build
-pio run -e release
-
-# Build and flash Production Release firmware
-pio run -e release -t upload
 ```
 
----
+### X3 / X4
 
-# Xteink X4 / X3 Support
+```bash
+# Developer build with serial logging
+pio run -e x3x4-developer
 
-inkMOD is developed primarily for the **Xteink X4** e-reader while maintaining support for compatible **Xteink X3** hardware.
+# Production build
+pio run -e x3x4-release
 
-The firmware is designed around the hardware limitations of these devices, particularly the ESP32-C3 platform and limited available RAM.
+# Flash developer build through USB
+pio run -e x3x4-developer -t upload
+```
 
-Special attention is therefore given to:
+### X4 Pro
 
-- low-memory book processing;
-- streaming instead of loading complete books into RAM;
-- large FB2 and FB2.ZIP files;
-- image-heavy books;
-- reliable SD-card operation;
-- fast page navigation;
-- stable everyday reading.
+```bash
+# Developer build with serial logging
+pio run -e x4pro-developer
 
----
+# Production build
+pio run -e x4pro-release
 
-# Support inkMOD
+# Flash developer build through USB
+pio run -e x4pro-developer -t upload
+```
 
-inkMOD is free, open-source and community-driven.
+The default PlatformIO environment is `x3x4-release`.
 
-For project news, firmware releases, discussion and support:
+## GitHub Releases
 
-inkMOD is a fork of [Crosspoint](https://github.com/crosspoint-reader/crosspoint-reader).
+A `vX.Y.Z` tag builds and publishes both hardware families automatically:
 
-### 💖 Support & Community
+- `firmware-x3x4-vX.Y.Z.bin` — X3 / X4
+- `firmware-x4pro-vX.Y.Z.bin` — X4 Pro
+- `firmware-release-vX.Y.Z.bin` — compatibility alias for older X3/X4 OTA clients
 
-- 📢 [Telegram Channel](https://t.me/inkmodx4)
-- ❤️ [Support inkMOD development](https://send.monobank.ua/jar/9p1oM8v2sa)
+CI also builds both developer and release targets on pushes and pull requests.
 
-Support is completely optional and does not unlock or restrict any firmware functionality.
+## Project structure
 
+```text
+src/           inkMOD application code
+lib/           reader/rendering and shared libraries
+freeink-sdk/   hardware abstraction, display/input/network support
+web/           on-device web interface sources
+scripts/       build, release and generation helpers
+assets/        project artwork
+.github/       CI, release automation and funding metadata
+```
 
----
+## Community and support
 
-# Keywords
+inkMOD is free and open source. Financial support is optional and never unlocks firmware functionality.
 
-Xteink X4 firmware · Xteink X3 firmware · inkMOD · Xteink custom firmware · Xteink X4 FB2 · Xteink X4 FB2.ZIP · Xteink X4 EPUB · ESP32-C3 e-reader · FB2 e-reader · custom e-reader firmware
+- 📢 Telegram: https://t.me/inkmodx4
+- ❤️ Support development: https://send.monobank.ua/jar/9p1oM8v2sa
 
+Installation instructions and community experience are also maintained in the inkMOD/Xteink discussion on 4PDA.
+
+## Credits and upstream
+
+inkMOD is based on and derived from **CrossPoint / FreeInk** work and includes third-party open-source components. See [`THIRD_PARTY.md`](THIRD_PARTY.md) and [`LICENSE`](LICENSE) for licensing information.
+
+Contributors and testers who helped shape recent inkMOD releases include **Alpa4hinO** and **olimo**, along with community members who supplied books, logs, hardware tests and bug reports.
+
+## License
+
+See [`LICENSE`](LICENSE).

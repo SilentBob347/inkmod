@@ -22,7 +22,7 @@ enum class Result {
   TOO_SMALL,
   TOO_LARGE,
   BAD_MAGIC,
-  INCOMPATIBLE_CHIP,  // ESP image chip id at offset 0x0C differs from the running firmware
+  INCOMPATIBLE_CHIP,  // ESP image chip_id at offset 0x0C differs from the running firmware
   BAD_SEGMENTS,  // segment table malformed or runs past EOF
   BAD_CHECKSUM,  // ESP image XOR checksum mismatch
   BAD_SHA,       // SHA256 trailer mismatch (hash_appended images)
@@ -51,7 +51,7 @@ using ProgressCb = void (*)(size_t written, size_t total, void* ctx);
 Result flashFromSdPath(const char* sdPath, ProgressCb onProgress, void* ctx, bool alreadyValidated = false);
 
 // Full-image integrity check that mirrors the bootloader's verification:
-// header magic, chip-family compatibility (ESP image byte at offset 0x0C),
+// header magic, chip-family compatibility (ESP image uint16_t chip_id at offset 0x0C),
 // segment table walk, XOR checksum, and SHA256 trailer (when
 // hash_appended == 1). Run this before flashing a candidate firmware so a
 // truncated/corrupted .bin never reaches otadata.

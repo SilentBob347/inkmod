@@ -253,7 +253,7 @@ void fb2ZipScanTask(void* arg) {
 }
 
 
-constexpr uint8_t PACKAGE_VERSION = 24;  // preserve visible FB2 <empty-line/> blocks; rebuild cached XHTML
+constexpr uint8_t PACKAGE_VERSION = 25;  // normalize U+0336 strike runs and rebuild cached FB2 XHTML
 // A single FB2 <section> with more inline images than this gets split into
 // several virtual chapters while its SD-card index is written, so a chapter
 // that's actually opened never needs to extract more than this many images

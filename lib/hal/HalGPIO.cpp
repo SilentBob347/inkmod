@@ -1,6 +1,8 @@
+#include <BatteryMonitor.h>
 #include <BoardConfig.h>
 #include <HalGPIO.h>
 #include <Logging.h>
+#include <PowerManager.h>
 #include <Preferences.h>
 #include <SPI.h>
 #include <Wire.h>
@@ -129,6 +131,7 @@ HalGPIO::DeviceType detectDeviceTypeWithFingerprint() {
 }  // namespace
 
 void HalGPIO::begin() {
+#if FREEINK_MCU_C3
 #ifdef FORCE_DEVICE_X3
   _deviceType = DeviceType::X3;
   LOG_INF("HW", "Device override active via build flag: X3");
@@ -164,6 +167,11 @@ void HalGPIO::begin() {
     pinMode(BAT_GPIO0, INPUT);
     pinMode(UART0_RXD, INPUT);
   }
+#else
+  // X4 Pro is an ESP32-S3 board selected at build time by FREEINK_DEVICE_X4PRO.
+  // Do not run the C3 X3/X4 fingerprint or claim the C3 SPI pins here.
+  _deviceType = DeviceType::X4;
+#endif
 
   inputMgr.begin();
 }
@@ -192,10 +200,47 @@ bool HalGPIO::wasAnyReleased() const { return inputMgr.wasAnyReleased(); }
 unsigned long HalGPIO::getHeldTime() const { return inputMgr.getHeldTime(); }
 unsigned long HalGPIO::getPowerButtonHeldTime() const { return inputMgr.getPowerButtonHeldTime(); }
 
+bool HalGPIO::hasTouch() const { return inputMgr.hasTouch(); }
+bool HalGPIO::hasHomeKey() const { return BoardConfig::hasHomeKey(); }
+bool HalGPIO::wasHomeKeyTapped() const { return inputMgr.wasHomeKeyTapped(); }
+bool HalGPIO::wasHomeKeyLongPressed() const { return inputMgr.wasHomeKeyLongPressed(); }
+bool HalGPIO::wasTouchTap(float& nx, float& ny) const { return inputMgr.wasTouchTap(nx, ny); }
+bool HalGPIO::wasTouchDown(float& nx, float& ny) const { return inputMgr.wasTouchPressedAt(nx, ny); }
+bool HalGPIO::wasTouchReleased() const { return inputMgr.wasTouchReleased(); }
+bool HalGPIO::isTouchTapCandidate(float& nx, float& ny, unsigned long& heldMs) const {
+  return inputMgr.isTouchTapCandidate(nx, ny, heldMs);
+}
+bool HalGPIO::isTouchHeldAt(float& nx, float& ny) const { return inputMgr.isTouchHeldAt(nx, ny); }
+bool HalGPIO::wasTouchLongPress(float& nx, float& ny) const { return inputMgr.wasTouchLongPress(nx, ny); }
+void HalGPIO::suppressTouchContact() { inputMgr.suppressTouchContact(); }
+unsigned long HalGPIO::lastTouchHeldMs() const { return inputMgr.lastTouchHeldMs(); }
+bool HalGPIO::wasSwipe(float& nxStart, float& nyStart, float& nxEnd, float& nyEnd) const {
+  return inputMgr.wasSwipe(nxStart, nyStart, nxEnd, nyEnd);
+}
+bool HalGPIO::wasTouchActivity() const { return inputMgr.wasTouchActivity(); }
+void HalGPIO::setSharedConfirmPowerShortPressEmitsPower(const bool enabled) {
+  InputManager::setSharedConfirmPowerShortPressEmitsPower(enabled);
+}
+bool HalGPIO::hasEdgeSideButtons() const {
+  return BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX3 ||
+         BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX3Uc8279 ||
+         BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4Pro;
+}
+bool HalGPIO::isXteinkDevice() const {
+  return BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX3 ||
+         BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX3Uc8279 ||
+         BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4;
+}
+
 void HalGPIO::startDeepSleep() {
+#if FREEINK_MCU_C3
   while (inputMgr.isPressed(BTN_POWER)) { delay(50); inputMgr.update(); }
   esp_deep_sleep_enable_gpio_wakeup(1ULL << InputManager::POWER_BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
   esp_deep_sleep_start();
+#else
+  // ESP32-S3 (X4 Pro) uses the SDK's SoC-correct deep-sleep wake path.
+  freeink::PowerManager::deepSleepUntilPowerButton();
+#endif
 }
 
 void HalGPIO::verifyPowerButtonWakeup(uint16_t requiredDurationMs, bool shortPressAllowed) {
@@ -211,6 +256,7 @@ void HalGPIO::verifyPowerButtonWakeup(uint16_t requiredDurationMs, bool shortPre
 }
 
 bool HalGPIO::isUsbConnected() const {
+#if FREEINK_MCU_C3
   if (deviceIsX3()) {
     for (uint8_t attempt = 0; attempt < 2; ++attempt) {
       int16_t currentMa = 0;
@@ -220,13 +266,22 @@ bool HalGPIO::isUsbConnected() const {
     return false;
   }
   return digitalRead(UART0_RXD) == HIGH;
+#else
+  if (BoardConfig::ACTIVE.usbDetect >= 0) {
+    return digitalRead(BoardConfig::ACTIVE.usbDetect) == HIGH;
+  }
+  static const BatteryMonitor battery;
+  return battery.isCharging();
+#endif
 }
 
 HalGPIO::WakeupReason HalGPIO::getWakeupReason() const {
   const auto wakeupCause = esp_sleep_get_wakeup_cause();
   const auto resetReason = esp_reset_reason();
   const bool usbConnected = isUsbConnected();
-  if (wakeupCause == ESP_SLEEP_WAKEUP_GPIO && resetReason == ESP_RST_DEEPSLEEP) return WakeupReason::PowerButton;
+  if (resetReason == ESP_RST_DEEPSLEEP &&
+      (wakeupCause == ESP_SLEEP_WAKEUP_GPIO || wakeupCause == ESP_SLEEP_WAKEUP_EXT1))
+    return WakeupReason::PowerButton;
   if (wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED && resetReason == ESP_RST_POWERON && !usbConnected) return WakeupReason::PowerButton;
   if (wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED && resetReason == ESP_RST_UNKNOWN && usbConnected) return WakeupReason::AfterFlash;
   if (wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED && resetReason == ESP_RST_POWERON && usbConnected) return WakeupReason::AfterUSBPower;

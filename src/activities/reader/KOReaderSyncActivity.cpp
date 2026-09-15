@@ -7,6 +7,7 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <WiFi.h>
+#include <BoardConfig.h>
 #include <esp_sntp.h>
 #include <esp_wifi.h>
 
@@ -21,6 +22,7 @@
 #include "Fb2.h"
 #include "ChapterXPathResolver.h"
 #include "KOReaderCredentialStore.h"
+#include "CrossPointExtendedSync.h"
 #include "KOReaderDocumentId.h"
 #include "MappedInputManager.h"
 #include "ReaderUtils.h"
@@ -87,6 +89,16 @@ void wifiOff() {
   if (esp_sntp_enabled()) {
     esp_sntp_stop();
   }
+  // X4 Pro: keep the ESP32-S3 Wi-Fi/netstack initialised. Repeatedly tearing
+  // WIFI_STA down to WIFI_OFF and rebuilding it has produced
+  // wifi_init_default/netstack registration failures and very long reconnects.
+  // Disconnect from the AP only; the normal power manager can still shut the
+  // radio down on sleep. X3/X4 keep the established teardown behaviour.
+  if (BoardConfig::isX4Pro()) {
+    if (WiFi.status() == WL_CONNECTED) WiFi.disconnect(false, false);
+    delay(20);
+    return;
+  }
   WiFi.disconnect(false);
   delay(100);
   WiFi.mode(WIFI_OFF);
@@ -134,6 +146,24 @@ void KOReaderSyncActivity::saveProgressAndReturn(const InkMODPosition& position)
 }
 
 void KOReaderSyncActivity::returnToReader() { activityManager.goToReader(epubPath); }
+
+void KOReaderSyncActivity::runExtendedSyncBestEffort() {
+  if (extendedSyncAttempted) return;
+  extendedSyncAttempted = true;
+
+  if (!KOREADER_STORE.usesCrossPointSyncServer()) return;
+  if (!KOREADER_STORE.getSyncBookmarks() && !KOREADER_STORE.getSyncClippings() && !KOREADER_STORE.getSyncStats()) return;
+  if (!ensureDocumentHash()) return;
+  if (!epub) ensureEpubLoaded();
+  if (!epub) {
+    LOG_ERR("KOSync", "Extended sync skipped: book model unavailable");
+    return;
+  }
+
+  const auto ext = CrossPointExtendedSync::sync(documentHash, epub, epubPath, renderer);
+  LOG_INF("KOSync", "Extended sync finished: bookmarks=%d clippings=%d stats=%d",
+          ext.bookmarksOk ? 1 : 0, ext.clippingsOk ? 1 : 0, ext.statsOk ? 1 : 0);
+}
 
 void KOReaderSyncActivity::onWifiSelectionComplete(const bool success) {
   BootLog::stepf("SYNC", "onWifiSelectionComplete(success=%d)", success ? 1 : 0);
@@ -258,6 +288,7 @@ void KOReaderSyncActivity::performSync() {
 
   KOReaderPosition koPos = {remoteProgress.progress, remoteProgress.percentage};
   const bool fb2BackedRemote = Fb2::resolveOriginalPath(epubPath) != epubPath;
+  bool usedRichFb2Position = false;
   if (fb2BackedRemote) {
     // KOReader/CREngine DocFragment[N] addresses the Nth section of the ORIGINAL
     // FB2. inkMOD may have split that section into several virtual spines, so
@@ -268,13 +299,57 @@ void KOReaderSyncActivity::performSync() {
     remotePosition = ProgressMapper::toInkMOD(epub, koPos, currentSpineIndex, totalPagesInSpine);
   }
 
+  // inkMOD -> inkMOD on CrossPoint Sync: prefer the rich position captured
+  // alongside the normal KOSync XPath when it points into the same logical
+  // FB2 source section.  The canonical XPath remains the portable fallback
+  // for KOReader/other clients, while this preserves exact virtual-spine/page
+  // placement between inkMOD devices and avoids paragraph-layout drift.
+  if (fb2BackedRemote && remoteProgress.position.has_value()) {
+    const auto& rich = *remoteProgress.position;
+    if (rich.spineIndex < epub->getSpineItemsCount()) {
+      int mappedOrdinal = -1;
+      int richOrdinal = -2;
+      Fb2::getOriginalSectionOrdinal(epub->getCachePath(), remotePosition.spineIndex, mappedOrdinal);
+      Fb2::getOriginalSectionOrdinal(epub->getCachePath(), rich.spineIndex, richOrdinal);
+      if (mappedOrdinal > 0 && richOrdinal == mappedOrdinal) {
+        Section richSection(epub, rich.spineIndex, renderer);
+        const int localPages = std::max<int>(1, richSection.pageCount);
+        int targetPage = 0;
+        if (rich.totalPages > 1 && localPages > 1) {
+          targetPage = static_cast<int>(
+              (static_cast<uint32_t>(rich.pageNumber) * static_cast<uint32_t>(localPages - 1) +
+               static_cast<uint32_t>((rich.totalPages - 1) / 2)) /
+              static_cast<uint32_t>(rich.totalPages - 1));
+        } else {
+          targetPage = std::min<int>(rich.pageNumber, localPages - 1);
+        }
+        remotePosition.spineIndex = rich.spineIndex;
+        remotePosition.pageNumber = std::clamp(targetPage, 0, localPages - 1);
+        remotePosition.totalPages = localPages;
+        if (rich.paragraphIndex.has_value() && *rich.paragraphIndex > 0) {
+          remotePosition.paragraphIndex = *rich.paragraphIndex;
+          remotePosition.hasParagraphIndex = true;
+        }
+        usedRichFb2Position = true;
+        LOG_INF("KOSync",
+                "FB2 rich inkMOD position: sourceSection=%d spine=%u page=%u/%u -> local page=%d/%d",
+                mappedOrdinal, rich.spineIndex, rich.pageNumber + 1, rich.totalPages,
+                remotePosition.pageNumber + 1, remotePosition.totalPages);
+      } else {
+        LOG_INF("KOSync",
+                "FB2 rich position ignored: mapped sourceSection=%d rich sourceSection=%d spine=%u",
+                mappedOrdinal, richOrdinal, rich.spineIndex);
+      }
+    }
+  }
+
   // Canonical FB2 XPaths carry an exact character offset inside the source
   // paragraph. First narrow the target to the pages spanned by that paragraph,
   // then compare the *actual first rendered words* of nearby X4 pages against
   // the paragraph. This makes the selected X4 page correspond to the same
   // top-of-page text coordinate KOReader published, rather than just the same
   // chapter/paragraph.
-  if (fb2BackedRemote && remotePosition.hasParagraphIndex && remotePosition.hasParagraphCharOffset) {
+  if (fb2BackedRemote && !usedRichFb2Position && remotePosition.hasParagraphIndex && remotePosition.hasParagraphCharOffset) {
     Section tempSection(epub, remotePosition.spineIndex, renderer);
     const uint16_t p = remotePosition.paragraphIndex;
 
@@ -374,7 +449,7 @@ void KOReaderSyncActivity::performSync() {
   // map to a real flattened render paragraph, but they have no charOffset to
   // feed the exact text matcher above.  Resolve those directly through the
   // section paragraph LUT instead of leaving the mapper's coarse page estimate.
-  if (fb2BackedRemote && remotePosition.hasParagraphIndex && !remotePosition.hasParagraphCharOffset) {
+  if (fb2BackedRemote && !usedRichFb2Position && remotePosition.hasParagraphIndex && !remotePosition.hasParagraphCharOffset) {
     Section tempSection(epub, remotePosition.spineIndex, renderer);
     const auto page = tempSection.getPageForParagraphIndex(remotePosition.paragraphIndex);
     if (page.has_value()) {
@@ -439,6 +514,8 @@ void KOReaderSyncActivity::performSync() {
       }
     }
   }
+  runExtendedSyncBestEffort();
+
   // Use ONE recommendation path for both interactive Sync Progress and Quick Sync.
   // Quick Sync must not have its own comparison rule: it simply executes the
   // exact option that the normal comparison screen would preselect.
@@ -508,6 +585,7 @@ void KOReaderSyncActivity::performUpload() {
   // localProgress was pre-computed in EpubReaderActivity before the Epub was released.
   KOReaderProgress progress;
   progress.document = documentHash;
+  std::optional<KOReaderRichPosition> uploadRichPos;
   // FB2 is internally exposed as a synthetic EPUB package. Never publish that
   // synthetic XHTML XPath to KOReader: PocketBook/KOReader opens the original
   // FB2 through crengine and would treat the foreign path as invalid (often
@@ -549,17 +627,69 @@ void KOReaderSyncActivity::performUpload() {
     // the sync record only for old-client compatibility/fallback.
     progress.progress = ProgressMapper::generateFb2SourceXPath(epub, epub->getCachePath(), fb2Pos,
                                                                originalSectionOrdinal);
+    if (KOREADER_STORE.usesCrossPointSyncServer()) {
+      KOReaderRichPosition rich;
+      rich.spineIndex = static_cast<uint16_t>(std::max(0, currentSpineIndex));
+      rich.pageNumber = static_cast<uint16_t>(std::max(0, currentPage));
+      rich.totalPages = static_cast<uint16_t>(std::max(1, totalPagesInSpine));
+      if (fb2Pos.hasParagraphIndex && fb2Pos.paragraphIndex > 0) rich.paragraphIndex = fb2Pos.paragraphIndex;
+      rich.xpath = progress.progress;
+      uploadRichPos = std::move(rich);
+    }
     LOG_DBG("KOSync", "FB2 upload source XPointer: %s (spine=%d sourceSection=%d localP=%d)",
             progress.progress.c_str(), currentSpineIndex, originalSectionOrdinal,
             fb2Pos.hasParagraphIndex ? fb2Pos.paragraphIndex : 0);
   } else {
     progress.progress = localProgress.xpath;
+    if (KOREADER_STORE.usesCrossPointSyncServer()) {
+      KOReaderRichPosition rich;
+      rich.spineIndex = static_cast<uint16_t>(std::max(0, currentSpineIndex));
+      rich.pageNumber = static_cast<uint16_t>(std::max(0, currentPage));
+      rich.totalPages = static_cast<uint16_t>(std::max(1, totalPagesInSpine));
+      if (currentParagraphIndex.has_value() && *currentParagraphIndex > 0) rich.paragraphIndex = *currentParagraphIndex;
+      rich.xpath = progress.progress;
+      uploadRichPos = std::move(rich);
+    }
   }
   progress.percentage = localProgress.percentage;
   progress.device = SETTINGS.getEffectiveDeviceName();
+  if (uploadRichPos.has_value()) {
+    uploadRichPos->pctQ = static_cast<uint32_t>(std::clamp(progress.percentage, 0.0f, 1.0f) * 1000000.0f + 0.5f);
+    progress.position = std::move(uploadRichPos);
+    LOG_INF("KOSync", "Uploading rich position: spine=%u page=%u/%u para=%u",
+            progress.position->spineIndex, progress.position->pageNumber + 1, progress.position->totalPages,
+            progress.position->paragraphIndex.has_value() ? *progress.position->paragraphIndex : 0);
+  }
+
+  // CrossPoint Sync can optionally use title/author metadata to match books
+  // to linked services. FB2 works here too: inkMOD exposes FB2 as the same
+  // synthetic Epub/book model, so getTitle()/getAuthor() return the original
+  // FB2 metadata rather than synthetic package names.
+  if (KOREADER_STORE.getSendMetadata()) {
+    if (!epub) ensureEpubLoaded();
+    if (epub) {
+      KOReaderMetadata metadata;
+      const std::string& sourcePath = fb2BackedBook ? originalPath : epubPath;
+      const size_t slash = sourcePath.find_last_of("/\\");
+      metadata.filename = slash == std::string::npos ? sourcePath : sourcePath.substr(slash + 1);
+      metadata.title = epub->getTitle();
+      metadata.authors = epub->getAuthor();
+      if (!metadata.filename.empty() || !metadata.title.empty() || !metadata.authors.empty()) {
+        progress.metadata = std::move(metadata);
+        LOG_INF("KOSync", "Uploading metadata: title=%s author=%s file=%s",
+                progress.metadata->title.c_str(), progress.metadata->authors.c_str(),
+                progress.metadata->filename.c_str());
+      }
+    }
+  }
+
   LOG_INF("KOSync", "Upload progress: %.2f%% xpointer=%s", progress.percentage * 100.0f, progress.progress.c_str());
 
   const auto result = KOReaderSyncClient::updateProgress(progress);
+
+  if (result == KOReaderSyncClient::OK) {
+    runExtendedSyncBestEffort();
+  }
 
   // Drop the radio while user reads the result; full teardown happens at silent reboot.
   wifiOff();
@@ -626,7 +756,10 @@ void KOReaderSyncActivity::onExit() {
 
   if (wifiActivated) {
     wifiOff();
-    silentRestartToReader();
+    // X4 Pro no longer needs a reboot merely to leave KOSync. Keeping the
+    // ESP32-S3 netstack alive also avoids the repeated init/deinit failures
+    // seen on subsequent syncs. Preserve legacy X3/X4 behaviour.
+    if (!BoardConfig::isX4Pro()) silentRestartToReader();
   }
 }
 
@@ -699,26 +832,34 @@ void KOReaderSyncActivity::render(RenderLock&&) {
              localProgress.percentage * 100);
     renderer.drawText(UI_10_FONT_ID, screen.x + metrics.contentSidePadding, top + 200, localPageStr);
 
-    const int optionY = top + 230;
-    const int optionHeight = 30;
+    const bool touchUi = mappedInput.hasTouch();
+    const int optionY = top + 240;
+    const int optionHeight = touchUi ? 54 : 30;
+    const int optionGap = touchUi ? 10 : 0;
+    const int optionX = touchUi ? screen.x + metrics.contentSidePadding : screen.x;
+    const int optionW = touchUi ? screen.width - metrics.contentSidePadding * 2 : screen.width - 1;
 
-    // Apply option
+    // Apply option. On X4 Pro these are real, finger-sized buttons rather than
+    // the old thin hardware-selection rows.
     if (selectedOption == 0) {
-      renderer.fillRect(screen.x, optionY - 2, screen.width - 1, optionHeight);
+      renderer.fillRect(optionX, optionY, optionW, optionHeight);
     }
-    renderer.drawText(UI_10_FONT_ID, screen.x + metrics.contentSidePadding, optionY, tr(STR_APPLY_REMOTE),
-                      selectedOption != 0);
+    if (touchUi) renderer.drawRect(optionX, optionY, optionW, optionHeight, selectedOption != 0);
+    renderer.drawText(UI_10_FONT_ID, optionX + (touchUi ? 18 : metrics.contentSidePadding),
+                      optionY + (touchUi ? 16 : 0), tr(STR_APPLY_REMOTE), selectedOption != 0);
 
-    // Upload option
+    const int uploadY = optionY + optionHeight + optionGap;
     if (selectedOption == 1) {
-      renderer.fillRect(screen.x, optionY + optionHeight - 2, screen.width - 1, optionHeight);
+      renderer.fillRect(optionX, uploadY, optionW, optionHeight);
     }
-    renderer.drawText(UI_10_FONT_ID, screen.x + metrics.contentSidePadding, optionY + optionHeight,
-                      tr(STR_UPLOAD_LOCAL), selectedOption != 1);
+    if (touchUi) renderer.drawRect(optionX, uploadY, optionW, optionHeight, selectedOption != 1);
+    renderer.drawText(UI_10_FONT_ID, optionX + (touchUi ? 18 : metrics.contentSidePadding),
+                      uploadY + (touchUi ? 16 : 0), tr(STR_UPLOAD_LOCAL), selectedOption != 1);
 
-    // Bottom button hints
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true);
+    if (!touchUi) {
+      const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true);
+    }
     renderer.displayBuffer();
     return;
   }
@@ -761,6 +902,65 @@ void KOReaderSyncActivity::render(RenderLock&&) {
 }
 
 void KOReaderSyncActivity::loop() {
+  // X4 Pro touch: these screens used to expose only hardware-button actions.
+  // Keep all button paths intact, but make the visible rows / bottom action
+  // areas directly tappable.
+  if (mappedInput.hasTouch()) {
+    const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+    const int top = screen.y + screen.height / 2 - 40;
+
+    if (state == SHOWING_RESULT) {
+      // Use exactly the same geometry as render().  fix71 accidentally used
+      // the vertically-centred message origin here, so the touch rows were
+      // displaced from the visible options and effectively impossible to hit.
+      const auto metrics = UITheme::getInstance().getMetrics();
+      const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+      const int optionY = contentTop + 240;
+      const int optionHeight = 54;
+      const int optionGap = 10;
+      const int optionX = screen.x + metrics.contentSidePadding;
+      const int optionW = screen.width - metrics.contentSidePadding * 2;
+      int tx = 0, ty = 0;
+      if (mappedInput.wasScreenTouchDown(tx, ty) || mappedInput.wasScreenTapped(tx, ty)) {
+        int choice = -1;
+        if (tx >= optionX && tx < optionX + optionW) {
+          if (ty >= optionY && ty < optionY + optionHeight) choice = 0;
+          const int uploadY = optionY + optionHeight + optionGap;
+          if (ty >= uploadY && ty < uploadY + optionHeight) choice = 1;
+        }
+        if (choice >= 0) {
+          selectedOption = choice;
+          mappedInput.suppressTouchContact();
+          requestUpdate();
+          if (choice == 0) saveProgressAndReturn(remotePosition);
+          else performUpload();
+          return;
+        }
+      }
+    } else if (state == NO_REMOTE_PROGRESS) {
+      int x = 0, y = 0;
+      if (mappedInput.wasScreenTapped(x, y) && y >= screen.y + screen.height - 120) {
+        mappedInput.suppressTouchContact();
+        if (documentHash.empty()) {
+          const std::string hashSourcePath = Fb2::resolveOriginalPath(epubPath);
+          if (KOREADER_STORE.getMatchMethod() == DocumentMatchMethod::FILENAME)
+            documentHash = KOReaderDocumentId::calculateFromFilename(hashSourcePath);
+          else
+            documentHash = KOReaderDocumentId::calculate(hashSourcePath);
+        }
+        performUpload();
+        return;
+      }
+    } else if (state == NO_CREDENTIALS || state == SYNC_FAILED || state == UPLOAD_COMPLETE) {
+      int x = 0, y = 0;
+      if (mappedInput.wasScreenTapped(x, y) && y >= screen.y + screen.height - 140) {
+        mappedInput.suppressTouchContact();
+        returnToReader();
+        return;
+      }
+    }
+  }
+
   if (state == NO_CREDENTIALS || state == SYNC_FAILED || state == UPLOAD_COMPLETE) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       returnToReader();

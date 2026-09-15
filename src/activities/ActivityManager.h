@@ -78,6 +78,30 @@ class ActivityManager {
   // This variable must only be set by the main loop, to avoid race conditions
   bool requestedUpdate = false;
 
+  // Touch controllers report edge/home events on the first input poll after a
+  // synchronous activity transition.  A contact that launched the new screen
+  // can therefore look like a global Home/light-panel gesture before the new
+  // activity gets a chance to process input.  Skip global touch gestures for
+  // the first input frame after each transition; InputManager one-shot events
+  // are cleared on the following update(). Button-only X3/X4 never use this.
+  uint8_t globalTouchGestureQuarantineFrames = 0;
+
+  // X4 Pro capacitive Home key: a single tap keeps its original Home
+  // navigation, while an optional second tap can be assigned to a shortcut.
+  // When double-tap is configured we defer the single-tap navigation briefly
+  // so the second tap can be distinguished without changing the SDK driver.
+  bool pendingHomeSingleTap = false;
+  uint32_t pendingHomeSingleTapMs = 0;
+  static constexpr uint32_t HOME_DOUBLE_TAP_WINDOW_MS = 320;
+
+  bool executeConfiguredHomeShortcut(uint8_t rawAction);
+  bool performHomeNavigation();
+
+  void armGlobalTouchGestureQuarantine() {
+    if (mappedInput.hasTouch()) globalTouchGestureQuarantineFrames = 1;
+    pendingHomeSingleTap = false;
+  }
+
  public:
   explicit ActivityManager(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : renderer(renderer), mappedInput(mappedInput), renderingMutex(xSemaphoreCreateMutex()) {

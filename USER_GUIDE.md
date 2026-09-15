@@ -1,6 +1,6 @@
 # 📖 inkMOD User Guide
 
-**inkMOD** is an open-source custom firmware for the **Xteink X4 / X3**, focused on comfortable everyday reading, native book-format support, improved typography and useful reader features while remaining lightweight enough for the limited hardware of the device.
+**inkMOD** is an open-source custom firmware for the **Xteink X3, X4 and X4 Pro**, focused on comfortable everyday reading, native book-format support, improved typography and useful reader features. X3/X4 builds remain optimized for the limited ESP32-C3 memory budget, while X4 Pro has a separate ESP32-S3/PSRAM target with touch and frontlight support.
 
 > **Installation and flashing instructions are intentionally not duplicated here.**
 > Use the current installation guide published with inkMOD / on 4PDA for flashing and recovery procedures.
@@ -33,27 +33,38 @@ For particularly large or image-heavy EPUB files, the web interface also provide
 
 # 2. Controls
 
-The standard Xteink physical controls are used.
+## Xteink X3 / X4
 
-## Front buttons
+The standard physical controls are used.
+
+### Front buttons
 
 * **Back**
 * **Confirm / Menu**
 * **Left**
 * **Right**
 
-## Side controls
+### Side controls
 
 * **Power**
 * **Volume Up**
 * **Volume Down**
 * **Reset**
 
-The exact actions of many buttons can be changed in:
+The exact actions of many buttons can be changed in **Settings → Controls**. Page-turn buttons and their long-press actions can also be customized.
 
-**Settings → Controls**
+## Xteink X4 Pro
 
-Page-turn buttons and their long-press actions can also be customized.
+X4 Pro uses the capacitive touch screen as the primary interface together with its Home key and Power button.
+
+* Tap visible rows, buttons and cards directly.
+* In the reader, use the configured tap zones or swipe mode to turn pages.
+* Swipe from the **left edge** to go Back.
+* Use the capacitive **Home** key to return Home and for configured Home-key shortcuts.
+* Swipe down from the top edge or tap the supported status area to open the Control Center.
+* The Control Center provides frontlight brightness/warmth, refresh, night mode and reader-touch controls.
+
+Touch behaviour is screen-aware; inkMOD does not globally convert every swipe into a fake physical button.
 
 ---
 
@@ -499,6 +510,10 @@ The clock can also be disabled if it is not needed.
 
 Supported X3 hardware can use its hardware RTC.
 
+## Xteink X4 Pro
+
+X4 Pro uses its supported RTC path and does not rely on the X4 software-clock behaviour. Frontlight state and touch-specific settings are also restored independently.
+
 ---
 
 # 22. Firmware updates
@@ -574,11 +589,11 @@ There is normally no reason to delete the entire inkMOD data directory.
 
 inkMOD includes an SD-card recovery mechanism for cases where the normal firmware cannot start correctly.
 
-Recent releases support recovery using:
+X3/X4 releases support SD-card recovery using:
 
 `inkmod-recovery.bin`
 
-The recovery image is checked before the normal interface starts.
+The recovery image is checked before the normal interface starts. X4 Pro uses its own hardware/build family; do not assume an X3/X4 recovery image or procedure applies to X4 Pro.
 
 For the exact recovery procedure and firmware installation instructions, use the current recovery/install guide supplied with the firmware or the inkMOD instructions on 4PDA.
 
@@ -612,9 +627,9 @@ Choose whichever behavior is more comfortable for you.
 
 # 28. Large books
 
-The Xteink X4 is based on an ESP32-C3 with very limited RAM.
+Xteink X3/X4 are based on ESP32-C3 hardware with very limited RAM. X4 Pro uses ESP32-S3 with PSRAM, but inkMOD keeps the same streaming-first reader architecture across all supported models.
 
-inkMOD contains several systems specifically designed around this limitation:
+inkMOD contains several systems specifically designed around these constraints:
 
 * streaming book processing;
 * compact FB2 indexing;
@@ -684,7 +699,7 @@ Avoid deleting all settings or reflashing the device before checking whether the
 
 inkMOD is free and open source.
 
-The project is developed primarily for the Xteink X4 while maintaining compatible X3 support.
+The project supports **Xteink X3, X4 and X4 Pro**. X3/X4 share the ESP32-C3 firmware family, while X4 Pro uses a separate ESP32-S3 build with touch/frontlight integration.
 
 Project development focuses on:
 

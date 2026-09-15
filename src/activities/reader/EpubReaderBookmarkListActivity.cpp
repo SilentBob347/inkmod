@@ -9,7 +9,7 @@
 
 #include "MappedInputManager.h"
 #include "InkMODHumor.h"
-#include "activities/home/FileBrowserActionActivity.h"
+#include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -52,23 +52,12 @@ void EpubReaderBookmarkListActivity::showBookmarkActionMenu(bool ignoreInitialCo
   if (bookmarks.empty() || selectedIndex < 0 || selectedIndex >= static_cast<int>(bookmarks.size())) return;
 
   const Bookmark selectedBookmark = bookmarks[selectedIndex];
-  const char* chapter = (selectedBookmark.chapterTitle[0] != '\0') ? selectedBookmark.chapterTitle : tr(STR_BOOKMARKS);
-  std::vector<FileBrowserActionActivity::MenuItem> items;
-  items.reserve(1);
-  items.push_back({FileBrowserAction::Delete, StrId::STR_DELETE});
-
   startActivityForResult(
-      std::make_unique<FileBrowserActionActivity>(renderer, mappedInput, chapter, std::move(items),
-                                                  ignoreInitialConfirmRelease),
+      std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_DELETE),
+                                             tr(STR_DELETE_BOOKMARK_CONFIRM), ignoreInitialConfirmRelease),
       [this, selectedBookmark](const ActivityResult& result) {
         longPressConfirmHandled = false;
         if (result.isCancelled) {
-          requestUpdate();
-          return;
-        }
-
-        const auto* actionResult = std::get_if<FileBrowserActionResult>(&result.data);
-        if (!actionResult || static_cast<FileBrowserAction>(actionResult->action) != FileBrowserAction::Delete) {
           requestUpdate();
           return;
         }
@@ -117,6 +106,71 @@ void EpubReaderBookmarkListActivity::loop() {
   const int total = static_cast<int>(bookmarks.size());
   if (total == 0) return;
 
+  // X4 Pro/touch: tap opens a bookmark, long-press asks before deleting, vertical swipes page the list.
+  if (mappedInput.hasTouch()) {
+    const int pageItems = getPageItems();
+    int tx = 0, ty = 0;
+    if (mappedInput.wasScreenLongPress(tx, ty)) {
+      const auto orientation = renderer.getOrientation();
+      const bool isLandscapeCw = orientation == GfxRenderer::Orientation::LandscapeClockwise;
+      const bool isLandscapeCcw = orientation == GfxRenderer::Orientation::LandscapeCounterClockwise;
+      const bool isPortraitInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
+      const int hintGutterWidth = (isLandscapeCw || isLandscapeCcw) ? 30 : 0;
+      const int contentX = isLandscapeCw ? hintGutterWidth : 0;
+      const int contentWidth = renderer.getScreenWidth() - hintGutterWidth;
+      const int contentY = isPortraitInverted ? 50 : 0;
+      const int listTop = LIST_START_Y + contentY;
+      if (tx >= contentX && tx < contentX + contentWidth && ty >= listTop) {
+        const int row = (ty - listTop) / ROW_HEIGHT;
+        const int pageStart = (selectedIndex / pageItems) * pageItems;
+        const int index = pageStart + row;
+        if (row >= 0 && row < pageItems && index >= 0 && index < total) {
+          selectedIndex = index;
+          showBookmarkActionMenu(false);
+          return;
+        }
+      }
+    }
+
+    const auto swipe = mappedInput.wasSwipe();
+    if (swipe == MappedInputManager::SwipeDir::Up) {
+      selectedIndex = ButtonNavigator::nextPageIndex(selectedIndex, total, pageItems);
+      requestUpdate();
+      return;
+    }
+    if (swipe == MappedInputManager::SwipeDir::Down) {
+      selectedIndex = ButtonNavigator::previousPageIndex(selectedIndex, total, pageItems);
+      requestUpdate();
+      return;
+    }
+    tx = 0;
+    ty = 0;
+    if (mappedInput.wasScreenTapped(tx, ty)) {
+      const auto orientation = renderer.getOrientation();
+      const bool isLandscapeCw = orientation == GfxRenderer::Orientation::LandscapeClockwise;
+      const bool isLandscapeCcw = orientation == GfxRenderer::Orientation::LandscapeCounterClockwise;
+      const bool isPortraitInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
+      const int hintGutterWidth = (isLandscapeCw || isLandscapeCcw) ? 30 : 0;
+      const int contentX = isLandscapeCw ? hintGutterWidth : 0;
+      const int contentWidth = renderer.getScreenWidth() - hintGutterWidth;
+      const int contentY = isPortraitInverted ? 50 : 0;
+      const int listTop = LIST_START_Y + contentY;
+      if (tx >= contentX && tx < contentX + contentWidth && ty >= listTop) {
+        const int row = (ty - listTop) / ROW_HEIGHT;
+        if (row >= 0 && row < pageItems) {
+          const int pageStart = (selectedIndex / pageItems) * pageItems;
+          const int index = pageStart + row;
+          if (index >= 0 && index < total) {
+            selectedIndex = index;
+            setResult(BookmarkResult{bookmarks[selectedIndex].spineIndex, bookmarks[selectedIndex].progress,
+                                     bookmarks[selectedIndex].paragraphIndex});
+            finish();
+            return;
+          }
+        }
+      }
+    }
+  }
 
   buttonNavigator.onNextRelease([this, total] {
     selectedIndex = ButtonNavigator::nextIndex(selectedIndex, total);

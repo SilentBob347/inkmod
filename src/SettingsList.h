@@ -4,6 +4,7 @@
 #include <HalGPIO.h>
 #include <HalPowerManager.h>
 #include <HalTiltSensor.h>
+#include <BoardConfig.h>
 #include <I18n.h>
 #include <SdCardFontRegistry.h>
 #include <ctime>
@@ -354,6 +355,21 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     add(SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &InkMODSettings::fadingFix, "fadingFix",
                             StrId::STR_CAT_DISPLAY));
 
+    add(SettingInfo::Toggle(StrId::STR_NIGHT_MODE, &InkMODSettings::screenInverted, "screenInverted"));
+    // X4 Pro control-center state. Category-less entries are persisted but
+    // not added to the normal settings menu, matching CrossPoint's panel-owned values.
+    add(SettingInfo::Value(StrId::STR_BRIGHTNESS, &InkMODSettings::frontlightBrightness, {1, 100, 1},
+                           "frontlightBrightness"));
+    add(SettingInfo::Value(StrId::STR_WARMTH, &InkMODSettings::frontlightWarmth, {0, 100, 1},
+                           "frontlightWarmth"));
+    add(SettingInfo::Toggle(StrId::STR_FRONTLIGHT, &InkMODSettings::frontlightOn, "frontlightOn"));
+    add(SettingInfo::Toggle(StrId::STR_RESTORE_LIGHT_ON_WAKE, &InkMODSettings::frontlightRestoreOnWake,
+                            "frontlightRestoreOnWake"));
+    add(SettingInfo::Enum(StrId::STR_TOUCH_READER_CONTROLS, &InkMODSettings::touchReaderControls,
+                          {StrId::STR_STATE_OFF, StrId::STR_TOUCH_MODE_TAP, StrId::STR_TOUCH_MODE_SWIPE,
+                           StrId::STR_TOUCH_MODE_INVERTED_TAP},
+                          "touchReaderControls", StrId::STR_CAT_CONTROLS));
+
     // --- Reader ---
     // Built-in font-family entry. Replaced per-call with a registry-aware
     // version when SD fonts are installed.
@@ -450,7 +466,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                            StrId::STR_FOOTNOTES,
                            StrId::STR_BROWSE_FILES,
                            StrId::STR_DICTIONARY,
-                           StrId::STR_CREATE_CLIPPING},
+                           StrId::STR_CREATE_CLIPPING,
+                           StrId::STR_FRONTLIGHT},
                           "shortPwrBtn", StrId::STR_CAT_CONTROLS)
             .withEnumRawValues({InkMODSettings::IGNORE,
                                 InkMODSettings::SLEEP,
@@ -473,7 +490,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                                 InkMODSettings::FOOTNOTES,
                                 InkMODSettings::FILE_BROWSER,
                                 InkMODSettings::DICTIONARY_LOOKUP,
-                                InkMODSettings::CREATE_CLIPPING}));
+                                InkMODSettings::CREATE_CLIPPING,
+                                InkMODSettings::TOGGLE_FRONTLIGHT}));
     add(SettingInfo::Enum(StrId::STR_LONG_PRESS_ACTION, &InkMODSettings::longPwrBtn,
                           {StrId::STR_IGNORE,
                            StrId::STR_SLEEP,
@@ -566,6 +584,102 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                  InkMODSettings::LONG_MENU_FILE_BROWSER, InkMODSettings::LONG_MENU_SYNC_PROGRESS,
                  InkMODSettings::LONG_MENU_QUICK_SYNC,
                  InkMODSettings::LONG_MENU_DICTIONARY_LOOKUP, InkMODSettings::LONG_MENU_CREATE_CLIPPING}));
+    add(SettingInfo::Enum(StrId::STR_HOME_DOUBLE_PRESS_ACTION, &InkMODSettings::homeDoublePressAction,
+                          {StrId::STR_IGNORE,
+                           StrId::STR_SLEEP,
+                           StrId::STR_QUICK_RESUME_TIMEOUT,
+                           StrId::STR_PAGE_TURN,
+                           StrId::STR_TOGGLE_BOOKMARK,
+                           StrId::STR_READING_STATS,
+                           StrId::STR_MARK_FINISHED,
+                           StrId::STR_FORCE_REFRESH,
+                           StrId::STR_CHANGE_FONT,
+                           StrId::STR_TOGGLE_GUIDE_DOTS,
+                           StrId::STR_TOGGLE_BIONIC_READING,
+                           StrId::STR_CYCLE_PAGE_TURN,
+                           StrId::STR_FILE_TRANSFER,
+                           StrId::STR_CALIBRE_WIRELESS,
+                           StrId::STR_JOIN_NETWORK,
+                           StrId::STR_CREATE_HOTSPOT,
+                           StrId::STR_SCREENSHOT_BUTTON,
+                           StrId::STR_READER_DARK_MODE,
+                           StrId::STR_FOOTNOTES,
+                           StrId::STR_BROWSE_FILES,
+                           StrId::STR_DICTIONARY,
+                           StrId::STR_CREATE_CLIPPING,
+                           StrId::STR_FRONTLIGHT},
+                          "homeDoublePressAction", StrId::STR_CAT_CONTROLS)
+            .withEnumRawValues({InkMODSettings::IGNORE,
+                                InkMODSettings::SLEEP,
+                                InkMODSettings::QUICK_RESUME_SLEEP,
+                                InkMODSettings::PAGE_TURN,
+                                InkMODSettings::TOGGLE_BOOKMARK,
+                                InkMODSettings::READING_STATS,
+                                InkMODSettings::MARK_FINISHED,
+                                InkMODSettings::FORCE_REFRESH,
+                                InkMODSettings::TOGGLE_FONT,
+                                InkMODSettings::TOGGLE_GUIDE_DOTS,
+                                InkMODSettings::TOGGLE_BIONIC_READING,
+                                InkMODSettings::CYCLE_PAGE_TURN,
+                                InkMODSettings::FILE_TRANSFER,
+                                InkMODSettings::CALIBRE_WIRELESS,
+                                InkMODSettings::JOIN_NETWORK,
+                                InkMODSettings::CREATE_HOTSPOT,
+                                InkMODSettings::SCREENSHOT,
+                                InkMODSettings::TOGGLE_DARK_MODE,
+                                InkMODSettings::FOOTNOTES,
+                                InkMODSettings::FILE_BROWSER,
+                                InkMODSettings::DICTIONARY_LOOKUP,
+                                InkMODSettings::CREATE_CLIPPING,
+                                InkMODSettings::TOGGLE_FRONTLIGHT}));
+    add(SettingInfo::Enum(StrId::STR_HOME_LONG_PRESS_ACTION, &InkMODSettings::homeLongPressAction,
+                          {StrId::STR_IGNORE,
+                           StrId::STR_SLEEP,
+                           StrId::STR_QUICK_RESUME_TIMEOUT,
+                           StrId::STR_PAGE_TURN,
+                           StrId::STR_TOGGLE_BOOKMARK,
+                           StrId::STR_READING_STATS,
+                           StrId::STR_MARK_FINISHED,
+                           StrId::STR_FORCE_REFRESH,
+                           StrId::STR_CHANGE_FONT,
+                           StrId::STR_TOGGLE_GUIDE_DOTS,
+                           StrId::STR_TOGGLE_BIONIC_READING,
+                           StrId::STR_CYCLE_PAGE_TURN,
+                           StrId::STR_FILE_TRANSFER,
+                           StrId::STR_CALIBRE_WIRELESS,
+                           StrId::STR_JOIN_NETWORK,
+                           StrId::STR_CREATE_HOTSPOT,
+                           StrId::STR_SCREENSHOT_BUTTON,
+                           StrId::STR_READER_DARK_MODE,
+                           StrId::STR_FOOTNOTES,
+                           StrId::STR_BROWSE_FILES,
+                           StrId::STR_DICTIONARY,
+                           StrId::STR_CREATE_CLIPPING,
+                           StrId::STR_FRONTLIGHT},
+                          "homeLongPressAction", StrId::STR_CAT_CONTROLS)
+            .withEnumRawValues({InkMODSettings::IGNORE,
+                                InkMODSettings::SLEEP,
+                                InkMODSettings::QUICK_RESUME_SLEEP,
+                                InkMODSettings::PAGE_TURN,
+                                InkMODSettings::TOGGLE_BOOKMARK,
+                                InkMODSettings::READING_STATS,
+                                InkMODSettings::MARK_FINISHED,
+                                InkMODSettings::FORCE_REFRESH,
+                                InkMODSettings::TOGGLE_FONT,
+                                InkMODSettings::TOGGLE_GUIDE_DOTS,
+                                InkMODSettings::TOGGLE_BIONIC_READING,
+                                InkMODSettings::CYCLE_PAGE_TURN,
+                                InkMODSettings::FILE_TRANSFER,
+                                InkMODSettings::CALIBRE_WIRELESS,
+                                InkMODSettings::JOIN_NETWORK,
+                                InkMODSettings::CREATE_HOTSPOT,
+                                InkMODSettings::SCREENSHOT,
+                                InkMODSettings::TOGGLE_DARK_MODE,
+                                InkMODSettings::FOOTNOTES,
+                                InkMODSettings::FILE_BROWSER,
+                                InkMODSettings::DICTIONARY_LOOKUP,
+                                InkMODSettings::CREATE_CLIPPING,
+                                InkMODSettings::TOGGLE_FRONTLIGHT}));
     add(SettingInfo::Toggle(StrId::STR_PWR_BTN_FOOTNOTE_BACK, &InkMODSettings::pwrBtnFootnoteBack,
                             "pwrBtnFootnoteBack", StrId::STR_CAT_CONTROLS));
 
@@ -712,6 +826,26 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
       *fontSizeIt = buildFontSizeSetting(registry);
     }
   }
+  // X4 Pro-only capacitive Home key shortcuts. Remove the settings entirely
+  // from X3/X4 (including web settings) where no such key exists.
+  if (!BoardConfig::isX4Pro()) {
+    v.erase(std::remove_if(v.begin(), v.end(), [](const SettingInfo& s) {
+              return s.nameId == StrId::STR_HOME_DOUBLE_PRESS_ACTION ||
+                     s.nameId == StrId::STR_HOME_LONG_PRESS_ACTION;
+            }),
+            v.end());
+  }
+
+  // Frontlight hardware is an X4 Pro feature. Keep the power-button action
+  // out of X3/X4 menus where it would be a no-op.
+  if (!BoardConfig::isX4Pro()) {
+    auto shortPowerIt =
+        std::find_if(v.begin(), v.end(), [](const SettingInfo& s) { return s.nameId == StrId::STR_SHORT_PWR_BTN; });
+    if (shortPowerIt != v.end()) {
+      removeEnumRawValue(*shortPowerIt, static_cast<uint8_t>(InkMODSettings::TOGGLE_FRONTLIGHT));
+    }
+  }
+
   if (!gpio.deviceIsX3()) {
     auto sleepScreenIt =
         std::find_if(v.begin(), v.end(), [](const SettingInfo& s) { return s.nameId == StrId::STR_SLEEP_SCREEN; });
@@ -844,9 +978,16 @@ inline std::vector<SettingInfo> buildControlsSettingsParentList(const std::vecto
   const bool hasTiltPageTurnDirectionSetting = hasSettingByName(allSettings, StrId::STR_TILT_PAGE_TURN_DIRECTION);
 
   std::vector<SettingInfo> settings;
-  settings.reserve(3 + (hasTiltPageTurnSetting ? 1u : 0u) + (hasTiltPageTurnDirectionSetting ? 1u : 0u));
+  settings.reserve(4 + (hasTiltPageTurnSetting ? 1u : 0u) + (hasTiltPageTurnDirectionSetting ? 1u : 0u));
+  addSettingByName(settings, allSettings, StrId::STR_TOUCH_READER_CONTROLS);
   settings.push_back(SettingInfo::Submenu(StrId::STR_POWER_BUTTON, SettingAction::ControlsPowerButton));
-  settings.push_back(SettingInfo::Submenu(StrId::STR_FRONT_BUTTONS, SettingAction::ControlsFrontButtons));
+  if (BoardConfig::isX4Pro()) {
+    settings.push_back(SettingInfo::Submenu(StrId::STR_HOME_BUTTON, SettingAction::ControlsHomeButton));
+  }
+  // X4 Pro has no physical front buttons; do not expose a dead remapping submenu.
+  if (!BoardConfig::isX4Pro()) {
+    settings.push_back(SettingInfo::Submenu(StrId::STR_FRONT_BUTTONS, SettingAction::ControlsFrontButtons));
+  }
   settings.push_back(SettingInfo::Submenu(StrId::STR_SIDE_BUTTONS, SettingAction::ControlsSideButtons));
   if (hasTiltPageTurnSetting) addSettingByName(settings, allSettings, StrId::STR_TILT_PAGE_TURN);
   if (hasTiltPageTurnDirectionSetting) addSettingByName(settings, allSettings, StrId::STR_TILT_PAGE_TURN_DIRECTION);
@@ -864,6 +1005,14 @@ inline std::vector<SettingInfo> buildControlsPowerSettingsList(const std::vector
       SETTINGS.longPressBackAction == InkMODSettings::LONG_PRESS_MENU_ACTION::LONG_MENU_FOOTNOTES) {
     addSettingByName(settings, allSettings, StrId::STR_PWR_BTN_FOOTNOTE_BACK);
   }
+  return settings;
+}
+
+inline std::vector<SettingInfo> buildControlsHomeButtonSettingsList(const std::vector<SettingInfo>& allSettings) {
+  std::vector<SettingInfo> settings;
+  settings.reserve(2);
+  addSettingByName(settings, allSettings, StrId::STR_HOME_DOUBLE_PRESS_ACTION);
+  addSettingByName(settings, allSettings, StrId::STR_HOME_LONG_PRESS_ACTION);
   return settings;
 }
 

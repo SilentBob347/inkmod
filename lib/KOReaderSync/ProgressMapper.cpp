@@ -1621,6 +1621,16 @@ std::string ProgressMapper::generateFb2SourceXPath(const std::shared_ptr<Epub>& 
     return generateFb2CompatibleXPath(pos, originalSectionOrdinal);
   }
 
+  // Preserve the *first page of a logical FB2 chapter* as a structural chapter
+  // start, not as the first visible paragraph. The same paragraph can move to
+  // page 2 on another device when font/margins differ; the section boundary
+  // itself is stable and must always reopen at page 1 of that chapter.
+  if (pos.spineIndex == rangeStart && pos.pageNumber == 0) {
+    LOG_INF("PM", "FB2 canonical upload: logical chapter start sourceSection=%d path=%s",
+            originalSectionOrdinal, sourceSection.c_str());
+    return sourceSection;
+  }
+
   // <subtitle> is rendered as <h3> and is therefore invisible to the paragraph
   // LUT. If it is actually the first visible text on this X4 page, recover its
   // native FB2 XPath directly from the source so KOReader lands on the same
@@ -1841,6 +1851,21 @@ InkMODPosition ProgressMapper::toInkMODFb2(const std::shared_ptr<Epub>& epub, co
       int rangeStart = -1, rangeEnd = -1;
       if (Fb2::getChapterRangeForOriginalSectionOrdinal(packageCachePath, sourceOrdinal, rangeStart, rangeEnd) &&
           rangeStart >= 0 && rangeEnd >= rangeStart) {
+        // A section-only canonical path is our explicit logical-chapter-start
+        // marker. It must map to page 0 of the first virtual spine regardless
+        // of pagination differences between devices.
+        if (sourceParagraphExact <= 0) {
+          result.spineIndex = rangeStart;
+          result.pageNumber = 0;
+          if (rangeStart == currentSpineIndex && totalPagesInCurrentSpine > 0)
+            result.totalPages = totalPagesInCurrentSpine;
+          else
+            result.totalPages = 1;
+          LOG_INF("PM", "<- KO FB2 canonical chapter start: sourceSection=%d range=%d..%d -> spine=%d page=0",
+                  sourceOrdinal, rangeStart, rangeEnd, rangeStart);
+          return result;
+        }
+
         // KOReader's p[N] is a sibling index in the ORIGINAL FB2 XML.
         // inkMOD's page LUT counts flattened rendered <p>s, including nested
         // cite paragraphs, verse lines, <empty-line/> and text-author blocks.

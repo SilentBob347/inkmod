@@ -15,6 +15,7 @@
 #include "activities/util/OptionSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchListNavigation.h"
 
 namespace {
 enum MenuItem {
@@ -233,12 +234,35 @@ void StatusBarSettingsActivity::onEnter() {
 void StatusBarSettingsActivity::onExit() { Activity::onExit(); }
 
 void StatusBarSettingsActivity::loop() {
+  bool touchActivate = false;
+  if (mappedInput.hasTouch() && visibleItemCount > 0) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const auto pageWidth = renderer.getScreenWidth();
+    const auto pageHeight = renderer.getScreenHeight();
+    const auto orientation = renderer.getOrientation();
+    const bool isLandscapeCw = orientation == GfxRenderer::Orientation::LandscapeClockwise;
+    const bool isLandscapeCcw = orientation == GfxRenderer::Orientation::LandscapeCounterClockwise;
+    const int hintGutterWidth = (isLandscapeCw || isLandscapeCcw) ? metrics.buttonHintsHeight : 0;
+    const int contentX = isLandscapeCw ? hintGutterWidth : 0;
+    const int contentWidth = pageWidth - hintGutterWidth;
+    const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+    const int previewLabelLineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+    constexpr int previewLabelGap = 18;
+    const int previewSectionHeight = previewLabelLineHeight + previewLabelGap + UITheme::getStatusBarHeight();
+    const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - previewSectionHeight - metrics.verticalSpacing * 2;
+    int touchIndex = static_cast<int>(selectedIndex);
+    auto touch = TouchListNavigation::handle(mappedInput, touchIndex, visibleItemCount,
+                                             Rect{contentX, contentTop, contentWidth, contentHeight}, metrics.listRowHeight);
+    selectedIndex = static_cast<decltype(selectedIndex)>(touchIndex);
+    if (touch.handled && !touch.activate) { requestUpdate(); return; }
+    touchActivate = touch.activate;
+  }
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     finish();
     return;
   }
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+  if (touchActivate || mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     handleSelection();
     requestUpdate();
     return;

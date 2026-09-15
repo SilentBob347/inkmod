@@ -1,6 +1,9 @@
 #include "BookStatsActivity.h"
 
 #include <I18n.h>
+#include <BoardConfig.h>
+
+#include <algorithm>
 
 #include "BookStatsView.h"
 #include "MappedInputManager.h"
@@ -241,6 +244,56 @@ void BookStatsActivity::exitStatsActivity(const bool viaBack) {
 }
 
 void BookStatsActivity::loop() {
+  // X4 Pro statistics footer is a real touch control row. Handle it directly
+  // instead of depending on front-button remapping; some Pro configurations
+  // intentionally have no front-button mapping, which made the labels/actions
+  // disappear even though the statistics page itself was fine.
+  if (BoardConfig::isX4Pro() && page != Page::EditDates) {
+    int tx = 0;
+    int ty = 0;
+    if (mappedInput.wasScreenTapped(tx, ty)) {
+      const int screenW = mappedInput.getRendererWidth();
+      const int screenH = mappedInput.getRendererHeight();
+      constexpr int footerTouchHeight = 64;
+      if (screenW > 0 && screenH > 0 && ty >= screenH - footerTouchHeight) {
+        // drawButtonHints() uses four equal footer slots. Keep the touch map on
+        // exactly those same quarters so the visible button and its hitbox can
+        // never drift apart again. Slot 2 is intentionally unused here.
+        const int slot = std::clamp((tx * 4) / screenW, 0, 3);
+
+        if (slot == 0) {
+          if (page == Page::PerBook) {
+            exitStatsActivity(true);
+          } else if (page == Page::ThisDevice) {
+            page = Page::PerBook;
+            requestUpdate();
+          } else if (page == Page::AllDevices) {
+            page = Page::ThisDevice;
+            requestUpdate();
+          }
+          return;
+        }
+
+        if (page == Page::PerBook) {
+          if (slot == 2 && hasEditableBook()) {
+            page = Page::EditDates;
+            requestUpdate();
+          } else if (slot == 3) {
+            page = Page::ThisDevice;
+            requestUpdate();
+          }
+          return;
+        }
+
+        if (page == Page::ThisDevice && slot == 3 && showAllDevicesStats) {
+          page = Page::AllDevices;
+          requestUpdate();
+          return;
+        }
+      }
+    }
+  }
+
   if (usesNoRtcSingleScreenLayout()) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       exitStatsActivity(true);

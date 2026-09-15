@@ -196,7 +196,11 @@ long ZipFile::getDataOffset(const FileStatSlim& fileStat) {
   constexpr auto localHeaderSize = 30;
 
   uint8_t pLocalHeader[localHeaderSize];
-  const uint64_t fileOffset = fileStat.localHeaderOffset;
+  // ZIP offsets stored in the central directory are relative to the start of
+  // the ZIP archive itself. Some converter-generated EPUBs prepend a couple
+  // of harmless bytes (for example CRLF) before the first PK header, so add
+  // the detected archive prefix here. Normal EPUBs keep archiveOffset == 0.
+  const uint64_t fileOffset = static_cast<uint64_t>(zipDetails.archiveOffset) + fileStat.localHeaderOffset;
 
   file.seek(fileOffset);
   const size_t read = file.read(pLocalHeader, localHeaderSize);
@@ -269,13 +273,47 @@ bool ZipFile::loadZipDetails() {
 
         const uint32_t centralDirSize = readLe32(record + 12);
         const uint32_t centralDirOffset = readLe32(record + 16);
-        if (centralDirOffset > absoluteOffset ||
-            static_cast<uint64_t>(centralDirOffset) + centralDirSize > absoluteOffset) {
+        if (centralDirOffset > absoluteOffset || centralDirSize > absoluteOffset) {
+          continue;
+        }
+
+        // Most EPUBs start at byte 0, so EOCD offsets are already absolute.
+        // A few real-world converters prepend bytes before the ZIP stream
+        // (e.g. "\r\nPK...") while leaving all ZIP offsets relative to the
+        // first PK header. In that case the declared centralDirOffset points
+        // just before the real central directory and lookups fail even though
+        // the archive is otherwise valid.
+        //
+        // Keep the existing path untouched when the declared offset is valid.
+        // Only if its signature is missing do we try the mathematically exact
+        // central-directory start (EOCD position - centralDirSize). This makes
+        // the compatibility path a strict fallback for malformed/prefixed ZIPs.
+        uint32_t archiveOffset = 0;
+        uint32_t actualCentralDirOffset = centralDirOffset;
+        uint8_t sig[4] = {};
+        bool declaredOffsetValid = false;
+        if (file.seek(centralDirOffset) && file.read(sig, sizeof(sig)) == static_cast<int>(sizeof(sig))) {
+          declaredOffsetValid = readLe32(sig) == ZIP_CENTRAL_HEADER_SIGNATURE;
+        }
+
+        if (!declaredOffsetValid) {
+          if (absoluteOffset < centralDirSize) continue;
+          const uint32_t candidateOffset = static_cast<uint32_t>(absoluteOffset - centralDirSize);
+          if (candidateOffset < centralDirOffset) continue;
+          if (!file.seek(candidateOffset) || file.read(sig, sizeof(sig)) != static_cast<int>(sizeof(sig)) ||
+              readLe32(sig) != ZIP_CENTRAL_HEADER_SIGNATURE) {
+            continue;
+          }
+          archiveOffset = candidateOffset - centralDirOffset;
+          actualCentralDirOffset = candidateOffset;
+          LOG_INF("ZIP", "Detected %lu-byte prefix before ZIP stream", static_cast<unsigned long>(archiveOffset));
+        } else if (static_cast<uint64_t>(centralDirOffset) + centralDirSize > absoluteOffset) {
           continue;
         }
 
         zipDetails.totalEntries = readLe16(record + 10);
-        zipDetails.centralDirOffset = centralDirOffset;
+        zipDetails.centralDirOffset = actualCentralDirOffset;
+        zipDetails.archiveOffset = archiveOffset;
         zipDetails.isSet = true;
         return true;
       }

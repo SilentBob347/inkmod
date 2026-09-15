@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 #include "MappedInputManager.h"
-#include "activities/home/FileBrowserActionActivity.h"
+#include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -68,21 +68,17 @@ int ClippingListActivity::pageItems() const {
 void ClippingListActivity::openDeleteMenu(const bool ignoreInitialConfirmRelease) {
   const auto& items = store_.getClippings();
   if (items.empty() || selectedIndex_ < 0 || selectedIndex_ >= static_cast<int>(items.size())) return;
+
   const size_t selected = static_cast<size_t>(selectedIndex_);
-  std::vector<FileBrowserActionActivity::MenuItem> menu;
-  menu.push_back({FileBrowserAction::Delete, StrId::STR_DELETE});
   startActivityForResult(
-      std::make_unique<FileBrowserActionActivity>(renderer, mappedInput, tr(STR_CLIPPINGS), std::move(menu),
-                                                  ignoreInitialConfirmRelease),
+      std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_DELETE),
+                                             tr(STR_DELETE_CLIPPING_CONFIRM), ignoreInitialConfirmRelease),
       [this, selected](const ActivityResult& result) {
         longPressHandled_ = false;
-        if (!result.isCancelled) {
-          const auto* action = std::get_if<FileBrowserActionResult>(&result.data);
-          if (action && static_cast<FileBrowserAction>(action->action) == FileBrowserAction::Delete) {
-            store_.removeAt(selected);
-            const auto size = static_cast<int>(store_.getClippings().size());
-            selectedIndex_ = size == 0 ? 0 : std::min(selectedIndex_, size - 1);
-          }
+        if (!result.isCancelled && selected < store_.getClippings().size()) {
+          store_.removeAt(selected);
+          const auto size = static_cast<int>(store_.getClippings().size());
+          selectedIndex_ = size == 0 ? 0 : std::min(selectedIndex_, size - 1);
         }
         requestUpdate();
       });
@@ -97,6 +93,26 @@ void ClippingListActivity::loop() {
   }
 
   const auto& clips = store_.getClippings();
+  if (mappedInput.hasTouch() && !clips.empty()) {
+    int tx = 0;
+    int ty = 0;
+    if (mappedInput.wasScreenLongPress(tx, ty)) {
+      const int perPage = pageItems();
+      const auto& metrics = UITheme::getInstance().getMetrics();
+      const int listStartY = metrics.topPadding + metrics.headerHeight + LIST_GAP;
+      if (ty >= listStartY) {
+        const int pageStart = (selectedIndex_ / perPage) * perPage;
+        const int row = (ty - listStartY) / ROW_HEIGHT;
+        const int index = pageStart + row;
+        if (row >= 0 && row < perPage && index >= 0 && index < static_cast<int>(clips.size())) {
+          selectedIndex_ = index;
+          openDeleteMenu(false);
+          return;
+        }
+      }
+    }
+  }
+
   if (!clips.empty() && !longPressHandled_ && mappedInput.isPressed(MappedInputManager::Button::Confirm) &&
       mappedInput.getHeldTime() >= DELETE_HOLD_MS) {
     longPressHandled_ = true;
@@ -118,6 +134,36 @@ void ClippingListActivity::loop() {
   const int total = static_cast<int>(clips.size());
   if (total == 0) return;
   const int perPage = pageItems();
+
+  if (mappedInput.hasTouch()) {
+    const auto swipe = mappedInput.wasSwipe();
+    if (swipe == MappedInputManager::SwipeDir::Up) {
+      selectedIndex_ = ButtonNavigator::nextPageIndex(selectedIndex_, total, perPage);
+      requestUpdate();
+      return;
+    }
+    if (swipe == MappedInputManager::SwipeDir::Down) {
+      selectedIndex_ = ButtonNavigator::previousPageIndex(selectedIndex_, total, perPage);
+      requestUpdate();
+      return;
+    }
+
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const int listStartY = metrics.topPadding + metrics.headerHeight + LIST_GAP;
+    int tx = 0, ty = 0;
+    if (mappedInput.wasScreenTapped(tx, ty) && ty >= listStartY) {
+      const int pageStart = (selectedIndex_ / perPage) * perPage;
+      const int row = (ty - listStartY) / ROW_HEIGHT;
+      const int index = pageStart + row;
+      if (row >= 0 && row < perPage && index >= 0 && index < total) {
+        selectedIndex_ = index;
+        const auto& clip = clips[static_cast<size_t>(selectedIndex_)];
+        setResult(ClippingJumpResult{clip.spineIndex, clip.pageNumber});
+        finish();
+        return;
+      }
+    }
+  }
   navigator_.onNextRelease([this, total] {
     selectedIndex_ = ButtonNavigator::nextIndex(selectedIndex_, total);
     requestUpdate();

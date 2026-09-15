@@ -1,5 +1,6 @@
 #include "SleepActivity.h"
 
+#include <BoardConfig.h>
 #include <Epub.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
@@ -711,7 +712,8 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool bla
   };
   paintCoverCanvas();
 
-  const bool hasGreyscale = bitmap.hasGreyscale() &&
+  const bool x4Pro = BoardConfig::ACTIVE.board == BoardConfig::Board::XteinkX4Pro;
+  const bool hasGreyscale = !x4Pro && bitmap.hasGreyscale() &&
                             SETTINGS.sleepScreenCoverFilter == InkMODSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER;
 
   renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
@@ -721,7 +723,11 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool bla
     renderer.invertScreen();
   }
 
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
+  // The Pro's UC8279 leaves the previous reader/home frame visible through a
+  // HALF + grayscale sleep-cover transition.  A single FULL 1-bit drive gives
+  // the cover a clean base and then powers the panel down.
+  renderer.displayBuffer(x4Pro ? HalDisplay::FULL_REFRESH : HalDisplay::HALF_REFRESH,
+                         TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
 
   if (hasGreyscale) {
     bitmap.rewindToData();

@@ -34,6 +34,34 @@ void ButtonRemapActivity::onEnter() {
 void ButtonRemapActivity::onExit() { Activity::onExit(); }
 
 void ButtonRemapActivity::loop() {
+  // Touch/X4 Pro: a left-edge swipe is mapped to the same Back action as the
+  // on-screen/hardware Back button.  This screen used to ignore Back entirely
+  // because it was written for physical remapping only, which trapped touch
+  // users here.  Cancel without saving, matching the existing side-button
+  // cancel behaviour.
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    finish();
+    return;
+  }
+
+  // Touch can choose which logical role is being assigned; the actual
+  // assignment still intentionally requires pressing a real front button.
+  if (mappedInput.hasTouch()) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const auto safeArea = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+    const int topOffset = metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing;
+    int tx = 0, ty = 0;
+    if (mappedInput.wasScreenTapped(tx, ty) && tx >= safeArea.x && tx < safeArea.x + safeArea.width &&
+        ty >= topOffset && ty < topOffset + kRoleCount * metrics.listRowHeight) {
+      const int row = (ty - topOffset) / metrics.listRowHeight;
+      if (row >= 0 && row < kRoleCount) {
+        currentStep = static_cast<uint8_t>(row);
+        requestUpdate();
+        return;
+      }
+    }
+  }
+
   // Clear any temporary warning after its timeout.
   if (errorUntil > 0 && millis() > errorUntil) {
     errorMessage.clear();

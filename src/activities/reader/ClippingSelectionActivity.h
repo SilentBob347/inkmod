@@ -52,4 +52,6 @@ class ClippingSelectionActivity final : public Activity {
   size_t nearestCenterWord() const;
   void orderedRange(int& startPage, size_t& startWord, int& endPage, size_t& endWord) const;
   void appendPageText(std::string& out, int pageNumber, size_t startWord, size_t endWord);
+  bool wordAtPoint(int x, int y, size_t& wordIndex) const;
+  bool handleTouchInput();
 };

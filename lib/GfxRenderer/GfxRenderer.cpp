@@ -1826,7 +1826,12 @@ void GfxRenderer::invertScreen() const {
 void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode, const bool turnOffScreen) const {
   auto elapsed = millis() - start_ms;
   LOG_DBG("GFX", "Time = %lu ms from clearScreen to displayBuffer", elapsed);
-  display.displayBuffer(refreshMode, fadingFix || turnOffScreen);
+  HalDisplay::RefreshMode effective = refreshMode;
+  if (promotedRefreshPending_) {
+    effective = promotedRefresh_;
+    promotedRefreshPending_ = false;
+  }
+  display.displayBuffer(effective, fadingFix || turnOffScreen);
 }
 
 std::string GfxRenderer::truncatedText(const int fontId, const char* text, const int maxWidth,
@@ -1940,6 +1945,35 @@ int GfxRenderer::getScreenHeight() const {
       return panelHeight;
   }
   return panelWidth;
+}
+
+void GfxRenderer::tapToLogical(float nx, float ny, int& outX, int& outY) const {
+  int phyX = static_cast<int>(nx * panelWidth);
+  int phyY = static_cast<int>(ny * panelHeight);
+  if (phyX < 0) phyX = 0;
+  if (phyX > panelWidth - 1) phyX = panelWidth - 1;
+  if (phyY < 0) phyY = 0;
+  if (phyY > panelHeight - 1) phyY = panelHeight - 1;
+
+  switch (orientation) {
+    case Portrait:
+      outX = panelHeight - 1 - phyY;
+      outY = phyX;
+      break;
+    case PortraitInverted:
+      outX = phyY;
+      outY = panelWidth - 1 - phyX;
+      break;
+    case LandscapeClockwise:
+      outX = panelWidth - 1 - phyX;
+      outY = panelHeight - 1 - phyY;
+      break;
+    case LandscapeCounterClockwise:
+    default:
+      outX = phyX;
+      outY = phyY;
+      break;
+  }
 }
 
 // Translate a logical rect through rotateCoordinates and take the bounding

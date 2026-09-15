@@ -98,9 +98,41 @@ inline PageTurnResult detectPageTurn(const MappedInputManager& input) {
   const bool powerTurn = shortPowerTurn || longPowerTurn;
   const bool frontNext = input.wasReleased(MappedInputManager::Button::Right) || powerTurn;
 
+  // X4 Pro touch controls are copied from CrossPoint 1.6.0: swipe mode turns
+  // pages horizontally; tap modes use the outer thirds and leave the center
+  // third free for the reader menu.
+  bool touchPrev = false;
+  bool touchNext = false;
+  if (SETTINGS.touchReaderControls != InkMODSettings::TOUCH_READER_OFF && input.hasTouch()) {
+    if (SETTINGS.touchReaderControls == InkMODSettings::TOUCH_READER_SWIPE) {
+      const auto dir = input.wasSwipe();
+      touchNext = dir == MappedInputManager::SwipeDir::Left;
+      touchPrev = dir == MappedInputManager::SwipeDir::Right;
+    } else {
+      int x = 0, y = 0;
+      if (input.wasScreenTapped(x, y)) {
+        const int width = input.getRendererWidth();
+        const int zoneWidth = width / 3;
+        const bool inverted = SETTINGS.touchReaderControls == InkMODSettings::TOUCH_READER_INVERTED_TAP;
+        if (x < zoneWidth) { touchPrev = !inverted; touchNext = inverted; }
+        else if (x >= width - zoneWidth) { touchNext = !inverted; touchPrev = inverted; }
+      }
+    }
+  }
+
   // fromSideBtn is true when only side buttons contributed to this page turn.
-  const bool fromSide = (sidePrev || sideNext) && !(frontPrev || frontNext);
-  return {tiltPrev || sidePrev || frontPrev, tiltNext || sideNext || frontNext, fromSide, tiltPrev || tiltNext};
+  const bool fromSide = (sidePrev || sideNext) && !(frontPrev || frontNext || touchPrev || touchNext);
+  return {tiltPrev || sidePrev || frontPrev || touchPrev,
+          tiltNext || sideNext || frontNext || touchNext, fromSide, tiltPrev || tiltNext};
+}
+
+inline bool isTouchReaderMenuTap(const MappedInputManager& input) {
+  if (!input.hasTouch()) return false;
+  int x = 0, y = 0;
+  if (!input.wasScreenTapped(x, y)) return false;
+  const int width = input.getRendererWidth();
+  const int height = input.getRendererHeight();
+  return x >= width / 3 && x < width - width / 3 && y >= height / 3 && y < height - height / 3;
 }
 
 inline void displayWithRefreshCycle(const GfxRenderer& renderer, int& pagesUntilFullRefresh) {

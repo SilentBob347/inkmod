@@ -120,6 +120,16 @@ class InkMODSettings {
     SIDE_BUTTON_LAYOUT_COUNT
   };
 
+
+  // X4 Pro touch page-turn modes (same values as CrossPoint 1.6.0).
+  enum TOUCH_READER_CONTROLS {
+    TOUCH_READER_OFF = 0,
+    TOUCH_READER_ON = 1,
+    TOUCH_READER_SWIPE = 2,
+    TOUCH_READER_INVERTED_TAP = 3,
+    TOUCH_READER_CONTROLS_COUNT
+  };
+
   enum FRONT_BUTTON_ORIENTATION_AWARE {
     FRONT_ORIENTATION_AWARE_OFF = 0,
     FRONT_ORIENTATION_AWARE_NAV_BUTTONS = 1,
@@ -225,6 +235,7 @@ class InkMODSettings {
     DICTIONARY_LOOKUP = 21,
     QUICK_RESUME_SLEEP = 22,
     CREATE_CLIPPING = 23,
+    TOGGLE_FRONTLIGHT = 24,
     SHORT_PWRBTN_COUNT
   };
 
@@ -372,10 +383,17 @@ class InkMODSettings {
   uint8_t forceParagraphIndents = 1;
   uint8_t textAntiAliasing = 1;
   uint8_t readerDarkMode = 0;
+  // Global display polarity / night mode used by the X4 Pro control center.
+  uint8_t screenInverted = 0;
   // Short power button action behaviour
   uint8_t shortPwrBtn = IGNORE;
   // Long power button action behaviour
   uint8_t longPwrBtn = SLEEP;
+  // X4 Pro capacitive Home key shortcuts. A normal single tap always keeps
+  // its original Home navigation behaviour. These two actions are additional
+  // shortcuts for double-tap and hold. Ignored on boards without a Home key.
+  uint8_t homeDoublePressAction = IGNORE;
+  uint8_t homeLongPressAction = IGNORE;
   // EPUB reading orientation settings
   // 0 = portrait (default), 1 = landscape clockwise, 2 = inverted, 3 = landscape counter-clockwise
   uint8_t orientation = PORTRAIT;
@@ -384,6 +402,12 @@ class InkMODSettings {
   uint8_t sideButtonLayout = PREV_NEXT;
   uint8_t frontButtonOrientationAware = FRONT_ORIENTATION_AWARE_OFF;
   uint8_t sideButtonOrientationAware = 0;
+  // X4 Pro touch/frontlight state. These fields are ignored on X3/X4.
+  uint8_t touchReaderControls = TOUCH_READER_SWIPE;
+  uint8_t frontlightBrightness = 60;
+  uint8_t frontlightWarmth = 50;
+  uint8_t frontlightOn = 0;
+  uint8_t frontlightRestoreOnWake = 1;
   // Action performed when side buttons are long-pressed in reader
   uint8_t sideButtonLongPress = SIDE_LONG_CHAPTER_SKIP;
   // Front button remap (logical -> hardware)

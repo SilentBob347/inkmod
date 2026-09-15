@@ -59,6 +59,26 @@ void DeveloperModeActivity::loop() {
     return;
   }
 
+  if (mappedInput.hasTouch()) {
+    const auto& m = UITheme::getInstance().getMetrics();
+    const int h = renderer.getScreenHeight();
+    const int y0 = m.topPadding + m.headerHeight + m.verticalSpacing;
+    const int lh = renderer.getLineHeight(UI_10_FONT_ID);
+    const int step = lh + m.verticalSpacing;
+    const int visible = std::max(1, (h - y0 - m.buttonHintsHeight - 6) / step);
+    const int start = selected >= visible ? selected - visible + 1 : 0;
+    int tx = 0, ty = 0;
+    if (mappedInput.wasScreenTapped(tx, ty) && ty >= y0 && ty < y0 + visible * step) {
+      const int row = (ty - y0) / step;
+      const int index = start + row;
+      if (index >= 0 && index < ITEM_COUNT) {
+        selected = index;
+        activate();
+        return;
+      }
+    }
+  }
+
   // Use the same navigation helper as the rest of Settings.  On X4 the
   // physical third/fourth buttons may map to Left/Right depending on the
   // current orientation/remap, while the on-screen hints still mean Up/Down.

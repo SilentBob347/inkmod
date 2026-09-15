@@ -10,6 +10,7 @@
 #include "activities/browser/OpdsBookBrowserActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchListNavigation.h"
 
 int OpdsServerListActivity::getItemCount() const {
   int count = static_cast<int>(OPDS_STORE.getCount());
@@ -32,6 +33,34 @@ void OpdsServerListActivity::onEnter() {
 void OpdsServerListActivity::onExit() { Activity::onExit(); }
 
 void OpdsServerListActivity::loop() {
+  bool touchActivate = false;
+  const int touchItemCount = getItemCount();
+  if (mappedInput.hasTouch() && touchItemCount > 0) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const auto safeArea = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+    const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+    const int contentHeight = safeArea.y + safeArea.height - contentTop - metrics.verticalSpacing * 2;
+    // OPDS server rows usually contain both name and URL. drawList() therefore
+    // uses the taller subtitle row, so touch must use the same geometry or taps
+    // drift onto the wrong server when more than one is configured.
+    int touchRowHeight = metrics.listRowHeight;
+    const auto& touchServers = OPDS_STORE.getServers();
+    if (selectedIndex >= 0 && selectedIndex < static_cast<int>(touchServers.size()) &&
+        !touchServers[static_cast<size_t>(selectedIndex)].name.empty()) {
+      const int titleLineH = renderer.getLineHeight(UI_10_FONT_ID);
+      const int subtitleLineH = renderer.getLineHeight(SMALL_FONT_ID);
+      constexpr int kSubtitleTopOffset = 7;
+      constexpr int kTitleSubtitleGap = 4;
+      constexpr int kSubtitleBottomPadding = 6;
+      touchRowHeight = std::max(metrics.listWithSubtitleRowHeight,
+                                kSubtitleTopOffset + titleLineH + kTitleSubtitleGap +
+                                    subtitleLineH + kSubtitleBottomPadding);
+    }
+    auto touch = TouchListNavigation::handle(mappedInput, selectedIndex, touchItemCount,
+                                             Rect{safeArea.x, contentTop, safeArea.width, contentHeight}, touchRowHeight);
+    if (touch.handled && !touch.activate) { requestUpdate(); return; }
+    touchActivate = touch.activate;
+  }
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     if (pickerMode) {
       activityManager.goHome(HomeMenuItem::OPDS_BROWSER);
@@ -41,7 +70,7 @@ void OpdsServerListActivity::loop() {
     return;
   }
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+  if (touchActivate || mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     handleSelection();
     return;
   }

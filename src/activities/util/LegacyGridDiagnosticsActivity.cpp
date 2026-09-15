@@ -142,22 +142,53 @@ void LegacyGridDiagnosticsActivity::render(RenderLock&&) {
   }
 
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const int hintsTop = renderer.getScreenHeight() - metrics.buttonHintsHeight;
-  const int phraseBandTop = std::max(layout.boardY + layout.boardHeight + 8, hintsTop - 76);
-  renderer.fillRect(0, phraseBandTop, renderer.getScreenWidth(), hintsTop - phraseBandTop, false);
-  renderer.drawLine(24, phraseBandTop, renderer.getScreenWidth() - 24, phraseBandTop, true);
+  if (mappedInput.hasTouch() && overlay == OverlayMode::None) {
+    // Real in-game touch controls. They live in the footer that computeLayout()
+    // already reserves, so the board geometry itself stays unchanged.
+    constexpr int margin = 12;
+    constexpr int gap = 8;
+    constexpr int rowGap = 8;
+    constexpr int buttonH = 42;
+    constexpr int bottom = 10;
+    const int buttonW = (renderer.getScreenWidth() - margin * 2 - gap * 2) / 3;
+    const int controlsTop = renderer.getScreenHeight() - bottom - buttonH * 2 - rowGap;
+    static constexpr const char* labels[2][3] = {
+        {"ЛЕВО", "ПОВОРОТ", "ПРАВО"},
+        {"ПАУЗА", "ВНИЗ", "ДО ДНА"},
+    };
 
-  const auto phraseLines = renderer.wrappedText(UI_10_FONT_ID, currentPhrase(), renderer.getScreenWidth() - 52, 2);
-  const int phraseBlockHeight = static_cast<int>(phraseLines.size()) * renderer.getLineHeight(UI_10_FONT_ID) +
-                                std::max(0, static_cast<int>(phraseLines.size()) - 1) * 2;
-  int phraseY = phraseBandTop + std::max(8, (hintsTop - phraseBandTop - phraseBlockHeight) / 2);
-  for (const auto& line : phraseLines) {
-    renderer.drawCenteredText(UI_10_FONT_ID, phraseY, line.c_str());
-    phraseY += renderer.getLineHeight(UI_10_FONT_ID) + 2;
+    renderer.fillRect(0, controlsTop - 6, renderer.getScreenWidth(),
+                      renderer.getScreenHeight() - controlsTop + 6, false);
+    renderer.drawLine(12, controlsTop - 6, renderer.getScreenWidth() - 12, controlsTop - 6, true);
+    for (int row = 0; row < 2; ++row) {
+      const int y = controlsTop + row * (buttonH + rowGap);
+      for (int col = 0; col < 3; ++col) {
+        const int x = margin + col * (buttonW + gap);
+        renderer.drawRect(x, y, buttonW, buttonH, 1, true);
+        const int textW = renderer.getTextWidth(SMALL_FONT_ID, labels[row][col]);
+        const int textY = y + std::max(7, (buttonH - renderer.getLineHeight(SMALL_FONT_ID)) / 2);
+        renderer.drawText(SMALL_FONT_ID, x + std::max(3, (buttonW - textW) / 2),
+                          textY, labels[row][col], true, EpdFontFamily::BOLD);
+      }
+    }
+  } else if (!mappedInput.hasTouch()) {
+    const int hintsTop = renderer.getScreenHeight() - metrics.buttonHintsHeight;
+    const int phraseBandTop = std::max(layout.boardY + layout.boardHeight + 8, hintsTop - 76);
+    renderer.fillRect(0, phraseBandTop, renderer.getScreenWidth(), hintsTop - phraseBandTop, false);
+    renderer.drawLine(24, phraseBandTop, renderer.getScreenWidth() - 24, phraseBandTop, true);
+
+    const auto phraseLines = renderer.wrappedText(UI_10_FONT_ID, currentPhrase(), renderer.getScreenWidth() - 52, 2);
+    const int phraseBlockHeight = static_cast<int>(phraseLines.size()) * renderer.getLineHeight(UI_10_FONT_ID) +
+                                  std::max(0, static_cast<int>(phraseLines.size()) - 1) * 2;
+    int phraseY = phraseBandTop + std::max(8, (hintsTop - phraseBandTop - phraseBlockHeight) / 2);
+    for (const auto& line : phraseLines) {
+      renderer.drawCenteredText(UI_10_FONT_ID, phraseY, line.c_str());
+      phraseY += renderer.getLineHeight(UI_10_FONT_ID) + 2;
+    }
+
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }
-
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer(fullRefreshPending ? HalDisplay::FULL_REFRESH : HalDisplay::FAST_REFRESH);
   fullRefreshPending = false;
 }
@@ -417,9 +448,83 @@ LegacyGridDiagnosticsActivity::Piece LegacyGridDiagnosticsActivity::randomPiece(
 }
 
 void LegacyGridDiagnosticsActivity::handleGameplayInput() {
+  if (mappedInput.hasTouch()) {
+    // Dedicated on-screen controls occupy the reserved footer below the board.
+    // Handle touch-down first and suppress the contact so the same press cannot
+    // also leak into the legacy virtual front-button mapping.
+    int tx = 0, ty = 0;
+    if (mappedInput.wasScreenTouchDown(tx, ty)) {
+      constexpr int margin = 12;
+      constexpr int gap = 8;
+      constexpr int rowGap = 8;
+      constexpr int buttonH = 42;
+      constexpr int bottom = 10;
+      const int buttonW = (renderer.getScreenWidth() - margin * 2 - gap * 2) / 3;
+      const int controlsTop = renderer.getScreenHeight() - bottom - buttonH * 2 - rowGap;
+
+      if (ty >= controlsTop && ty < controlsTop + buttonH * 2 + rowGap) {
+        const int row = ty < controlsTop + buttonH ? 0 :
+                        (ty >= controlsTop + buttonH + rowGap ? 1 : -1);
+        int col = -1;
+        for (int i = 0; i < 3; ++i) {
+          const int x = margin + i * (buttonW + gap);
+          if (tx >= x && tx < x + buttonW) {
+            col = i;
+            break;
+          }
+        }
+        if (row >= 0 && col >= 0) {
+          mappedInput.suppressTouchContact();
+          if (row == 0 && col == 0) {
+            (void)tryMove(0, -1);
+          } else if (row == 0 && col == 1) {
+            (void)tryRotate();
+          } else if (row == 0 && col == 2) {
+            (void)tryMove(0, 1);
+          } else if (row == 1 && col == 0) {
+            openPauseMenu();
+          } else if (row == 1 && col == 1) {
+            softDrop();
+          } else {
+            hardDrop();
+          }
+          return;
+        }
+      }
+    }
+  }
+
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     openPauseMenu();
-  } else if (mappedInput.wasPressed(MappedInputManager::Button::Left)) {
+    return;
+  }
+
+  if (mappedInput.hasTouch()) {
+    const auto swipe = mappedInput.wasSwipe();
+    if (swipe == MappedInputManager::SwipeDir::Left) {
+      (void)tryMove(0, -1);
+      return;
+    }
+    if (swipe == MappedInputManager::SwipeDir::Right) {
+      (void)tryMove(0, 1);
+      return;
+    }
+    if (swipe == MappedInputManager::SwipeDir::Down) {
+      softDrop();
+      return;
+    }
+    if (swipe == MappedInputManager::SwipeDir::Up) {
+      hardDrop();
+      return;
+    }
+    int tx = 0, ty = 0;
+    if (mappedInput.wasScreenTapped(tx, ty)) {
+      (void)tryRotate();
+      return;
+    }
+  }
+
+  if (mappedInput.wasPressed(MappedInputManager::Button::Left)) {
     (void)tryMove(0, -1);
   } else if (mappedInput.wasPressed(MappedInputManager::Button::Right)) {
     (void)tryMove(0, 1);
@@ -443,6 +548,40 @@ void LegacyGridDiagnosticsActivity::handleOverlayInput() {
     }
     return;
   }
+
+  if (mappedInput.hasTouch()) {
+    const int width = 360;
+    const int height = overlay == OverlayMode::Pause ? 286 : 230;
+    const int x = (renderer.getScreenWidth() - width) / 2;
+    const int y = (renderer.getScreenHeight() - height) / 2;
+    const char* overlayTitle = overlay == OverlayMode::Pause ? "ПАУЗА" : "БРЕННЫЙ МИР ПОБЕДИЛ.";
+    const auto titleLines = renderer.wrappedText(UI_12_FONT_ID, overlayTitle, width - 28,
+                                                 overlay == OverlayMode::Pause ? 1 : 2, EpdFontFamily::BOLD);
+    const int titleHeight = static_cast<int>(titleLines.size()) * (renderer.getLineHeight(UI_12_FONT_ID) + 2);
+    const int menuStartY = y + 18 + titleHeight + 14;
+    constexpr int rowStep = 40;
+    int row = -1;
+    const auto touch = mappedInput.rowTouch(row, menuStartY - 8, rowStep, itemCount,
+                                            x + 18, x + width - 18, 36);
+    if (touch == MappedInputManager::RowTouch::Tap && row >= 0) {
+      overlaySelection = row;
+      if (overlay == OverlayMode::GameOver) {
+        overlaySelection == 0 ? startNewGame() : finish();
+      } else if (overlaySelection == 0) {
+        closeOverlay();
+      } else if (overlaySelection == 1) {
+        startNewGame();
+      } else if (overlaySelection == 2) {
+        chillModeEnabled = !chillModeEnabled;
+        lastDropMs = millis();
+        requestUpdate();
+      } else {
+        finish();
+      }
+      return;
+    }
+  }
+
   if (mappedInput.wasPressed(MappedInputManager::Button::Up) ||
       mappedInput.wasPressed(MappedInputManager::Button::Left)) {
     overlaySelection = overlaySelection == 0 ? itemCount - 1 : overlaySelection - 1;

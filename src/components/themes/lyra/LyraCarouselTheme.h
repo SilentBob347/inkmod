@@ -45,6 +45,11 @@ class LyraCarouselTheme : public LyraTheme {
   static constexpr int kSideCoverH = LyraCarouselMetrics::values.homeCoverHeight - 210;  // 390
 
   static void setPreRenderIndex(int idx);
+  // Touch helpers use the exact same geometry as the renderer so HomeActivity
+  // never has to guess where carousel books/menu icons are drawn.
+  static int hitTestBook(const GfxRenderer& renderer, Rect coverRect, int bookCount, int centerIdx, int x, int y);
+  static int hitTestMenuItem(const GfxRenderer& renderer, int buttonCount, int x, int y,
+                             const std::function<std::string(int index)>& buttonLabel);
   void drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                            int selectorIndex, bool& coverRendered, bool& coverBufferStored, bool& bufferRestored,
                            const std::function<bool()>& storeCoverBuffer, const BookReadingStats* stats = nullptr,

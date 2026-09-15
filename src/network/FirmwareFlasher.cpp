@@ -25,7 +25,8 @@ constexpr size_t CHUNK = 4096;
 constexpr size_t SHA_TRAILER = 32;
 constexpr uint8_t CHECKSUM_SEED = 0xEF;
 constexpr size_t HEADER_SIZE = 24;
-constexpr size_t CHIP_ID_OFFSET = 0x0C;  // esp_image_header_t::chip_id low byte (C3=0x05, S3=0x09)
+constexpr size_t CHIP_ID_OFFSET = 0x0C;  // esp_image_header_t::chip_id (uint16_t, little-endian)
+constexpr size_t CHIP_ID_SIZE = sizeof(uint16_t);
 constexpr size_t SEG_HEADER_SIZE = 8;
 }  // namespace
 
@@ -77,11 +78,11 @@ Result validateChipCompatibility(const uint8_t* candidateHeader) {
     return Result::NO_PARTITION;
   }
 
-  // We only need bytes 0..12.  Byte 12 (offset 0x0C) is the low byte of
-  // esp_image_header_t::chip_id: ESP32-C3 = 0x05, ESP32-S3 = 0x09.
-  // Compare against the running image rather than hard-coding C3 so the same
-  // guard automatically works on future X4 Pro/S3 builds.
-  uint8_t runningPrefix[CHIP_ID_OFFSET + 1] = {};
+  // Compare the standard ESP image chip_id stored in the first 24-byte image
+  // header.  Do not inspect project names or inkMOD-specific markers: any valid
+  // third-party firmware for the same SoC family remains allowed, while an X3/X4
+  // ESP32-C3 image is rejected on X4 Pro/ESP32-S3 and vice versa.
+  uint8_t runningPrefix[CHIP_ID_OFFSET + CHIP_ID_SIZE] = {};
   if (esp_partition_read(running, 0, runningPrefix, sizeof(runningPrefix)) != ESP_OK) {
     LOG_ERR("FLASH", "chip guard: failed to read running image header");
     return Result::READ_FAIL;
@@ -91,13 +92,16 @@ Result validateChipCompatibility(const uint8_t* candidateHeader) {
     return Result::BAD_MAGIC;
   }
 
-  const uint8_t runningChip = runningPrefix[CHIP_ID_OFFSET];
-  const uint8_t candidateChip = candidateHeader[CHIP_ID_OFFSET];
-  LOG_INF("FLASH", "chip guard: running=0x%02X candidate=0x%02X", runningChip, candidateChip);
+  uint16_t runningChip = 0;
+  uint16_t candidateChip = 0;
+  std::memcpy(&runningChip, runningPrefix + CHIP_ID_OFFSET, sizeof(runningChip));
+  std::memcpy(&candidateChip, candidateHeader + CHIP_ID_OFFSET, sizeof(candidateChip));
+  LOG_INF("FLASH", "chip guard: running=0x%04X candidate=0x%04X", static_cast<unsigned>(runningChip),
+          static_cast<unsigned>(candidateChip));
 
   if (runningChip != candidateChip) {
-    LOG_ERR("FLASH", "chip guard: incompatible firmware (running=0x%02X candidate=0x%02X)", runningChip,
-            candidateChip);
+    LOG_ERR("FLASH", "chip guard: incompatible firmware (running=0x%04X candidate=0x%04X)",
+            static_cast<unsigned>(runningChip), static_cast<unsigned>(candidateChip));
     return Result::INCOMPATIBLE_CHIP;
   }
   return Result::OK;

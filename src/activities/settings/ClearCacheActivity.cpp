@@ -39,8 +39,25 @@ void ClearCacheActivity::render(RenderLock&&) {
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 10, tr(STR_CLEAR_CACHE_WARNING_3), true);
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 30, tr(STR_CLEAR_CACHE_WARNING_4), true);
 
-    const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_CLEAR_BUTTON), "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    if (mappedInput.hasTouch()) {
+      // These are real actions on X4 Pro, not passive hardware-key hints.
+      constexpr int side = 20;
+      constexpr int gap = 12;
+      constexpr int buttonH = 48;
+      const int buttonW = (pageWidth - side * 2 - gap) / 2;
+      const int buttonY = pageHeight - buttonH - 12;
+      const char* leftLabel = tr(STR_CANCEL);
+      const char* rightLabel = tr(STR_CLEAR_BUTTON);
+      renderer.drawRect(side, buttonY, buttonW, buttonH);
+      renderer.drawRect(side + buttonW + gap, buttonY, buttonW, buttonH);
+      const int leftW = renderer.getTextWidth(UI_10_FONT_ID, leftLabel);
+      const int rightW = renderer.getTextWidth(UI_10_FONT_ID, rightLabel);
+      renderer.drawText(UI_10_FONT_ID, side + (buttonW - leftW) / 2, buttonY + 10, leftLabel);
+      renderer.drawText(UI_10_FONT_ID, side + buttonW + gap + (buttonW - rightW) / 2, buttonY + 10, rightLabel);
+    } else {
+      const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_CLEAR_BUTTON), "", "");
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    }
     renderer.displayBuffer();
     return;
   }
@@ -147,6 +164,47 @@ void ClearCacheActivity::clearCache() {
 
 void ClearCacheActivity::loop() {
   if (state == WARNING) {
+    if (mappedInput.hasTouch()) {
+      int tx = 0, ty = 0;
+      if (mappedInput.wasScreenTouchDown(tx, ty) || mappedInput.wasScreenTapped(tx, ty)) {
+        const int pageWidth = renderer.getScreenWidth();
+        const int pageHeight = renderer.getScreenHeight();
+        constexpr int side = 20;
+        constexpr int gap = 12;
+        constexpr int buttonH = 48;
+        const int buttonW = (pageWidth - side * 2 - gap) / 2;
+        const int buttonY = pageHeight - buttonH - 12;
+        if (ty >= buttonY && ty < buttonY + buttonH) {
+          if (tx >= side && tx < side + buttonW) {
+            mappedInput.suppressTouchContact();
+            LOG_DBG("CLEAR_CACHE", "User cancelled by touch");
+            goBack();
+            return;
+          }
+          const int rightX = side + buttonW + gap;
+          if (tx >= rightX && tx < rightX + buttonW) {
+            mappedInput.suppressTouchContact();
+            LOG_DBG("CLEAR_CACHE", "User confirmed by touch, starting cache clear");
+            {
+              RenderLock lock(*this);
+              state = CLEARING;
+            }
+            if (requestUpdateAndWait() != RequestUpdateResult::Rendered) {
+              LOG_ERR("CLEAR_CACHE", "Clearing cache screen could not be rendered synchronously; aborting cache clear");
+              {
+                RenderLock lock(*this);
+                state = FAILED;
+              }
+              requestUpdate(true);
+              return;
+            }
+            clearCache();
+            return;
+          }
+        }
+      }
+    }
+
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       LOG_DBG("CLEAR_CACHE", "User confirmed, starting cache clear");
       {

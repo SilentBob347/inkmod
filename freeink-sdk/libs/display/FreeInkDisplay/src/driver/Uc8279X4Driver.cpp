@@ -22,6 +22,7 @@ constexpr uint8_t CMD_PLL = 0x30;                 // PLL frame rate
 constexpr uint8_t CMD_VCOM_DATA_INTERVAL = 0x50;  // CDI — 1 data byte on this part
 constexpr uint8_t CMD_RESOLUTION = 0x61;          // TRES
 constexpr uint8_t CMD_GATE_SOURCE_START = 0x65;   // GSST (4 data bytes)
+constexpr uint8_t CMD_PARTIAL_WINDOW = 0x90;      // PTL — required before PTIN refresh on X4 Pro
 constexpr uint8_t CMD_PARTIAL_IN = 0x91;          // PTIN
 constexpr uint8_t CMD_PARTIAL_OUT = 0x92;         // PTOUT
 constexpr uint8_t CMD_CCSET = 0xE0;               // CCSET (cascade/output enable)
@@ -147,10 +148,11 @@ void Uc8279X4Driver::streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb,
   // Gates before the visible window (the 120-gate offset): white.
   memset(row, 0xFF, wb);
   for (uint16_t y = 0; y < _cfg.gateOffset; y++) bus.data(row, wb);
-  // Visible rows, mirror-Y via row reversal (mirror-X is the PSR SHL bit —
-  // same orientation convention as the UC8179 sibling). AA planes are sent
+  // X4 Pro orientation: visible framebuffer rows are streamed in their natural
+  // top-to-bottom order. PSR=0x37 provides the correct source/gate orientation;
+  // reversing Y here rotates the whole UI by 180 degrees. AA planes are sent
   // bitwise-inverted per the vendor reference.
-  for (uint16_t y = _h; y-- > 0;) {
+  for (uint16_t y = 0; y < _h; y++) {
     const uint8_t* src = fb + static_cast<uint32_t>(y) * _wb;
     if (invert) {
       for (uint16_t i = 0; i < wb; i++) row[i] = static_cast<uint8_t>(~src[i]);
@@ -197,25 +199,48 @@ bool Uc8279X4Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
     for (uint16_t y = 0; y < _tresH; y++) bus.data(whiteRow, wb);
   }
 
-  // Built-in refresh setup per the reference (GC / DU tables; no CDI write —
-  // the 1-byte CDI is only asserted by the AA path):
+  // CrossPoint/X4 Pro stock refresh trigger. The important part for a clean,
+  // non-flashing overlay restore is that FAST really uses the controller's DU
+  // partial path: CDI=0xD7, PTIN + an explicit PTL window, and PSR rewritten
+  // AFTER PON (PON reloads the MTP defaults). FULL/HALF keep the GC path.
+  bus.cmd(CMD_VCOM_DATA_INTERVAL);
+  bus.data(fast ? 0xD7 : 0x97);
   bus.cmd(CMD_CCSET);
   bus.data(_cfg.ccset);  // 0x02
   bus.cmd(CMD_TSSET);
   bus.data(fast ? _cfg.tssetFast : _cfg.tsset);  // DU 0x5A / GC 0x1E
-  bus.cmd(CMD_PANEL_SETTING);
-  bus.data(static_cast<uint8_t>(_cfg.psr0 & 0xDF));  // REG cleared -> OTP (0x17)
-  bus.data(_cfg.psr1);
   if (fast) {
     bus.cmd(CMD_PFS);
-    bus.data(_cfg.pfs);  // 0x03 <- 0x20
+    bus.data(_cfg.pfs);
     bus.cmd(CMD_GATE_SCAN);
-    bus.data(_cfg.gateScan);  // 0xE1 <- 0x02
+    bus.data(_cfg.gateScan);
   }
 
   powerOnIfNeeded(bus, " 8279x4_PON");
 
-  if (fast) bus.cmd(CMD_PARTIAL_IN);
+  if (fast) {
+    // The stock UC8279 sequence never enters partial mode without defining a
+    // PTL window first. The visible 480 rows live at gate offset 120 inside
+    // the controller's 800x600 address space.
+    const uint16_t xEnd = static_cast<uint16_t>(_w - 1);
+    const uint16_t yStart = _cfg.gateOffset;
+    const uint16_t yEnd = static_cast<uint16_t>(_cfg.gateOffset + _h - 1);
+    bus.cmd(CMD_PARTIAL_IN);
+    bus.cmd(CMD_PARTIAL_WINDOW);
+    bus.data(0x00);
+    bus.data(0x00);
+    bus.data(static_cast<uint8_t>(xEnd >> 8));
+    bus.data(static_cast<uint8_t>(xEnd | 0x07));
+    bus.data(static_cast<uint8_t>(yStart >> 8));
+    bus.data(static_cast<uint8_t>(yStart & 0xFF));
+    bus.data(static_cast<uint8_t>(yEnd >> 8));
+    bus.data(static_cast<uint8_t>(yEnd & 0xFF));
+    bus.data(0x01);
+  }
+
+  bus.cmd(CMD_PANEL_SETTING);
+  bus.data(static_cast<uint8_t>(_cfg.psr0 & 0xDF));  // REG cleared -> OTP
+  bus.data(_cfg.psr1);
   bus.cmd(CMD_DISPLAY_REFRESH);
   // Confirm the waveform started (BUSY dropped) before returning, so
   // displayFinish() only rides out the completion edge.

@@ -490,6 +490,61 @@ void OpdsBookBrowserActivity::loop() {
       requestUpdate();
       return;
     }
+    if (mappedInput.hasTouch()) {
+      const auto swipe = mappedInput.wasSwipe();
+      if (swipe == MappedInputManager::SwipeDir::Left) {
+        formatSelectionIndex = static_cast<uint8_t>(ButtonNavigator::nextIndex(formatSelectionIndex,
+                                                                               formatAcquisitionCount));
+        requestUpdate();
+        return;
+      }
+      if (swipe == MappedInputManager::SwipeDir::Right) {
+        formatSelectionIndex = static_cast<uint8_t>(ButtonNavigator::previousIndex(formatSelectionIndex,
+                                                                                   formatAcquisitionCount));
+        requestUpdate();
+        return;
+      }
+      if (swipe == MappedInputManager::SwipeDir::Up) {
+        descriptionScroll = std::min(gOpdsDescriptionMaxStart,
+                                     descriptionScroll + std::max(1, gOpdsDescriptionPageLines));
+        requestUpdate();
+        return;
+      }
+      if (swipe == MappedInputManager::SwipeDir::Down) {
+        descriptionScroll = std::max(0, descriptionScroll - std::max(1, gOpdsDescriptionPageLines));
+        requestUpdate();
+        return;
+      }
+      int tx = 0, ty = 0;
+      if (mappedInput.wasScreenTapped(tx, ty)) {
+        const int pageWidth = renderer.getScreenWidth();
+        const int pageHeight = renderer.getScreenHeight();
+        const int downloadButtonX = 70;
+        const int downloadButtonW = pageWidth - 140;
+        const int downloadButtonH = 50;
+        const int downloadButtonY = pageHeight - downloadButtonH - 18;
+        const int formatTapTop = downloadButtonY - 76;
+        const int formatTapBottom = downloadButtonY - 12;
+
+        // Tapping the format selector changes the format only. It must never
+        // start a transfer; downloading has its own explicit button below.
+        if (ty >= formatTapTop && ty < formatTapBottom) {
+          formatSelectionIndex = static_cast<uint8_t>(ButtonNavigator::nextIndex(formatSelectionIndex,
+                                                                                 formatAcquisitionCount));
+          mappedInput.suppressTouchContact();
+          requestUpdate();
+          return;
+        }
+
+        if (tx >= downloadButtonX && tx < downloadButtonX + downloadButtonW &&
+            ty >= downloadButtonY && ty < downloadButtonY + downloadButtonH) {
+          const size_t acquisitionIndex = formatAcquisitionIndexes[formatSelectionIndex];
+          mappedInput.suppressTouchContact();
+          downloadBook(selectedEntry, acquisitionIndex);
+          return;
+        }
+      }
+    }
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       const size_t acquisitionIndex = formatAcquisitionIndexes[formatSelectionIndex];
       downloadBook(selectedEntry, acquisitionIndex);
@@ -532,6 +587,19 @@ void OpdsBookBrowserActivity::loop() {
   }
 
   if (state == BrowserState::INFO_VIEW) {
+    if (mappedInput.hasTouch()) {
+      const auto swipe = mappedInput.wasSwipe();
+      if (swipe == MappedInputManager::SwipeDir::Up) {
+        infoDescriptionScroll += OPDS_DESCRIPTION_PAGE_LINES;
+        requestUpdate();
+        return;
+      }
+      if (swipe == MappedInputManager::SwipeDir::Down) {
+        infoDescriptionScroll = std::max(0, infoDescriptionScroll - OPDS_DESCRIPTION_PAGE_LINES);
+        requestUpdate();
+        return;
+      }
+    }
     if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       state = BrowserState::BROWSING;
       infoDescriptionScroll = 0;
@@ -572,6 +640,47 @@ void OpdsBookBrowserActivity::loop() {
   if (state == BrowserState::DOWNLOADING) return;
 
   if (state == BrowserState::BROWSING) {
+    if (mappedInput.hasTouch() && entryCount > 0) {
+      const auto swipe = mappedInput.wasSwipe();
+      if (swipe == MappedInputManager::SwipeDir::Up) {
+        selectorIndex = ButtonNavigator::nextIndex(selectorIndex, static_cast<int>(entryCount));
+        requestUpdate();
+        return;
+      }
+      if (swipe == MappedInputManager::SwipeDir::Down) {
+        selectorIndex = ButtonNavigator::previousIndex(selectorIndex, static_cast<int>(entryCount));
+        requestUpdate();
+        return;
+      }
+
+      const int pageStart = (selectorIndex / PAGE_ITEMS) * PAGE_ITEMS;
+      const int visibleRows = std::min(PAGE_ITEMS, static_cast<int>(entryCount) - pageStart);
+      int touchedRow = -1;
+      const auto touch = mappedInput.rowTouch(touchedRow, 58, 30, visibleRows, 0, renderer.getScreenWidth(), 30);
+      if (touch != MappedInputManager::RowTouch::None && touchedRow >= 0 && touchedRow < visibleRows) {
+        selectorIndex = pageStart + touchedRow;
+        requestUpdate();
+        if (touch == MappedInputManager::RowTouch::Tap) {
+          const OpdsEntry* entryPtr = visibleEntry(static_cast<size_t>(selectorIndex));
+          if (!entryPtr) return;
+          const auto& entry = *entryPtr;
+          mappedInput.suppressTouchContact();
+          if (entry.type == OpdsEntryType::BOOK) {
+            selectBookFormat(static_cast<size_t>(selectorIndex));
+          } else if (entry.type == OpdsEntryType::SEARCH) {
+            launchSearch();
+          } else if (entry.type == OpdsEntryType::REFRESH) {
+            showLoadingBeforeFetch();
+            fetchFeed(currentPath, true);
+          } else if (entry.type == OpdsEntryType::INFO) {
+            showInfoEntry(static_cast<size_t>(selectorIndex));
+          } else {
+            navigateToEntry(entry);
+          }
+        }
+        return;
+      }
+    }
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       if (entryCount > 0) {
         const OpdsEntry* entryPtr = visibleEntry(static_cast<size_t>(selectorIndex));
@@ -659,7 +768,9 @@ void OpdsBookBrowserActivity::render(RenderLock&&) {
     const int helpLine1Y = helpLine2Y - 24;
     const int formatValueY = helpLine1Y - 40;
     const int formatLabelY = formatValueY - 28;
-    const int footerTop = formatLabelY - 16;
+    // On X4 Pro reserve space for the real touch format selector + Download
+    // button. Other devices keep their hardware-key footer geometry.
+    const int footerTop = mappedInput.hasTouch() ? pageHeight - 172 : formatLabelY - 16;
     const int contentTop = 46;
     const int contentBottom = std::max(contentTop + 80, footerTop);
     const int contentHeight = std::max(80, contentBottom - contentTop);
@@ -744,15 +855,32 @@ void OpdsBookBrowserActivity::render(RenderLock&&) {
       renderer.drawCenteredText(SMALL_FONT_ID, contentBottom + 1, page);
     }
 
-    renderer.drawCenteredText(SMALL_FONT_ID, formatLabelY, "Формат файла");
     const uint8_t acq = formatAcquisitionIndexes[formatSelectionIndex];
     char selected[48];
     snprintf(selected, sizeof(selected), "<  %s  >", acquisitionLabel(book.acquisitions[acq].format));
-    renderer.drawCenteredText(UI_12_FONT_ID, formatValueY, selected, true, EpdFontFamily::BOLD);
-    renderer.drawCenteredText(SMALL_FONT_ID, helpLine1Y, "Боковые: описание   Передние: формат");
-    renderer.drawCenteredText(SMALL_FONT_ID, helpLine2Y, "Зажать Назад: выйти из OPDS");
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_DOWNLOAD), "<", ">");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+
+    if (mappedInput.hasTouch()) {
+      const int downloadButtonX = 70;
+      const int downloadButtonW = pageWidth - 140;
+      const int downloadButtonH = 50;
+      const int downloadButtonY = pageHeight - downloadButtonH - 18;
+      const int touchFormatValueY = downloadButtonY - 64;
+      const int touchFormatLabelY = touchFormatValueY - 28;
+      renderer.drawCenteredText(SMALL_FONT_ID, touchFormatLabelY, "Формат файла");
+      renderer.drawCenteredText(UI_12_FONT_ID, touchFormatValueY, selected, true, EpdFontFamily::BOLD);
+      renderer.drawRect(downloadButtonX, downloadButtonY, downloadButtonW, downloadButtonH);
+      const char* downloadLabel = tr(STR_DOWNLOAD);
+      const int labelWidth = renderer.getTextWidth(UI_10_FONT_ID, downloadLabel);
+      renderer.drawText(UI_10_FONT_ID, downloadButtonX + (downloadButtonW - labelWidth) / 2,
+                        downloadButtonY + 11, downloadLabel);
+    } else {
+      renderer.drawCenteredText(SMALL_FONT_ID, formatLabelY, "Формат файла");
+      renderer.drawCenteredText(UI_12_FONT_ID, formatValueY, selected, true, EpdFontFamily::BOLD);
+      renderer.drawCenteredText(SMALL_FONT_ID, helpLine1Y, "Боковые: описание   Передние: формат");
+      renderer.drawCenteredText(SMALL_FONT_ID, helpLine2Y, "Зажать Назад: выйти из OPDS");
+      const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_DOWNLOAD), "<", ">");
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    }
     renderer.displayBuffer();
     return;
   }

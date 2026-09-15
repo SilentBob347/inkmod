@@ -7,6 +7,7 @@
 
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchListNavigation.h"
 
 namespace {
 constexpr int kTitleFontId = UI_10_FONT_ID;
@@ -25,6 +26,27 @@ void FileBrowserActionActivity::onEnter() {
 }
 
 void FileBrowserActionActivity::loop() {
+  bool touchActivate = false;
+  if (mappedInput.hasTouch() && !items.empty()) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const auto safeArea = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+    const int titleMaxWidth = std::max(0, safeArea.width - metrics.contentSidePadding * 2 - kBatteryTextReserveWidth);
+    const auto titleLines = renderer.wrappedText(kTitleFontId, title.c_str(), titleMaxWidth, kTitleMaxLines, EpdFontFamily::BOLD);
+    const int titleLineHeight = renderer.getLineHeight(kTitleFontId);
+    const int titleBlockHeight = static_cast<int>(titleLines.size()) * titleLineHeight +
+                                 std::max(0, static_cast<int>(titleLines.size()) - 1) * kTitleLineGap;
+    const bool tallHeader = metrics.headerHeight > 60;
+    const int titleY = metrics.topPadding + (tallHeader ? metrics.batteryBarHeight + 3 : kCompactTitleY);
+    const int titleBottomPadding = tallHeader ? kTallHeaderTitleBottomPadding : kCompactHeaderTitleBottomPadding;
+    const int actionHeaderHeight = std::max(metrics.headerHeight, titleY - metrics.topPadding + titleBlockHeight + titleBottomPadding);
+    const int contentTop = metrics.topPadding + actionHeaderHeight + metrics.verticalSpacing;
+    const int contentHeight = safeArea.y + safeArea.height - contentTop - metrics.verticalSpacing * 2;
+    auto touch = TouchListNavigation::handle(mappedInput, selectedIndex, static_cast<int>(items.size()),
+                                             Rect{safeArea.x, contentTop, safeArea.width, contentHeight}, metrics.listRowHeight);
+    if (touch.handled && !touch.activate) { requestUpdate(); return; }
+    touchActivate = touch.activate;
+  }
+
   if (ignoreConfirmRelease) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       ignoreConfirmRelease = false;
@@ -43,7 +65,7 @@ void FileBrowserActionActivity::loop() {
     return;
   }
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+  if (touchActivate || mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     setResult(FileBrowserActionResult{static_cast<int>(items[selectedIndex].action)});
     finish();
     return;

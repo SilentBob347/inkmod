@@ -97,7 +97,30 @@ void SystemDiagnosticsActivity::loop() {
   buttonNavigator.onPreviousContinuous([this] { selectedAction = ButtonNavigator::previousIndex(selectedAction, ACTION_COUNT); requestUpdate(); });
   buttonNavigator.onNextContinuous([this] { selectedAction = ButtonNavigator::nextIndex(selectedAction, ACTION_COUNT); requestUpdate(); });
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+  bool touchActivate = false;
+  if (mappedInput.hasTouch()) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const int pageHeight = renderer.getScreenHeight();
+    const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
+    int y = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+    int rowCount = 8 + (!SETTINGS.clockDisabled ? 1 : 0);
+    for (int i = 0; i < rowCount; ++i) {
+      if (y + lineH >= pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing) break;
+      y += lineH + metrics.verticalSpacing;
+    }
+    y += metrics.verticalSpacing;
+    int tx = 0, ty = 0;
+    if (mappedInput.wasScreenTapped(tx, ty) && ty >= y) {
+      const int row = (ty - y) / (lineH + metrics.verticalSpacing);
+      if (row >= 0 && row < ACTION_COUNT) {
+        selectedAction = row;
+        touchActivate = true;
+        requestUpdate();
+      }
+    }
+  }
+
+  if (touchActivate || mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     if (selectedAction == 0) {
       renderer.clearScreen();
       renderer.displayBuffer(HalDisplay::FULL_REFRESH);

@@ -3,12 +3,15 @@
 #include <GfxRenderer.h>
 #include <I18n.h>
 
+#include <algorithm>
+
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchListNavigation.h"
 
 namespace {
-constexpr int MENU_ITEM_COUNT = 4;
+constexpr int MENU_ITEM_COUNT = 4 + (FREEINK_CAP_USB_MSC ? 1 : 0);
 }  // namespace
 
 void NetworkModeSelectionActivity::onEnter() {
@@ -24,6 +27,22 @@ void NetworkModeSelectionActivity::onEnter() {
 void NetworkModeSelectionActivity::onExit() { Activity::onExit(); }
 
 void NetworkModeSelectionActivity::loop() {
+  bool touchActivate = false;
+  if (mappedInput.hasTouch()) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const auto safeArea = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+    const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+    const int contentHeight = safeArea.y + safeArea.height - contentTop - metrics.verticalSpacing * 2;
+    const int titleLineH = renderer.getLineHeight(UI_10_FONT_ID);
+    const int subtitleLineH = renderer.getLineHeight(SMALL_FONT_ID);
+    const int touchRowHeight = std::max(metrics.listWithSubtitleRowHeight, titleLineH + 4 + subtitleLineH + 6);
+    auto touch = TouchListNavigation::handle(mappedInput, selectedIndex, MENU_ITEM_COUNT,
+                                             Rect{safeArea.x, contentTop, safeArea.width, contentHeight},
+                                             touchRowHeight);
+    if (touch.handled && !touch.activate) { requestUpdate(); return; }
+    touchActivate = touch.activate;
+  }
+
   // Handle back button - cancel
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     onCancel();
@@ -31,7 +50,7 @@ void NetworkModeSelectionActivity::loop() {
   }
 
   // Handle confirm button - select current option
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+  if (touchActivate || mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     NetworkMode mode = NetworkMode::JOIN_NETWORK;
     if (selectedIndex == 1) {
       mode = NetworkMode::CONNECT_CALIBRE;
@@ -39,6 +58,10 @@ void NetworkModeSelectionActivity::loop() {
       mode = NetworkMode::CREATE_HOTSPOT;
     } else if (selectedIndex == 3) {
       mode = NetworkMode::NEARBY_STATS_SYNC;
+#if FREEINK_CAP_USB_MSC
+    } else if (selectedIndex == 4) {
+      mode = NetworkMode::USB_DRIVE;
+#endif
     }
     onModeSelected(mode);
     return;
@@ -67,17 +90,39 @@ void NetworkModeSelectionActivity::render(RenderLock&&) {
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int contentHeight = safeArea.y + safeArea.height - contentTop - metrics.verticalSpacing * 2;
   // Menu items and descriptions
-  static constexpr StrId menuItems[MENU_ITEM_COUNT] = {StrId::STR_JOIN_NETWORK, StrId::STR_CALIBRE_WIRELESS,
-                                                       StrId::STR_CREATE_HOTSPOT, StrId::STR_NEARBY_STATS_SYNC};
-  static constexpr StrId menuDescs[MENU_ITEM_COUNT] = {StrId::STR_JOIN_DESC, StrId::STR_CALIBRE_DESC,
-                                                       StrId::STR_HOTSPOT_DESC, StrId::STR_NEARBY_STATS_SYNC_DESC};
-  static constexpr UIIcon menuIcons[MENU_ITEM_COUNT] = {UIIcon::Wifi, UIIcon::Library, UIIcon::Hotspot,
-                                                        UIIcon::Transfer};
-
   GUI.drawList(
       renderer, Rect{safeArea.x, contentTop, safeArea.width, contentHeight}, static_cast<int>(MENU_ITEM_COUNT),
-      selectedIndex, [](int index) { return std::string(I18N.get(menuItems[index])); },
-      [](int index) { return std::string(I18N.get(menuDescs[index])); }, [](int index) { return menuIcons[index]; });
+      selectedIndex, [](int index) {
+        switch (index) {
+          case 0: return std::string(I18N.get(StrId::STR_JOIN_NETWORK));
+          case 1: return std::string(I18N.get(StrId::STR_CALIBRE_WIRELESS));
+          case 2: return std::string(I18N.get(StrId::STR_CREATE_HOTSPOT));
+          case 3: return std::string(I18N.get(StrId::STR_NEARBY_STATS_SYNC));
+#if FREEINK_CAP_USB_MSC
+          case 4: return std::string("USB-накопитель");
+#endif
+          default: return std::string();
+        }
+      },
+      [](int index) {
+        switch (index) {
+          case 0: return std::string(I18N.get(StrId::STR_JOIN_DESC));
+          case 1: return std::string(I18N.get(StrId::STR_CALIBRE_DESC));
+          case 2: return std::string(I18N.get(StrId::STR_HOTSPOT_DESC));
+          case 3: return std::string(I18N.get(StrId::STR_NEARBY_STATS_SYNC_DESC));
+#if FREEINK_CAP_USB_MSC
+          case 4: return std::string("Показать SD-карту как USB-диск на компьютере");
+#endif
+          default: return std::string();
+        }
+      },
+      [](int index) {
+#if FREEINK_CAP_USB_MSC
+        if (index == 4) return UIIcon::Transfer;
+#endif
+        static constexpr UIIcon icons[4] = {UIIcon::Wifi, UIIcon::Library, UIIcon::Hotspot, UIIcon::Transfer};
+        return icons[index < 4 ? index : 0];
+      });
 
   // Draw help text at bottom
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));

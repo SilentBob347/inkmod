@@ -85,6 +85,7 @@ class WifiSelectionActivity final : public Activity {
   unsigned long connectionStartTime = 0;
   unsigned long lastConnectionStatusLogTime = 0;
   int lastLoggedWifiStatus = -1;
+  uint8_t x4ProRecoveryRetryCount = 0;
 
   void renderNetworkList(const Rect* screen, const ThemeMetrics* metrics) const;
   void renderPasswordEntry(const Rect* screen, const ThemeMetrics* metrics) const;

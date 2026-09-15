@@ -38,6 +38,52 @@ void IntervalSelectionActivity::adjustValue(const int delta) {
 }
 
 void IntervalSelectionActivity::loop() {
+  if (mappedInput.hasTouch()) {
+    const int screenWidth = renderer.getScreenWidth();
+    const int screenHeight = renderer.getScreenHeight();
+    const int barWidth = std::min(360, std::max(0, screenWidth - 40));
+    const int barX = std::max(0, (screenWidth - barWidth) / 2);
+    constexpr int barY = 140;
+
+    // Drag anywhere around the visible slider. The whole 56px band is active,
+    // not just the thin 16px track. Values snap to the configured small step.
+    int tx = 0, ty = 0;
+    if (mappedInput.isScreenTouchHeld(tx, ty) && ty >= barY - 20 && ty <= barY + 36 && barWidth > 4) {
+      const int clampedX = std::clamp(tx, barX + 2, barX + barWidth - 2);
+      const int range = std::max(1, maxValue - minValue);
+      int candidate = minValue + ((clampedX - (barX + 2)) * range + (barWidth - 4) / 2) / (barWidth - 4);
+      const int step = std::max(1, smallStep);
+      candidate = minValue + ((candidate - minValue + step / 2) / step) * step;
+      candidate = clampedValue(candidate);
+      if (candidate != value) {
+        value = candidate;
+        requestUpdate();
+      }
+      return;
+    }
+
+    // Large touch actions at the bottom: cancel on the left, save on the right.
+    if (mappedInput.wasScreenTapped(tx, ty) && ty >= screenHeight - 86) {
+      if (tx < screenWidth / 2) {
+        ActivityResult result;
+        result.isCancelled = true;
+        setResult(std::move(result));
+      } else {
+        setResult(IntervalResult{static_cast<uint32_t>(value)});
+      }
+      finish();
+      return;
+    }
+
+    // Touch UX: after changing a value, the edge Back gesture commits it.
+    // Physical Back keeps the legacy cancel behaviour below.
+    if (mappedInput.wasBackGesture()) {
+      setResult(IntervalResult{static_cast<uint32_t>(value)});
+      finish();
+      return;
+    }
+  }
+
   if (ignoreConfirmRelease) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       ignoreConfirmRelease = false;
@@ -109,8 +155,25 @@ void IntervalSelectionActivity::render(RenderLock&&) {
 
   renderer.drawCenteredText(SMALL_FONT_ID, barY + 30, I18N.get(stepHintId), true);
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), "-", "+");
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, readerActivity);
+  if (mappedInput.hasTouch()) {
+    const int screenHeight = renderer.getScreenHeight();
+    const int margin = 14;
+    const int gap = 12;
+    const int buttonY = screenHeight - 72;
+    const int buttonH = 54;
+    const int buttonW = (screenWidth - margin * 2 - gap) / 2;
+    const int leftX = margin;
+    const int rightX = leftX + buttonW + gap;
+    renderer.drawRect(leftX, buttonY, buttonW, buttonH);
+    renderer.drawRect(rightX, buttonY, buttonW, buttonH);
+    const int cancelW = renderer.getTextWidth(UI_10_FONT_ID, tr(STR_CANCEL));
+    renderer.drawText(UI_10_FONT_ID, leftX + std::max(0, (buttonW - cancelW) / 2), buttonY + 15, tr(STR_CANCEL));
+    const int confirmW = renderer.getTextWidth(UI_10_FONT_ID, tr(STR_CONFIRM));
+    renderer.drawText(UI_10_FONT_ID, rightX + std::max(0, (buttonW - confirmW) / 2), buttonY + 15, tr(STR_CONFIRM));
+  } else {
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), "-", "+");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, readerActivity);
+  }
 
   renderer.displayBuffer();
 }

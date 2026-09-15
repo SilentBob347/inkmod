@@ -12,6 +12,7 @@
 #include "SdCardFontSystem.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchListNavigation.h"
 
 namespace {
 uint8_t closestSizeIndex(const std::vector<uint8_t>& sizes, const uint8_t targetPointSize) {
@@ -133,12 +134,46 @@ int FontSelectionActivity::previewFontId() {
 }
 
 void FontSelectionActivity::loop() {
+  if (mappedInput.hasTouch() && !fonts_.empty()) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const auto safeArea = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+    const int previewTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+    constexpr int previewHeight = 112;
+    const int buttonY = renderer.getScreenHeight() - 72;
+    const int contentTop = previewTop + previewHeight + metrics.verticalSpacing;
+    const int contentHeight = std::max(1, buttonY - metrics.verticalSpacing - contentTop);
+
+    // A tap on a font only moves the selection and refreshes the live preview.
+    // It never applies/closes the picker on touch devices.
+    auto touch = TouchListNavigation::handle(mappedInput, selectedIndex_, static_cast<int>(fonts_.size()),
+                                             Rect{safeArea.x, contentTop, safeArea.width, contentHeight},
+                                             metrics.listRowHeight);
+    if (touch.handled) {
+      requestUpdate();
+      return;
+    }
+
+    int tx = 0;
+    int ty = 0;
+    if (mappedInput.wasScreenTapped(tx, ty) && ty >= buttonY) {
+      const int mid = renderer.getScreenWidth() / 2;
+      mappedInput.suppressTouchContact();
+      if (tx < mid) {
+        finish();
+      } else {
+        handleSelection();
+      }
+      return;
+    }
+  }
+
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     mappedInput.suppressNextBackRelease();
     finish();
     return;
   }
 
+  // Physical-button devices keep the old one-step select/apply behaviour.
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     handleSelection();
     return;
@@ -259,7 +294,10 @@ void FontSelectionActivity::render(RenderLock&&) {
                     true);
 
   const int contentTop = previewTop + previewHeight + metrics.verticalSpacing;
-  const int contentHeight = safeArea.y + safeArea.height - contentTop - metrics.verticalSpacing;
+  const int buttonY = renderer.getScreenHeight() - 72;
+  const int contentHeight = mappedInput.hasTouch()
+                                ? std::max(1, buttonY - metrics.verticalSpacing - contentTop)
+                                : safeArea.y + safeArea.height - contentTop - metrics.verticalSpacing;
 
   // Determine which font index is currently active (to mark as "Selected").
   int currentFontIndex =
@@ -280,8 +318,24 @@ void FontSelectionActivity::render(RenderLock&&) {
       [this, currentFontIndex](int index) -> std::string { return index == currentFontIndex ? tr(STR_SELECTED) : ""; },
       true);
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  if (mappedInput.hasTouch()) {
+    const int screenWidth = renderer.getScreenWidth();
+    const int margin = 14;
+    const int gap = 12;
+    const int buttonH = 54;
+    const int buttonW = (screenWidth - margin * 2 - gap) / 2;
+    const int leftX = margin;
+    const int rightX = leftX + buttonW + gap;
+    renderer.drawRect(leftX, buttonY, buttonW, buttonH);
+    renderer.drawRect(rightX, buttonY, buttonW, buttonH);
+    const int cancelW = renderer.getTextWidth(UI_10_FONT_ID, tr(STR_CANCEL));
+    renderer.drawText(UI_10_FONT_ID, leftX + std::max(0, (buttonW - cancelW) / 2), buttonY + 15, tr(STR_CANCEL));
+    const int applyW = renderer.getTextWidth(UI_10_FONT_ID, tr(STR_CONFIRM));
+    renderer.drawText(UI_10_FONT_ID, rightX + std::max(0, (buttonW - applyW) / 2), buttonY + 15, tr(STR_CONFIRM));
+  } else {
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  }
 
   renderer.displayBuffer();
 }

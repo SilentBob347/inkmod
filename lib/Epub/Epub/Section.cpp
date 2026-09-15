@@ -26,7 +26,7 @@ constexpr uint32_t SECTION_CACHE_MAGIC = 0x535843FF;  // bytes: 0xFF, "CXS"
 // spacing only on normal <p> elements while preserving publisher spacing on
 // headings and structural containers. Old section pages cannot be reused
 // safely because their vertical positions/page counts differ.
-constexpr uint8_t SECTION_FILE_VERSION = 61;
+constexpr uint8_t SECTION_FILE_VERSION = 63;
 constexpr uint32_t HEADER_SIZE = sizeof(SECTION_CACHE_MAGIC) + sizeof(uint8_t) + sizeof(int) + sizeof(float) +
                                  sizeof(bool) + sizeof(bool) + sizeof(uint8_t) + sizeof(uint16_t) + sizeof(uint16_t) +
                                  sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) + sizeof(bool) + sizeof(uint8_t) + sizeof(bool) +

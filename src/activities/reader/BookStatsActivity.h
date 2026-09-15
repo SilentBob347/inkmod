@@ -29,7 +29,9 @@ class BookStatsActivity final : public Activity {
   bool hasEditableBook() const {
     return !bookCachePath.empty() && !SETTINGS.clockDisabled && halClock.isAvailable();
   }
-  bool usesNoRtcSingleScreenLayout() const { return SETTINGS.clockDisabled || !halClock.isAvailable(); }
+  // X3/X4 do not have a hardware RTC, but inkMOD still maintains a software clock.
+  // Lack of a physical RTC must not collapse the statistics screen to the legacy compact layout.
+  bool usesNoRtcSingleScreenLayout() const { return SETTINGS.clockDisabled; }
   void refreshAllDevicesStats();
   void saveStats();
   void cycleEditField();

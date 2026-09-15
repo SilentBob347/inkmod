@@ -1,5 +1,26 @@
 # Changelog
 
+## [v1.1.8] - 2026-09-15
+
+### Added
+- Added first-class **Xteink X4 Pro** support with a separate ESP32-S3/PSRAM build and release image.
+- Added GT911 touch integration, capacitive Home-key handling, warm/cold frontlight controls and the X4 Pro Control Center.
+- Added direct touch navigation across Home, settings, file browser, Wi-Fi, OPDS, reader menus, dictionaries, bookmarks, statistics, clipping selection and touch keyboard flows.
+- Added touch controls for the built-in easter egg, including on-screen confirmation and in-game controls.
+- Added persistent file-browser position: the last directory and selected item are restored on X3, X4 and X4 Pro.
+- Added short cover-based drag navigation for the Lyra Carousel on X4 Pro.
+
+### Changed
+- Release automation now builds and publishes separate `firmware-x3x4-*` and `firmware-x4pro-*` artifacts while keeping the legacy X3/X4 OTA alias.
+- X4 Pro touch input is handled locally by each UI where necessary instead of globally converting every swipe into a virtual hardware button.
+- Lyra Carousel touch navigation now begins on the visible book cover and uses a short horizontal drag, leaving Home menu tap targets unchanged.
+- File Browser now restores the previous directory and selected book after returning from reading, including across reboot.
+
+### Fixed
+- Fixed Recent Books list rows on X4 Pro not selecting reliably by touch because the hitbox height differed from the rendered two-line row height.
+- Fixed touch-only utility/dialog screens that still exposed actions only through physical-button input.
+- Fixed easter-egg entry and controls on touch-only X4 Pro use.
+
 ## [v1.1.7] - 2026-09-03
 
 ### Added

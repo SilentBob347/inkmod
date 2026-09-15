@@ -201,8 +201,9 @@ class BaseTheme {
   virtual void fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t percentage,
                                bool foregroundBlack = true) const;
   virtual void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
-                               const char* btn4, bool allowInvertedText = false) const;
+                               const char* btn4, bool allowInvertedText = false, bool forceOnTouch = false) const;
   virtual void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const;
+  virtual int getMenuRowHeight(const GfxRenderer& renderer) const;
   virtual void drawList(const GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
                         const std::function<std::string(int index)>& rowTitle,
                         const std::function<std::string(int index)>& rowSubtitle = nullptr,

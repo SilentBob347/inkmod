@@ -10,6 +10,9 @@
 #include "esp_private/esp_cpu_internal.h"
 #include "esp_private/esp_system_attr.h"
 #include "esp_private/panic_internal.h"
+#if !__riscv
+#include <xtensa_context.h>
+#endif
 
 #define MAX_PANIC_STACK_DEPTH 32
 
@@ -74,8 +77,13 @@ void IRAM_ATTR __wrap_panic_print_backtrace(const void* frame, int core) {
     panicStack[i].sp = 0;
   }
 
-  // Copied from components/esp_system/port/arch/riscv/panic_arch.c
+  // Exception-frame stack pointer differs between ESP32-C3 (RISC-V) and
+  // ESP32-S3 / X4 Pro (Xtensa). Keep the existing stack capture logic on both.
+#if __riscv
   uint32_t sp = (uint32_t)((RvExcFrame*)frame)->sp;
+#else
+  uint32_t sp = (uint32_t)((XtExcFrame*)frame)->a1;
+#endif
   const int per_line = 8;
   int depth = 0;
   for (int x = 0; x < 1024; x += per_line * sizeof(uint32_t)) {

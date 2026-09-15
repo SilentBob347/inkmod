@@ -98,6 +98,29 @@ bool SDCardManager::begin() {
 
 bool SDCardManager::ready() const { return initialized; }
 
+#if FREEINK_SD_SDMMC
+FsBlockDeviceInterface* SDCardManager::detachFilesystemForRawAccess() {
+  if (!initialized || !_dev) return nullptr;
+  _vol.end();
+  initialized = false;
+  cachedTotalBytes = 0;
+  cachedUsedBytes = 0;
+  cachedUsedBytesValid = false;
+  return _dev;
+}
+
+void SDCardManager::shutdown() {
+  if (!_dev) return;
+  if (initialized) _vol.end();
+  _dev->end();
+  initialized = false;
+  cachedTotalBytes = 0;
+  cachedUsedBytes = 0;
+  cachedUsedBytesValid = false;
+}
+#endif
+
+
 std::vector<String> SDCardManager::listFiles(const char* path, const int maxFiles) {
   std::vector<String> ret;
   if (!initialized) { SD_LOGF("[%lu] [SD] not initialized, returning empty list\n", millis()); return ret; }

@@ -30,6 +30,9 @@ class KOReaderCredentialStore {
   std::string serverUrl;                                            // Custom sync server URL (empty = default)
   DocumentMatchMethod matchMethod = DocumentMatchMethod::FILENAME;  // Default to filename for compatibility
   bool sendMetadata = false;
+  bool syncBookmarks = false;
+  bool syncClippings = false;
+  bool syncStats = false;
   KOReaderSyncBehavior syncBehavior = KOReaderSyncBehavior::SMART;
 
   // Private constructor for singleton
@@ -81,6 +84,13 @@ class KOReaderCredentialStore {
 
   void setSendMetadata(bool enabled) { sendMetadata = enabled; }
   bool getSendMetadata() const { return sendMetadata; }
+
+  void setSyncBookmarks(bool enabled) { syncBookmarks = enabled; }
+  bool getSyncBookmarks() const { return syncBookmarks; }
+  void setSyncClippings(bool enabled) { syncClippings = enabled; }
+  bool getSyncClippings() const { return syncClippings; }
+  void setSyncStats(bool enabled) { syncStats = enabled; }
+  bool getSyncStats() const { return syncStats; }
 
   void setSyncBehavior(KOReaderSyncBehavior behavior) { syncBehavior = behavior; }
   KOReaderSyncBehavior getSyncBehavior() const { return syncBehavior; }

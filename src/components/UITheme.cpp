@@ -1,10 +1,12 @@
 #include "UITheme.h"
 
+#include <BoardConfig.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <Logging.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -104,6 +106,26 @@ void UITheme::setTheme(InkMODSettings::UI_THEME type) {
       currentMetrics = &BaseMetrics::values;
       currentType = InkMODSettings::UI_THEME::CLASSIC;
       break;
+  }
+
+  // X4 Pro uses touch/gestures instead of the four front/side on-screen
+  // button legends used by X3/X4.  Zeroing the hint metrics centrally keeps
+  // every activity from reserving a dead footer/gutter even when a theme
+  // does not draw the legends itself.
+  if (BoardConfig::isX4Pro() && currentMetrics) {
+    effectiveMetrics = *currentMetrics;
+    effectiveMetrics.buttonHintsHeight = 0;
+    effectiveMetrics.sideButtonHintsWidth = 0;
+
+    // Touch-first geometry for X4 Pro. Keep X3/X4 theme metrics untouched,
+    // but make every ordinary list row large enough to hit comfortably with
+    // a finger. Activities already use these effective metrics for hit tests,
+    // paging and layout, so the visual row and the touch target stay aligned.
+    effectiveMetrics.listRowHeight = std::max(effectiveMetrics.listRowHeight, 56);
+    effectiveMetrics.listWithSubtitleRowHeight = std::max(effectiveMetrics.listWithSubtitleRowHeight, 68);
+    effectiveMetrics.menuRowHeight = std::max(effectiveMetrics.menuRowHeight, 56);
+
+    currentMetrics = &effectiveMetrics;
   }
 }
 

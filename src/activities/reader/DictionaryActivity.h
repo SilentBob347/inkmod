@@ -100,6 +100,8 @@ class DictionaryActivity final : public Activity {
   void lookupSelectedWord();
   bool loadDictionaryArticle(uint8_t dictionaryIndex);
   void changeDictionary(int direction);
+  bool selectWordAtPoint(int x, int y);
+  bool handleTouchInput();
 
   int articleFontId() const;
   void getPopupLayout(int& x, int& y, int& width, int& height, int& contentWidth, int& maxLines) const;

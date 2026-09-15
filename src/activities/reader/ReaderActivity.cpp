@@ -167,6 +167,16 @@ void ReaderActivity::onGoToTxtReader(std::unique_ptr<Txt> txt) {
 void ReaderActivity::onEnter() {
   Activity::onEnter();
 
+  // X4 Pro: opening an EPUB can spend several seconds synchronously building
+  // metadata/section caches.  The tap that selected the book may still be a
+  // live contact at this point; if the finger is released while loading, that
+  // release would otherwise be delivered to the newly-entered reader and can
+  // be misclassified as a Back/Home/page gesture.  Suppress the current
+  // contact before the long load starts.  On button-only X3/X4 this is a no-op.
+  if (mappedInput.hasTouch()) {
+    mappedInput.suppressTouchContact();
+  }
+
   if (suppressInitialBackRelease) {
     mappedInput.suppressNextBackRelease();
   }

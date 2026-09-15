@@ -200,6 +200,79 @@ void LyraCarouselTheme::setPreRenderIndex(int idx) {
   }
 }
 
+int LyraCarouselTheme::hitTestBook(const GfxRenderer& renderer, Rect coverRect, int bookCount, int centerIdx, int x, int y) {
+  if (bookCount <= 0 || centerIdx < 0 || centerIdx >= bookCount) return -1;
+
+  const int titleLineHeight = renderer.getLineHeight(kTitleFontId);
+  const int reservedTitleBlockHeight = titleLineHeight * 2;
+  const int titleY = coverRect.y + kTitleTopClearance;
+  const int centerTileY = std::max(coverRect.y + kCoverTopPad, titleY + reservedTitleBlockHeight + kTitleBottomGap);
+  const int centerDrawY = centerTileY + kCenterCoverTopInset - kCarouselVerticalLift;
+  const int centerX = (renderer.getScreenWidth() - kDisplayCenterW) / 2;
+  const Rect centerSlot{centerX, centerDrawY, kDisplayCenterW, kDisplayCenterH};
+  const Rect centerRect = shrinkCenterCoverRect(centerSlot);
+  const auto inside = [x, y](const Rect& r) {
+    return x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+  };
+
+  // Center has priority because the side artwork deliberately overlaps it.
+  if (inside(centerRect)) return centerIdx;
+
+  const int sideMaxHeight = std::max(kNearSideInnerH, kNearSideOuterH);
+  const int sideY = centerSlot.y + (kDisplayCenterH - sideMaxHeight) / 2;
+  const int centerSlotX = centerSlot.x;
+  const int nearOverlap = 4;
+  const int farOverlap = 2;
+  constexpr int nearCoverInset = 10;
+  const int baseLeftNearX = centerSlotX - kNearSideW + nearOverlap;
+  const int baseRightNearX = centerSlotX + kDisplayCenterW - nearOverlap;
+  const int leftNearX = baseLeftNearX + nearCoverInset;
+  const int rightNearX = baseRightNearX - nearCoverInset;
+  const int leftFarX = std::max(0, baseLeftNearX - kFarSideW + farOverlap);
+  const int rightFarX = std::min(renderer.getScreenWidth() - kFarSideW, baseRightNearX + kNearSideW - farOverlap);
+
+  const Rect leftNear{leftNearX, sideY, kNearSideW, sideMaxHeight};
+  const Rect rightNear{rightNearX, sideY, kNearSideW, sideMaxHeight};
+  const Rect leftFar{leftFarX, sideY, kFarSideW, std::max(kFarSideInnerH, kFarSideOuterH)};
+  const Rect rightFar{rightFarX, sideY, kFarSideW, std::max(kFarSideInnerH, kFarSideOuterH)};
+
+  // Prefer the near covers in overlap regions, matching what the user sees.
+  if (bookCount >= 2 && inside(leftNear)) return (centerIdx + bookCount - 1) % bookCount;
+  if (bookCount >= 3 && inside(rightNear)) return (centerIdx + 1) % bookCount;
+  if (bookCount >= 5 && inside(leftFar)) return (centerIdx + bookCount - 2) % bookCount;
+  if (bookCount >= 4 && inside(rightFar)) return (centerIdx + 2) % bookCount;
+  return -1;
+}
+
+int LyraCarouselTheme::hitTestMenuItem(const GfxRenderer& renderer, int buttonCount, int x, int y,
+                                        const std::function<std::string(int index)>& buttonLabel) {
+  if (buttonCount <= 0 || x < 0 || x >= renderer.getScreenWidth()) return -1;
+
+  int maxLabelWidth = 0;
+  for (int i = 0; i < buttonCount; ++i) {
+    if (buttonLabel == nullptr) continue;
+    const std::string label = buttonLabel(i);
+    if (label.empty()) continue;
+    maxLabelWidth = std::max(maxLabelWidth,
+                             renderer.getTextWidth(kMenuLabelFontId, label.c_str(), EpdFontFamily::REGULAR));
+  }
+
+  int adaptiveTileW = std::clamp(kMenuIconSize + 20 + maxLabelWidth + 20, 80, 200);
+  const int screenW = renderer.getScreenWidth();
+  const int safeMargin = kHighlightPad + 2;
+  const int availableW = std::max(buttonCount, screenW - safeMargin * 2);
+  const int tileW = std::min(adaptiveTileW, std::max(1, availableW / buttonCount));
+  const int totalMenuWidth = tileW * buttonCount;
+  const int startX = (screenW - totalMenuWidth) / 2;
+  const MenuLayoutMetrics metrics = computeMenuLayout(renderer, buttonCount);
+
+  // Include both the selected label and icon row in the touch band.
+  const int top = metrics.labelY - 4;
+  const int bottom = metrics.rowY + metrics.tileH + 4;
+  if (y < top || y >= bottom || x < startX || x >= startX + totalMenuWidth) return -1;
+  return std::clamp((x - startX) / std::max(1, tileW), 0, buttonCount - 1);
+}
+
 void LyraCarouselTheme::drawCarouselBorder(GfxRenderer& renderer, Rect coverRect,
                                            const std::vector<RecentBook>& recentBooks, int centerIdx,
                                            bool inCarouselRow) const {

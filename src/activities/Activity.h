@@ -2,6 +2,7 @@
 #include <Logging.h>
 
 #include <cassert>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
@@ -45,6 +46,11 @@ class Activity {
   virtual bool preventAutoSleep() { return false; }
   virtual bool isReaderActivity() const { return false; }
   virtual bool allowPowerAsConfirmInReaderMode() const { return false; }
+  virtual bool handleHomeGesture() { return false; }
+  // Optional configured shortcut action (Home double-tap/hold on X4 Pro).
+  // The raw value is InkMODSettings::SHORT_PWRBTN; non-reader/global actions
+  // are handled by ActivityManager when the activity declines it.
+  virtual bool handleShortcutAction(uint8_t) { return false; }
   virtual bool canSnapshotForSleepOverlay() const { return false; }
   virtual std::string getCurrentBookPath() const { return {}; }
   // Called just before another activity is pushed on top of this one (see

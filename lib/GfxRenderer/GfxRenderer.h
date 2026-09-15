@@ -94,6 +94,10 @@ class GfxRenderer {
   // as before, concentrated in a single pointer instead of four fields.
   mutable FontCacheManager* fontCacheManager_ = nullptr;
 
+  // One-shot refresh promotion used by the X4 Pro control-center refresh tile.
+  mutable bool promotedRefreshPending_ = false;
+  mutable HalDisplay::RefreshMode promotedRefresh_ = HalDisplay::FAST_REFRESH;
+
   // Flash-resident last-resort glyph families used only when an SD-card
   // reading font genuinely does not contain a requested Unicode codepoint.
   // Keeping only IDs here avoids coupling GfxRenderer to application font IDs.
@@ -184,7 +188,12 @@ class GfxRenderer {
   // Screen ops
   int getScreenWidth() const;
   int getScreenHeight() const;
+  void tapToLogical(float nx, float ny, int& outX, int& outY) const;
   void displayBuffer(HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH, bool turnOffScreen = false) const;
+  void promoteNextRefresh(const HalDisplay::RefreshMode mode) const {
+    promotedRefreshPending_ = true;
+    promotedRefresh_ = mode;
+  }
   // EXPERIMENTAL: Windowed update - display only a rectangular region
   // void displayWindow(int x, int y, int width, int height) const;
   void invertScreen() const;

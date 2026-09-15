@@ -4,6 +4,7 @@
 #include <Bitmap.h>
 #include <Epub.h>
 #include <FsHelpers.h>
+#include <BoardConfig.h>
 #include <GfxRenderer.h>
 #include <HalGPIO.h>
 #include <HalPowerManager.h>
@@ -751,7 +752,9 @@ std::vector<std::string> wrapFileNameTwoLines(const GfxRenderer& renderer, const
 
 int MinimalTheme::compactFileBrowserRowHeightFor(const GfxRenderer& renderer) {
   const int textHeight = renderer.getLineHeight(UI_10_FONT_ID) * 2 + kFileBrowserRowVerticalPadding;
-  return std::max(kFileBrowserIconSize + kFileBrowserRowVerticalPadding, textHeight);
+  int rowHeight = std::max(kFileBrowserIconSize + kFileBrowserRowVerticalPadding, textHeight);
+  if (BoardConfig::isX4Pro()) rowHeight = std::max(rowHeight, 64);
+  return rowHeight;
 }
 
 int MinimalTheme::compactFileBrowserRowHeight(const GfxRenderer& renderer) const {
@@ -786,7 +789,9 @@ void MinimalTheme::drawCompactFileBrowserList(const GfxRenderer& renderer, Rect 
 
   const int fileRowHeight = compactFileBrowserRowHeightFor(renderer);
   const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
-  const int folderRowHeight = MinimalMetrics::values.listRowHeight;
+  const int folderRowHeight = BoardConfig::isX4Pro()
+                                  ? std::max(MinimalMetrics::values.listRowHeight, 56)
+                                  : MinimalMetrics::values.listRowHeight;
   const auto isFolderRow = [&](int index) { return rowSubtitle(index) == "folder"; };
   const auto rowHeightFor = [&](int index) { return isFolderRow(index) ? folderRowHeight : fileRowHeight; };
   const auto pageEndFor = [&](int startIndex) {
@@ -908,7 +913,8 @@ void MinimalTheme::drawCompactFileBrowserList(const GfxRenderer& renderer, Rect 
 void MinimalTheme::setHomeButtonHintSelection(const int selectedIndex) { homeButtonHintSelection = selectedIndex; }
 
 void MinimalTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
-                                   const char* btn4, const bool allowInvertedText) const {
+                                   const char* btn4, const bool allowInvertedText, const bool forceOnTouch) const {
+  if (BoardConfig::isX4Pro() && !forceOnTouch) return;
   const GfxRenderer::Orientation origOrientation = renderer.getOrientation();
   const bool invertText = allowInvertedText && origOrientation == GfxRenderer::Orientation::PortraitInverted;
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);

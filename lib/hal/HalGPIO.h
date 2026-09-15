@@ -72,6 +72,25 @@ class HalGPIO {
   bool wasAnyReleased() const;
   unsigned long getHeldTime() const;
   unsigned long getPowerButtonHeldTime() const;
+  // Touch/home-key bridge used by the X4 Pro UI. These are thin wrappers over
+  // FreeInk InputManager and stay inert on X3/X4.
+  bool hasTouch() const;
+  bool hasHomeKey() const;
+  bool wasHomeKeyTapped() const;
+  bool wasHomeKeyLongPressed() const;
+  bool wasTouchTap(float& nx, float& ny) const;
+  bool wasTouchDown(float& nx, float& ny) const;
+  bool wasTouchReleased() const;
+  bool isTouchTapCandidate(float& nx, float& ny, unsigned long& heldMs) const;
+  bool isTouchHeldAt(float& nx, float& ny) const;
+  bool wasTouchLongPress(float& nx, float& ny) const;
+  void suppressTouchContact();
+  unsigned long lastTouchHeldMs() const;
+  bool wasSwipe(float& nxStart, float& nyStart, float& nxEnd, float& nyEnd) const;
+  bool wasTouchActivity() const;
+  void setSharedConfirmPowerShortPressEmitsPower(bool enabled);
+  bool hasEdgeSideButtons() const;
+  bool isXteinkDevice() const;
 
   // Setup wake up GPIO and enter deep sleep
   void startDeepSleep();

@@ -285,6 +285,40 @@ bool TxtReaderActivity::consumeLongPowerButtonHold() {
   return true;
 }
 
+bool TxtReaderActivity::handleShortcutAction(const uint8_t rawAction) {
+  const auto action = static_cast<InkMODSettings::SHORT_PWRBTN>(rawAction);
+  switch (action) {
+    case InkMODSettings::SHORT_PWRBTN::PAGE_TURN:
+      if (currentPage < totalPages - 1) {
+        ++currentPage;
+        requestUpdate();
+      } else {
+        onGoHome();
+      }
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::FILE_TRANSFER:
+      activityManager.goToFileTransfer(txt ? txt->getPath() : "");
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::CALIBRE_WIRELESS:
+      activityManager.goToCalibreWireless(txt ? txt->getPath() : "");
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::JOIN_NETWORK:
+      activityManager.goToJoinNetworkFileTransfer(txt ? txt->getPath() : "");
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::CREATE_HOTSPOT:
+      activityManager.goToHotspotFileTransfer(txt ? txt->getPath() : "");
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::TOGGLE_DARK_MODE:
+      toggleDarkMode();
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::FILE_BROWSER:
+      activityManager.goToFileBrowser(txt ? txt->getPath() : "");
+      return true;
+    default:
+      return false;
+  }
+}
+
 bool TxtReaderActivity::executePowerButtonAction() {
   auto executeAction = [this](const InkMODSettings::SHORT_PWRBTN action) {
     switch (action) {
@@ -596,7 +630,11 @@ void TxtReaderActivity::renderPage() {
 
   ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
 
-  if (SETTINGS.textAntiAliasing && ReaderUtils::readerForegroundBlack()) {
+  // X4 Pro / UC8279: the extra grayscale AA pass leaves residual gray charge
+  // behind the B/W baseline and causes visible ghosting on subsequent TXT
+  // pages. EPUB/FB2 already use the same crisp-BW path on touch/X4 Pro. Keep
+  // the legacy AA pass for X3/X4, where it is known-good.
+  if (!mappedInput.hasTouch() && SETTINGS.textAntiAliasing && ReaderUtils::readerForegroundBlack()) {
     ReaderUtils::renderAntiAliased(renderer, [&renderLines]() { renderLines(); });
   }
   // scope destructor clears font cache via FontCacheManager

@@ -1467,8 +1467,21 @@ void EpubReaderActivity::loop() {
     }
   }
 
+  // X4 Pro: center-third tap follows the exact same path as a physical Confirm release.
+  // Keep this event in a local so it is not lost before the menu-opening block below.
+  const bool touchReaderMenuTap = ReaderUtils::isTouchReaderMenuTap(mappedInput);
+  const bool confirmReleased = mappedInput.wasReleased(MappedInputManager::Button::Confirm);
+  const bool openReaderMenuTriggered = readerMenuRequested || touchReaderMenuTap || confirmReleased;
+  // A released capacitive tap remains visible for the rest of the input frame.
+  // If we push EpubReaderMenuActivity without consuming it, the menu can receive
+  // the same center tap and instantly activate the item underneath (dictionary/
+  // clipping/etc.) instead of staying open. Physical Confirm is unaffected.
+  if (touchReaderMenuTap) {
+    mappedInput.suppressTouchContact();
+  }
+
   // Long-press Confirm: execute the configured reader action without opening the menu
-  if (readerMenuRequested || mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+  if (openReaderMenuTriggered) {
     readerMenuRequested = false;
     if (longPressMenuHandled) {
       longPressMenuHandled = false;
@@ -1494,8 +1507,7 @@ void EpubReaderActivity::loop() {
   // Hidden reader-only sequence: Menu -> Back -> Menu -> Back -> Menu.
   // The first two Menu presses still open the normal reader menu; Back closes it.
   // On the fifth key, replace the menu with the Easter-egg prompt.
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) &&
-      LegacyRenderDiagnostics::feed(LegacyRenderDiagnostics::Key::Menu)) {
+  if ((confirmReleased || touchReaderMenuTap) && LegacyRenderDiagnostics::feed(LegacyRenderDiagnostics::Key::Menu)) {
     pauseReadingPaceTimer("legacy_render_prompt");
     startActivityForResult(std::make_unique<LegacyRenderPromptActivity>(renderer, mappedInput),
                            [this](const ActivityResult& result) {
@@ -1526,8 +1538,8 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  // Enter reader menu activity.
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+  // Enter reader menu activity. Center touch uses the same path as Confirm.
+  if (openReaderMenuTriggered) {
     int currentPage = 0;
     int totalPages = 0;
     float bookProgress = 0.0f;
@@ -1597,6 +1609,8 @@ void EpubReaderActivity::loop() {
                                onReaderMenuConfirm(static_cast<EpubReaderMenuActivity::MenuAction>(menu.action));
                              }
                            });
+    // Do not continue processing reader input in the same frame that opened the menu.
+    return;
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Back) && longPressBackHandled) {
@@ -2951,6 +2965,76 @@ void EpubReaderActivity::executeFootnoteQuickAction() {
                              }
                              requestUpdate();
                            });
+  }
+}
+
+
+bool EpubReaderActivity::handleShortcutAction(const uint8_t rawAction) {
+  const auto action = static_cast<InkMODSettings::SHORT_PWRBTN>(rawAction);
+  switch (action) {
+    case InkMODSettings::SHORT_PWRBTN::PAGE_TURN:
+      if (!section) {
+        requestUpdate();
+        return true;
+      }
+      pageTurn(true, "home");
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::TOGGLE_FONT:
+      executeReaderQuickAction(InkMODSettings::LONG_MENU_CHANGE_FONT);
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::TOGGLE_GUIDE_DOTS:
+      executeReaderQuickAction(InkMODSettings::LONG_MENU_TOGGLE_GUIDE_DOTS);
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::TOGGLE_BIONIC_READING:
+      executeReaderQuickAction(InkMODSettings::LONG_MENU_TOGGLE_BIONIC);
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::TOGGLE_BOOKMARK:
+      executeReaderQuickAction(InkMODSettings::LONG_MENU_TOGGLE_BOOKMARK);
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::MARK_FINISHED:
+      executeReaderQuickAction(InkMODSettings::LONG_MENU_MARK_FINISHED);
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::READING_STATS:
+      executeReaderQuickAction(InkMODSettings::LONG_MENU_READING_STATS);
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::SCREENSHOT:
+      executeReaderQuickAction(InkMODSettings::LONG_MENU_SCREENSHOT);
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::CYCLE_PAGE_TURN:
+      executeReaderQuickAction(InkMODSettings::LONG_MENU_CYCLE_PAGE_TURN);
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::FILE_TRANSFER:
+      executeReaderQuickAction(InkMODSettings::LONG_MENU_FILE_TRANSFER);
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::CALIBRE_WIRELESS:
+      executeReaderQuickAction(InkMODSettings::LONG_MENU_CALIBRE_WIRELESS);
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::JOIN_NETWORK:
+      executeReaderQuickAction(InkMODSettings::LONG_MENU_JOIN_NETWORK);
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::CREATE_HOTSPOT:
+      executeReaderQuickAction(InkMODSettings::LONG_MENU_CREATE_HOTSPOT);
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::TOGGLE_TILT_PAGE_TURN:
+      executeReaderQuickAction(InkMODSettings::LONG_MENU_TOGGLE_TILT_PAGE_TURN);
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::TOGGLE_DARK_MODE:
+      executeReaderQuickAction(InkMODSettings::LONG_MENU_TOGGLE_DARK_MODE);
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::FOOTNOTES:
+      executeFootnoteQuickAction();
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::FILE_BROWSER:
+      executeReaderQuickAction(InkMODSettings::LONG_MENU_FILE_BROWSER);
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::DICTIONARY_LOOKUP:
+      executeReaderQuickAction(InkMODSettings::LONG_MENU_DICTIONARY_LOOKUP);
+      return true;
+    case InkMODSettings::SHORT_PWRBTN::CREATE_CLIPPING:
+      executeReaderQuickAction(InkMODSettings::LONG_MENU_CREATE_CLIPPING);
+      return true;
+    default:
+      return false;
   }
 }
 
@@ -4381,8 +4465,16 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
       largestBlockPercent(heapBefore), largestBlockPercent(heapAfter));
 
   const bool foregroundBlack = ReaderUtils::readerForegroundBlack();
-  const bool needsImageGrayscale = pageHasImages;
-  const bool needsTextGrayscale = SETTINGS.textAntiAliasing && foregroundBlack;
+  bool needsImageGrayscale = pageHasImages;
+  bool needsTextGrayscale = SETTINGS.textAntiAliasing && foregroundBlack;
+  // UC8279 on X4 Pro retains a strong gray charge after the delayed grayscale
+  // pass, producing severe ghosting about a second after the clean BW page is
+  // shown. Until the controller-specific grayscale waveform is ported, keep
+  // X4 Pro on the clean BW path; X3/X4 grayscale behaviour is unchanged.
+  if (mappedInput.hasTouch()) {
+    needsImageGrayscale = false;
+    needsTextGrayscale = false;
+  }
   const bool needsAnyGrayscale = needsTextGrayscale || needsImageGrayscale;
 
   const auto finalizeBufferComposition = [&]() {

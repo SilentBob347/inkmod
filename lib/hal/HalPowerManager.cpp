@@ -1,6 +1,7 @@
 #include "HalPowerManager.h"
 
 #include <Logging.h>
+#include <PowerManager.h>
 #include <WiFi.h>
 #include <esp_sleep.h>
 #include <esp_timer.h>
@@ -55,6 +56,16 @@ void HalPowerManager::setPowerSaving(bool enabled) {
     return;
   }
 
+#if !FREEINK_MCU_C3
+  // X4 Pro (ESP32-S3): do not downclock the MCU while the UI is idle.
+  // Some X4 Pro hardware revisions lose touch/button/frontlight responsiveness
+  // after the 10 MHz idle transition. Keeping the normal clock avoids the
+  // apparent "instant sleep" on Home while preserving the proven X3/X4 path.
+  if (enabled) {
+    return;
+  }
+#endif
+
   // This function is called on nearly every main-loop pass. Most calls ask to
   // keep normal speed while we are already at normal speed; avoid touching the
   // WiFi driver or CPU-frequency API in that overwhelmingly common no-op case.
@@ -94,15 +105,16 @@ void HalPowerManager::setPowerSaving(bool enabled) {
 void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
   disableWiFiBeforeDeepSleep();
 
-  while (gpio.isPressed(HalGPIO::BTN_POWER)) {
-    delay(50);
-    gpio.update();
-  }
-
 #ifdef ENABLE_SERIAL_LOG
   logSerial.end();
 #endif
 
+#if FREEINK_MCU_C3
+  // Preserve inkMOD's proven X3/X4 C3 shutdown path unchanged.
+  while (gpio.isPressed(HalGPIO::BTN_POWER)) {
+    delay(50);
+    gpio.update();
+  }
   constexpr gpio_num_t GPIO_SPIWP = GPIO_NUM_13;
   gpio_set_direction(GPIO_SPIWP, GPIO_MODE_OUTPUT);
   gpio_set_level(GPIO_SPIWP, 0);
@@ -112,6 +124,23 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
   pinMode(InputManager::POWER_BUTTON_PIN, INPUT_PULLUP);
   esp_deep_sleep_enable_gpio_wakeup(1ULL << InputManager::POWER_BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
   esp_deep_sleep_start();
+#else
+  // X4 Pro: keep every configured board power latch asserted through deep sleep.
+  // CrossPoint 1.6.0 does this because GPIO isolation otherwise lets the X4 Pro
+  // master rail float/drop after external USB power is removed.
+  for (const int8_t pin : {BoardConfig::ACTIVE.power.latch0, BoardConfig::ACTIVE.power.latch1}) {
+    if (pin < 0) continue;
+    const auto g = static_cast<gpio_num_t>(pin);
+    gpio_hold_dis(g);
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, HIGH);
+    gpio_hold_en(g);
+  }
+
+  // X4 Pro: use the SDK's S3-correct rail shutdown + wake-source implementation.
+  freeink::PowerManager::powerDownRailsForSleep();
+  freeink::PowerManager::deepSleepUntilPowerButton();
+#endif
 }
 
 void HalPowerManager::trackChargingState() const {
@@ -120,8 +149,19 @@ void HalPowerManager::trackChargingState() const {
   _chargeCheckLastPollMs = now;
 
   if (gpio.isUsbConnectedCached()) {
-    lastChargeEpochSeconds = static_cast<uint64_t>(time(nullptr));
+    markChargingNow();
   }
+}
+
+bool HalPowerManager::markChargingNow() const {
+  const time_t now = time(nullptr);
+  // Do not poison the persisted value with the Unix-epoch-ish clock seen before
+  // BM8563/NTP has initialised libc time. 2020-01-01 UTC is a deliberately
+  // conservative lower bound for every real inkMOD installation.
+  constexpr time_t kMinSaneEpoch = 1577836800;
+  if (now < kMinSaneEpoch) return false;
+  lastChargeEpochSeconds = static_cast<uint64_t>(now);
+  return true;
 }
 
 uint64_t HalPowerManager::getLastChargeEpochSeconds() const { return lastChargeEpochSeconds; }

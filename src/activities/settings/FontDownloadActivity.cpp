@@ -104,6 +104,29 @@ int fontListRowHeight(const GfxRenderer& renderer, const ThemeMetrics& metrics) 
   return std::max(metrics.listWithSubtitleRowHeight, requiredHeight);
 }
 
+struct FontTouchActions { Rect left; Rect right; Rect single; };
+
+FontTouchActions fontTouchActions(const GfxRenderer& renderer) {
+  constexpr int margin = 24;
+  constexpr int gap = 12;
+  constexpr int height = 48;
+  const int halfWidth = (renderer.getScreenWidth() - margin * 2 - gap) / 2;
+  const int singleWidth = std::min(300, renderer.getScreenWidth() - margin * 2);
+  const int y = renderer.getScreenHeight() - height - 24;
+  return {Rect{margin, y, halfWidth, height},
+          Rect{margin + halfWidth + gap, y, halfWidth, height},
+          Rect{(renderer.getScreenWidth() - singleWidth) / 2, y, singleWidth, height}};
+}
+
+void drawFontTouchAction(GfxRenderer& renderer, Rect rect, const char* label) {
+  renderer.fillRect(rect.x, rect.y, rect.width, rect.height, false);
+  renderer.drawRect(rect.x, rect.y, rect.width, rect.height, 2, true);
+  const auto text = renderer.truncatedText(UI_10_FONT_ID, label, rect.width - 12);
+  const int textWidth = renderer.getTextWidth(UI_10_FONT_ID, text.c_str());
+  const int textY = rect.y + (rect.height - renderer.getLineHeight(UI_10_FONT_ID)) / 2;
+  renderer.drawText(UI_10_FONT_ID, rect.x + (rect.width - textWidth) / 2, textY, text.c_str());
+}
+
 }  // namespace
 
 FontDownloadActivity::FontDownloadActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -620,7 +643,10 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
             fileProgress_ = downloaded;
             fileTotal_ = total;
             mappedInput.update();
-            if (mappedInput.isPressed(MappedInputManager::Button::Back) ||
+            const auto touchButtons = fontTouchActions(renderer);
+            if ((mappedInput.hasTouch() && mappedInput.wasTapInRect(touchButtons.single.x, touchButtons.single.y,
+                                                                    touchButtons.single.width, touchButtons.single.height)) ||
+                mappedInput.isPressed(MappedInputManager::Button::Back) ||
                 mappedInput.wasPressed(MappedInputManager::Button::Back)) {
               cancelRequested_ = true;
             }
@@ -767,6 +793,39 @@ bool FontDownloadActivity::isSelectedFamilyDeletable() const {
 
 // --- Input handling ---
 
+
+void FontDownloadActivity::activateSelectedItem() {
+  if (families_.empty()) return;
+
+  if (isDownloadAllRow(selectedIndex_)) {
+    currentFileIndex_ = 0;
+    currentFileTotal_ = 0;
+    for (const auto& f : families_) {
+      if (!f.installed) currentFileTotal_ += f.files.size();
+    }
+    downloadAll();
+  } else if (isUpdateAllRow(selectedIndex_)) {
+    currentFileIndex_ = 0;
+    currentFileTotal_ = 0;
+    for (const auto& f : families_) {
+      if (f.hasUpdate) currentFileTotal_ += f.files.size();
+    }
+    updateAll();
+  } else {
+    const int familyIndex = familyIndexFromList(selectedIndex_);
+    auto& family = families_[familyIndex];
+    if (!family.installed || family.hasUpdate) {
+      currentFileIndex_ = 0;
+      currentFileTotal_ = family.files.size();
+      downloadSelectedFamily(familyIndex);
+    } else {
+      promptDeleteSelectedFamily();
+      return;
+    }
+  }
+  requestUpdateAndWait();
+}
+
 void FontDownloadActivity::loop() {
   if (state_ == FAMILY_LIST) {
     if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
@@ -775,6 +834,38 @@ void FontDownloadActivity::loop() {
     }
 
     const int listSize = listItemCount();
+
+    // X4 Pro: tap a visible family/action row directly. Keep the existing
+    // button navigator untouched for X3/X4 and physical-button users.
+    if (mappedInput.hasTouch() && listSize > 0) {
+      const auto& metrics = UITheme::getInstance().getMetrics();
+      const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+      const int contentHeight = renderer.getScreenHeight() - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing;
+      const int rowHeight = fontListRowHeight(renderer, metrics);
+      const int pageItems = std::max(1, contentHeight / rowHeight);
+      const int pageStart = std::max(0, selectedIndex_ / pageItems) * pageItems;
+      int touchRow = -1;
+      const auto rowTouch = mappedInput.rowTouch(touchRow, contentTop, rowHeight,
+                                                 std::min(pageItems, listSize - pageStart),
+                                                 0, renderer.getScreenWidth(), rowHeight);
+      if (rowTouch == MappedInputManager::RowTouch::Tap && touchRow >= 0) {
+        selectedIndex_ = pageStart + touchRow;
+        activateSelectedItem();
+        return;
+      }
+
+      const auto swipe = mappedInput.wasSwipe();
+      if (swipe == MappedInputManager::SwipeDir::Up) {
+        selectedIndex_ = std::min(listSize - 1, selectedIndex_ + pageItems);
+        requestUpdate();
+        return;
+      }
+      if (swipe == MappedInputManager::SwipeDir::Down) {
+        selectedIndex_ = std::max(0, selectedIndex_ - pageItems);
+        requestUpdate();
+        return;
+      }
+    }
 
     buttonNavigator_.onNextRelease([this, listSize] {
       selectedIndex_ = ButtonNavigator::nextIndex(selectedIndex_, listSize);
@@ -797,46 +888,29 @@ void FontDownloadActivity::loop() {
     });
 
     if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-      if (!families_.empty()) {
-        if (isDownloadAllRow(selectedIndex_)) {
-          currentFileIndex_ = 0;
-          currentFileTotal_ = 0;
-          for (const auto& f : families_) {
-            if (!f.installed) currentFileTotal_ += f.files.size();
-          }
-
-          downloadAll();
-        } else if (isUpdateAllRow(selectedIndex_)) {
-          currentFileIndex_ = 0;
-          currentFileTotal_ = 0;
-          for (const auto& f : families_) {
-            if (f.hasUpdate) currentFileTotal_ += f.files.size();
-          }
-          updateAll();
-        } else {
-          const int familyIndex = familyIndexFromList(selectedIndex_);
-          auto& family = families_[familyIndex];
-          if (!family.installed || family.hasUpdate) {
-            currentFileIndex_ = 0;
-            currentFileTotal_ = family.files.size();
-            downloadSelectedFamily(familyIndex);
-          } else {
-            promptDeleteSelectedFamily();
-            return;
-          }
-        }
-        requestUpdateAndWait();
-        return;
-      }
+      activateSelectedItem();
+      return;
     }
   } else if (state_ == COMPLETE) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
+    const auto touchButtons = fontTouchActions(renderer);
+    const bool touchContinue = mappedInput.hasTouch() &&
+                               mappedInput.wasTapInRect(touchButtons.single.x, touchButtons.single.y,
+                                                        touchButtons.single.width, touchButtons.single.height);
+    if (touchContinue || mappedInput.wasPressed(MappedInputManager::Button::Back) ||
         mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
       returnToFamilyList();
       requestUpdate();
     }
   } else if (state_ == ERROR) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    const auto touchButtons = fontTouchActions(renderer);
+    const bool touchBack = mappedInput.hasTouch() &&
+                           mappedInput.wasTapInRect(touchButtons.left.x, touchButtons.left.y,
+                                                    touchButtons.left.width, touchButtons.left.height);
+    const bool touchRetry = mappedInput.hasTouch() &&
+                            mappedInput.wasTapInRect(touchButtons.right.x, touchButtons.right.y,
+                                                     touchButtons.right.width, touchButtons.right.height);
+
+    if (touchBack || mappedInput.wasPressed(MappedInputManager::Button::Back)) {
       if (manifestReloadNeeded_) {
         returnToFamilyList();
         requestUpdate();
@@ -855,7 +929,7 @@ void FontDownloadActivity::loop() {
         state_ = FAMILY_LIST;
       }
       requestUpdate();
-    } else if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+    } else if (touchRetry || mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
       if (hasRetryFamily_) {
         currentFileIndex_ = 0;
         currentFileTotal_ = retryFamily_.files.size();
@@ -1063,12 +1137,20 @@ void FontDownloadActivity::render(RenderLock&&) {
         Rect{metrics.contentSidePadding, barY, pageWidth - metrics.contentSidePadding * 2, metrics.progressBarHeight},
         static_cast<int>(progress * 100), 100);
 
-    const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), "", "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    if (mappedInput.hasTouch()) {
+      drawFontTouchAction(renderer, fontTouchActions(renderer).single, tr(STR_CANCEL));
+    } else {
+      const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), "", "", "");
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    }
   } else if (state_ == COMPLETE) {
     renderer.drawCenteredText(UI_10_FONT_ID, centerY, tr(STR_FONT_INSTALLED), true, EpdFontFamily::BOLD);
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    if (mappedInput.hasTouch()) {
+      drawFontTouchAction(renderer, fontTouchActions(renderer).single, tr(STR_BACK));
+    } else {
+      const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    }
   } else if (state_ == ERROR) {
     renderer.drawCenteredText(UI_10_FONT_ID, centerY - lineHeight, tr(STR_FONT_INSTALL_FAILED), true,
                               EpdFontFamily::BOLD);
@@ -1091,8 +1173,14 @@ void FontDownloadActivity::render(RenderLock&&) {
         messageY += smallLineHeight + 2;
       }
     }
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_RETRY), "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    if (mappedInput.hasTouch()) {
+      const auto buttons = fontTouchActions(renderer);
+      drawFontTouchAction(renderer, buttons.left, tr(STR_BACK));
+      drawFontTouchAction(renderer, buttons.right, tr(STR_RETRY));
+    } else {
+      const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_RETRY), "", "");
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    }
   }
 
   renderer.displayBuffer();

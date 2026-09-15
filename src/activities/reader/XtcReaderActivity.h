@@ -54,6 +54,7 @@ class XtcReaderActivity final : public Activity {
   void render(RenderLock&&) override;
   bool isReaderActivity() const override { return true; }
   bool canSnapshotForSleepOverlay() const override { return true; }
+  bool handleShortcutAction(uint8_t rawAction) override;
   std::string getCurrentBookPath() const override { return xtc ? xtc->getPath() : std::string{}; }
 
   // Renders the last saved page to the frame buffer without flushing to display.

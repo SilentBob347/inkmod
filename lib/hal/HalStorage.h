@@ -10,11 +10,18 @@
 
 class HalFile;
 
+enum class UsbDriveState : uint8_t { Unsupported, WaitingForHost, Connected, Ejected, Disconnected, IoError };
+
 class HalStorage {
  public:
   HalStorage();
   bool begin();
   bool ready() const;
+  void prepareForDeepSleep();
+  bool beginUsbDrive();
+  bool disconnectUsbDriveHost();
+  void endUsbDrive();
+  UsbDriveState usbDriveState() const;
   std::vector<String> listFiles(const char* path = "/", int maxFiles = 200);
   String readFile(const char* path);
   // SDCardManager already uses a bounded 1 KiB stream buffer; make the HAL

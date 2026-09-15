@@ -21,6 +21,37 @@ bool isViewableImageFile(const std::string& filename) {
 
 bool isMacOSSidecarFile(const std::string& filename) { return filename.rfind("._", 0) == 0; }
 
+struct ImageTouchControls { Rect previous; Rect cover; Rect next; };
+
+ImageTouchControls imageTouchControls(const GfxRenderer& renderer) {
+  constexpr int margin = 12;
+  constexpr int gap = 8;
+  constexpr int height = 44;
+  const int totalWidth = renderer.getScreenWidth() - margin * 2;
+  const int sideWidth = 64;
+  const int coverWidth = totalWidth - sideWidth * 2 - gap * 2;
+  const int y = renderer.getScreenHeight() - height - 12;
+  return {Rect{margin, y, sideWidth, height}, Rect{margin + sideWidth + gap, y, coverWidth, height},
+          Rect{margin + sideWidth + gap + coverWidth + gap, y, sideWidth, height}};
+}
+
+void drawImageTouchControl(GfxRenderer& renderer, Rect rect, const char* label, bool enabled = true) {
+  if (!enabled) return;
+  renderer.fillRect(rect.x, rect.y, rect.width, rect.height, false);
+  renderer.drawRect(rect.x, rect.y, rect.width, rect.height, 2, true);
+  const auto text = renderer.truncatedText(UI_10_FONT_ID, label, rect.width - 10);
+  const int textWidth = renderer.getTextWidth(UI_10_FONT_ID, text.c_str());
+  const int textY = rect.y + (rect.height - renderer.getLineHeight(UI_10_FONT_ID)) / 2;
+  renderer.drawText(UI_10_FONT_ID, rect.x + (rect.width - textWidth) / 2, textY, text.c_str());
+}
+
+void drawImageTouchControls(GfxRenderer& renderer, bool hasPrevious, bool hasNext) {
+  const auto controls = imageTouchControls(renderer);
+  drawImageTouchControl(renderer, controls.previous, "<", hasPrevious);
+  drawImageTouchControl(renderer, controls.cover, tr(STR_SET_SLEEP_COVER));
+  drawImageTouchControl(renderer, controls.next, ">", hasNext);
+}
+
 void drawImageError(GfxRenderer& renderer, const MappedInputManager& mappedInput, const char* message) {
   renderer.clearScreen();
   renderer.drawCenteredText(UI_10_FONT_ID, renderer.getScreenHeight() / 2, message);
@@ -117,9 +148,13 @@ bool BmpViewerActivity::renderPngImage() {
   bool hasNext = (siblingImages.size() > 1 && currentImageIndex != -1 &&
                   currentImageIndex < static_cast<int>(siblingImages.size()) - 1);
 
-  const auto labels =
-      mappedInput.mapLabels(tr(STR_BACK), tr(STR_SET_SLEEP_COVER), (hasPrevious ? "<" : ""), (hasNext ? ">" : ""));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  if (mappedInput.hasTouch()) {
+    drawImageTouchControls(renderer, hasPrevious, hasNext);
+  } else {
+    const auto labels =
+        mappedInput.mapLabels(tr(STR_BACK), tr(STR_SET_SLEEP_COVER), (hasPrevious ? "<" : ""), (hasNext ? ">" : ""));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  }
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   return true;
 }
@@ -175,9 +210,6 @@ void BmpViewerActivity::onEnter() {
       bool hasNext = (siblingImages.size() > 1 && currentImageIndex != -1 &&
                       currentImageIndex < static_cast<int>(siblingImages.size()) - 1);
 
-      const auto labels =
-          mappedInput.mapLabels(tr(STR_BACK), tr(STR_SET_SLEEP_COVER), (hasPrevious ? "<" : ""), (hasNext ? ">" : ""));
-
       GUI.fillPopupProgress(renderer, popupRect, 50);
 
       renderer.clearScreen();
@@ -185,8 +217,15 @@ void BmpViewerActivity::onEnter() {
       // pageHeight, 0, 0)
       renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0);
 
-      // Draw UI hints on the base layer
-      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+      // Draw UI controls on the base layer. Touch boards get explicit controls;
+      // button boards retain the original button hints.
+      if (mappedInput.hasTouch()) {
+        drawImageTouchControls(renderer, hasPrevious, hasNext);
+      } else {
+        const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SET_SLEEP_COVER),
+                                                  (hasPrevious ? "<" : ""), (hasNext ? ">" : ""));
+        GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+      }
       // Single pass for non-grayscale images
 
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
@@ -233,14 +272,31 @@ void BmpViewerActivity::loop() {
     return;
   }
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    if (isViewableImageFile(filePath)) {
-      doSetSleepCover();
+  bool goPrevious = false;
+  bool goNext = false;
+  bool setCover = false;
+
+  if (mappedInput.hasTouch()) {
+    const auto controls = imageTouchControls(renderer);
+    if (mappedInput.wasTapInRect(controls.previous.x, controls.previous.y, controls.previous.width, controls.previous.height)) {
+      goPrevious = true;
+    } else if (mappedInput.wasTapInRect(controls.cover.x, controls.cover.y, controls.cover.width, controls.cover.height)) {
+      setCover = true;
+    } else if (mappedInput.wasTapInRect(controls.next.x, controls.next.y, controls.next.width, controls.next.height)) {
+      goNext = true;
+    } else {
+      const auto swipe = mappedInput.wasSwipe();
+      goNext = swipe == MappedInputManager::SwipeDir::Left;
+      goPrevious = swipe == MappedInputManager::SwipeDir::Right;
     }
+  }
+
+  if (setCover || mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    if (isViewableImageFile(filePath)) doSetSleepCover();
     return;
   }
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Left) ||
+  if (goPrevious || mappedInput.wasReleased(MappedInputManager::Button::Left) ||
       mappedInput.wasReleased(MappedInputManager::Button::Up)) {
     if (siblingImages.size() > 1 && currentImageIndex > 0) {
       currentImageIndex--;
@@ -252,7 +308,7 @@ void BmpViewerActivity::loop() {
     return;
   }
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Right) ||
+  if (goNext || mappedInput.wasReleased(MappedInputManager::Button::Right) ||
       mappedInput.wasReleased(MappedInputManager::Button::Down)) {
     if (siblingImages.size() > 1 && currentImageIndex != -1 &&
         currentImageIndex < static_cast<int>(siblingImages.size()) - 1) {
@@ -265,3 +321,4 @@ void BmpViewerActivity::loop() {
     return;
   }
 }
+

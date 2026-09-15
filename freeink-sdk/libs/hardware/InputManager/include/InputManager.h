@@ -114,6 +114,13 @@ public:
   // panel's native frame; callers map orientation and check this before tap.
   bool wasSwipe(float &nxStart, float &nyStart, float &nxEnd,
                 float &nyEnd) const;
+  // One-shot long-press while the finger is still down. This is the same
+  // single-contact behaviour used by CrossPoint: stationary contact, once per
+  // touch, at the touch-down position.
+  bool wasTouchLongPress(float &nx, float &ny) const;
+  // Suppress the remainder of the current contact after a long-press action so
+  // lifting the finger cannot also generate a tap/swipe/release action.
+  void suppressTouchContact();
   // True if a touch press or release happened this frame. Coarse "the user
   // touched the screen" signal (the touch analogue of wasAnyPressed/Released)
   // for resetting idle/sleep timers and restoring CPU frequency. False on
@@ -270,6 +277,9 @@ private:
       0; // contact duration, latched at release
   bool touchMovedBeyondTapSlop =
       false; // suppresses tap activation after a drag/scroll
+  bool touchLongPressEvent = false;
+  bool touchLongPressFired = false;
+  bool touchSuppressed = false;
 
   static constexpr int NUM_BUTTONS_1 = 4;
   static const int ADC_RANGES_1[];
@@ -290,6 +300,7 @@ private:
   static constexpr int TOUCH_TAP_SLOP_PX = 28;
   static constexpr int TOUCH_SWIPE_MIN_PX = 60;
   static constexpr unsigned long TOUCH_SWIPE_MAX_MS = 700;
+  static constexpr unsigned long TOUCH_LONG_PRESS_MS = 500;
   static constexpr uint8_t TOUCH_READ_COMMAND = 0x00;
   static constexpr uint8_t TOUCH_FRAME_SIZE = 16;
 

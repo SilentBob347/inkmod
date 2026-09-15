@@ -1,6 +1,7 @@
 #include "HalClock.h"
 
 #include <Logging.h>
+#include <BoardConfig.h>
 #include <WiFi.h>
 #include <esp_sntp.h>
 #include <sys/time.h>
@@ -46,6 +47,24 @@ bool isValidDate(const uint16_t year, const uint8_t month, const uint8_t day) {
   return monthDays > 0 && day >= 1 && day <= monthDays;
 }
 
+// Convert a UTC calendar value to Unix epoch without depending on the process TZ.
+// Howard Hinnant's civil-date mapping, valid for the RTC's 2000..2099 range.
+int64_t daysFromCivil(int year, unsigned month, unsigned day) {
+  year -= month <= 2;
+  const int era = (year >= 0 ? year : year - 399) / 400;
+  const unsigned yoe = static_cast<unsigned>(year - era * 400);
+  const unsigned mp = month > 2 ? month - 3 : month + 9;
+  const unsigned doy = (153 * mp + 2) / 5 + day - 1;
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return static_cast<int64_t>(era) * 146097 + static_cast<int64_t>(doe) - 719468;
+}
+
+time_t epochFromUtc(uint16_t year, uint8_t month, uint8_t day, uint8_t hour, uint8_t minute, uint8_t second) {
+  if (!isValidDate(year, month, day) || hour > 23 || minute > 59 || second > 59) return 0;
+  const int64_t days = daysFromCivil(year, month, day);
+  return static_cast<time_t>(days * 86400LL + hour * 3600LL + minute * 60LL + second);
+}
+
 void adjustDateByDays(uint16_t& year, uint8_t& month, uint8_t& day, const int dayDelta) {
   if (dayDelta > 0) {
     const uint8_t monthDays = daysInMonth(year, month);
@@ -77,18 +96,63 @@ void adjustDateByDays(uint16_t& year, uint8_t& month, uint8_t& day, const int da
 }  // namespace
 
 void HalClock::begin() {
-  if (!gpio.deviceIsX3()) {
-    // X4 has no DS3231 on the board. Fall back to a software clock backed by the ESP32's
-    // internal timekeeping. It has no value until syncFromNTP() succeeds (see getTime()/
-    // getDate() below, which refuse to report a time before kMinValidEpoch), and it is lost
-    // on every real power loss, unlike a battery-backed RTC.
+  // X4 Pro has a real BM8563 RTC (PCF8563-compatible) at 0x51 on the same
+  // SDA39/SCL38 I2C bus as GT911 touch. Let the FreeInk board profile own the
+  // bus/address details instead of hard-coding a second Pro-specific I2C driver.
+  if (BoardConfig::isX4Pro()) {
+    _useSdkRtc = true;
+    _useHardwareRtc = _sdkRtc.begin();
+    if (_useHardwareRtc) {
+      _available = true;
+      LOG_INF("CLK", "BM8563 RTC found (X4 Pro)");
+
+      Rtc::DateTime dt{};
+      if (_sdkRtc.now(dt) && isValidDate(dt.year, dt.month, dt.day)) {
+        _cachedHour = dt.hour;
+        _cachedMinute = dt.minute;
+        _cachedYear = dt.year;
+        _cachedMonth = dt.month;
+        _cachedDay = dt.day;
+        _hasCachedTime = true;
+        _hasCachedDate = true;
+        _lastPollMs = millis();
+
+        // Keep libc/ESP system time aligned with the battery-backed RTC. Several
+        // subsystems (notably "since last charge") use time(nullptr), while the
+        // clock UI reads the hardware RTC directly. Without this bridge X4 Pro
+        // could show the correct clock but calculate multi-day bogus durations.
+        const time_t rtcEpoch = epochFromUtc(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
+        if (rtcEpoch >= kMinValidEpoch) {
+          struct timeval tv{};
+          tv.tv_sec = rtcEpoch;
+          settimeofday(&tv, nullptr);
+          LOG_INF("CLK", "System clock seeded from BM8563 RTC");
+        }
+      }
+      return;
+    }
+
+    // Do not make the whole clock UI disappear if an individual unit has a bad/flat
+    // RTC. Fall back to the existing software/NTP clock just like classic X4.
+    _useSdkRtc = false;
     _useHardwareRtc = false;
     _available = true;
-    LOG_INF("CLK", "No DS3231 on this device (X4) - using software clock");
+    LOG_ERR("CLK", "BM8563 RTC not found on X4 Pro - using software clock fallback");
+    return;
+  }
+
+  if (!gpio.deviceIsX3()) {
+    // Classic X4 has no battery-backed RTC. Fall back to a software clock backed by
+    // the ESP32's internal timekeeping.
+    _useHardwareRtc = false;
+    _useSdkRtc = false;
+    _available = true;
+    LOG_INF("CLK", "No hardware RTC on this device (X4) - using software clock");
     return;
   }
 
   _useHardwareRtc = true;
+  _useSdkRtc = false;
 
   // I2C is already initialised by HalPowerManager::begin() for X3.
   // Probe the DS3231 by reading the seconds register.
@@ -128,6 +192,34 @@ bool HalClock::getTime(uint8_t& hour, uint8_t& minute) const {
   }
 
   const unsigned long now = millis();
+  if (_useSdkRtc) {
+    if (_lastPollMs != 0 && (now - _lastPollMs) < CLOCK_POLL_MS && _hasCachedTime) {
+      hour = _cachedHour;
+      minute = _cachedMinute;
+      return true;
+    }
+
+    Rtc::DateTime dt{};
+    if (!_sdkRtc.now(dt)) {
+      if (!_hasCachedTime) return false;
+      _lastPollMs = now;
+      hour = _cachedHour;
+      minute = _cachedMinute;
+      return true;
+    }
+
+    _cachedHour = dt.hour;
+    _cachedMinute = dt.minute;
+    _cachedYear = dt.year;
+    _cachedMonth = dt.month;
+    _cachedDay = dt.day;
+    _hasCachedTime = true;
+    _hasCachedDate = isValidDate(dt.year, dt.month, dt.day);
+    _lastPollMs = now;
+    hour = _cachedHour;
+    minute = _cachedMinute;
+    return true;
+  }
   if (_lastPollMs != 0 && (now - _lastPollMs) < CLOCK_POLL_MS) {
     hour = _cachedHour;
     minute = _cachedMinute;
@@ -221,6 +313,44 @@ bool HalClock::getDate(uint16_t& year, uint8_t& month, uint8_t& day, uint8_t& ho
   }
 
   const unsigned long now = millis();
+  if (_useSdkRtc) {
+    if (_lastPollMs != 0 && (now - _lastPollMs) < CLOCK_POLL_MS && _hasCachedDate) {
+      year = _cachedYear;
+      month = _cachedMonth;
+      day = _cachedDay;
+      hour = _cachedHour;
+      minute = _cachedMinute;
+      return true;
+    }
+
+    Rtc::DateTime dt{};
+    if (!_sdkRtc.now(dt)) {
+      if (!_hasCachedDate) return false;
+      _lastPollMs = now;
+      year = _cachedYear;
+      month = _cachedMonth;
+      day = _cachedDay;
+      hour = _cachedHour;
+      minute = _cachedMinute;
+      return true;
+    }
+
+    _cachedYear = dt.year;
+    _cachedMonth = dt.month;
+    _cachedDay = dt.day;
+    _cachedHour = dt.hour;
+    _cachedMinute = dt.minute;
+    _hasCachedTime = true;
+    _hasCachedDate = isValidDate(dt.year, dt.month, dt.day);
+    _lastPollMs = now;
+    if (!_hasCachedDate) return false;
+    year = _cachedYear;
+    month = _cachedMonth;
+    day = _cachedDay;
+    hour = _cachedHour;
+    minute = _cachedMinute;
+    return true;
+  }
   if (_lastPollMs != 0 && (now - _lastPollMs) < CLOCK_POLL_MS && _hasCachedDate) {
     year = _cachedYear;
     month = _cachedMonth;
@@ -313,6 +443,32 @@ bool HalClock::writeDateTimeToRTC(uint16_t year, uint8_t month, uint8_t day, uin
   assert(second < 60);
   assert(isValidDate(year, month, day));
   assert(weekday >= 1 && weekday <= 7);
+
+  if (_useSdkRtc) {
+    Rtc::DateTime dt{};
+    dt.year = year;
+    dt.month = month;
+    dt.day = day;
+    dt.hour = hour;
+    dt.minute = minute;
+    dt.second = second;
+    dt.weekday = static_cast<uint8_t>((weekday - 1u) % 7u);  // caller uses 1=Sunday, SDK uses 0=Sunday
+    if (!_sdkRtc.set(dt)) {
+      LOG_ERR("CLK", "Failed to write date/time to BM8563");
+      return false;
+    }
+
+    _lastPollMs = 0;
+    _cachedHour = hour;
+    _cachedMinute = minute;
+    _cachedYear = year;
+    _cachedMonth = month;
+    _cachedDay = day;
+    _hasCachedTime = true;
+    _hasCachedDate = true;
+    return true;
+  }
+
   Wire.beginTransmission(I2C_ADDR_DS3231);
   Wire.write(DS3231_SEC_REG);    // Start at register 0x00
   Wire.write(decToBcd(second));  // 0x00: Seconds
@@ -380,8 +536,9 @@ bool HalClock::syncFromNTP() {
       const uint8_t weekday = static_cast<uint8_t>(timeinfo.tm_wday + 1);
 
       if (!_useHardwareRtc) {
-        // X4: SNTP already set the ESP32's internal clock, which is what getTime()/getDate()
-        // read from directly. There is no DS3231 to write to.
+        // Software-clock fallback: SNTP already set the ESP32's internal clock, which is what
+        // getTime()/getDate() read from directly. X4 Pro only reaches this branch if its
+        // BM8563 failed to initialize.
         _usingFallbackTime = false;
         LOG_INF("CLK", "System clock set to %04d-%02d-%02d %02d:%02d:%02d UTC (software clock)", year, month, day,
                 timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);

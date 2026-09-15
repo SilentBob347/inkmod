@@ -38,6 +38,76 @@ std::string formatAuthorName(const Fb2Author& a) {
 constexpr size_t kMaxAnnotationBytes = 4000;
 constexpr size_t kMaxStylesheetBytes = 8000;
 
+// Some FB2 generators emulate strike-through with the Unicode combining
+// long-stroke overlay U+0336 instead of the FB2 <strikethrough> element.
+// E-ink fonts render that combining mark inconsistently (often above the
+// glyph), so convert it to inkMOD's native strikethrough style and remove
+// the combining mark before it reaches the font renderer.  A base codepoint
+// is treated as struck when U+0336 appears immediately before or after it;
+// this also handles malformed producer output that starts a run with U+0336.
+void emitTextNormalizingCombiningStrike(Fb2ContentSink& sink, const std::string& text, Fb2InlineStyle baseStyle) {
+    constexpr unsigned char kMark0 = 0xCC;
+    constexpr unsigned char kMark1 = 0xB6;  // U+0336 in UTF-8
+    if (text.find("\xCC\xB6") == std::string::npos) {
+        sink.onText(text, baseStyle);
+        return;
+    }
+
+    auto isMarkAt = [&](size_t pos) {
+        return pos + 1 < text.size() &&
+               static_cast<unsigned char>(text[pos]) == kMark0 &&
+               static_cast<unsigned char>(text[pos + 1]) == kMark1;
+    };
+    auto codepointLenAt = [&](size_t pos) -> size_t {
+        const unsigned char c = static_cast<unsigned char>(text[pos]);
+        if ((c & 0x80u) == 0) return 1;
+        if ((c & 0xE0u) == 0xC0u) return std::min<size_t>(2, text.size() - pos);
+        if ((c & 0xF0u) == 0xE0u) return std::min<size_t>(3, text.size() - pos);
+        if ((c & 0xF8u) == 0xF0u) return std::min<size_t>(4, text.size() - pos);
+        return 1;
+    };
+
+    std::string run;
+    run.reserve(text.size());
+    bool runStrike = false;
+    bool haveRun = false;
+    bool markBeforeNext = false;
+    auto flush = [&]() {
+        if (run.empty()) return;
+        sink.onText(run, runStrike ? (baseStyle | Fb2InlineStyle::Strikethrough) : baseStyle);
+        run.clear();
+    };
+
+    for (size_t i = 0; i < text.size();) {
+        if (isMarkAt(i)) {
+            markBeforeNext = true;
+            i += 2;
+            continue;
+        }
+        const size_t cpLen = codepointLenAt(i);
+        const bool markAfter = isMarkAt(i + cpLen);
+        const bool struck = markBeforeNext || markAfter;
+        markBeforeNext = false;
+
+        if (!haveRun) {
+            runStrike = struck;
+            haveRun = true;
+        } else if (runStrike != struck) {
+            flush();
+            runStrike = struck;
+        }
+        run.append(text, i, cpLen);
+        i += cpLen;
+        if (markAfter) {
+            // Consume the mark here so it does not also become a prefix for
+            // the following codepoint.  Producers that explicitly place a
+            // mark before every character are still handled by the next loop.
+            i += 2;
+        }
+    }
+    flush();
+}
+
 bool isSmallCapsStyleName(const std::string& name) {
     std::string lower;
     lower.reserve(name.size());
@@ -381,7 +451,7 @@ bool Fb2Parser::renderAnnotation(IByteReader& reader, Fb2ContentSink& sink,
             continue;
         }
         if (tok == Fb2Token::Text && inAnnotation) {
-            sink.onText(xml.text(), currentStyle());
+            emitTextNormalizingCombiningStrike(sink, xml.text(), currentStyle());
             continue;
         }
         if (tok == Fb2Token::EndTag) {
@@ -483,7 +553,7 @@ bool Fb2Parser::renderBodyPreambleForFirstSection(
         }
 
         if (tok == Fb2Token::Text && inEpigraph) {
-            sink.onText(xml.text(), currentStyle());
+            emitTextNormalizingCombiningStrike(sink, xml.text(), currentStyle());
             continue;
         }
 
@@ -562,7 +632,7 @@ bool Fb2Parser::renderSectionTitle(IByteReader& reader,
             else if (name == "sub") ++subDepth;
             continue;
         }
-        if (tok == Fb2Token::Text) { sink.onText(xml.text(), style()); emitted = true; continue; }
+        if (tok == Fb2Token::Text) { emitTextNormalizingCombiningStrike(sink, xml.text(), style()); emitted = true; continue; }
         if (tok == Fb2Token::EndTag) {
             if (name == "title") { sink.onTitleEnd(level); return emitted; }
             if (name == "strong" || name == "b") --boldDepth;
@@ -670,9 +740,9 @@ bool Fb2Parser::renderSection(IByteReader& reader,
 
         if (tok == Fb2Token::Text) {
             if (inTitleTag) { }
-            else if (inSubtitle || inTextAuthor) sink.onText(xml.text(), currentStyle());
+            else if (inSubtitle || inTextAuthor) emitTextNormalizingCombiningStrike(sink, xml.text(), currentStyle());
             else if (inTableCell) cellBuf += xml.text();
-            else sink.onText(xml.text(), currentStyle());
+            else emitTextNormalizingCombiningStrike(sink, xml.text(), currentStyle());
         }
 
         if (tok == Fb2Token::EndTag) {

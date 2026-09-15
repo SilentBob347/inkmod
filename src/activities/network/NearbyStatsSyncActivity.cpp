@@ -223,10 +223,16 @@ void NearbyStatsSyncActivity::loop() {
     return;
   }
 
-  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm) &&
-      (state_ == State::READY || state_ == State::SYNCED || state_ == State::ERROR)) {
-    startSync();
-    return;
+  if (state_ == State::READY || state_ == State::SYNCED || state_ == State::ERROR) {
+    const int buttonWidth = std::min(300, renderer.getScreenWidth() - 48);
+    const int buttonHeight = 48;
+    const int buttonX = (renderer.getScreenWidth() - buttonWidth) / 2;
+    const int buttonY = renderer.getScreenHeight() - buttonHeight - 28;
+    if ((mappedInput.hasTouch() && mappedInput.wasTapInRect(buttonX, buttonY, buttonWidth, buttonHeight)) ||
+        mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+      startSync();
+      return;
+    }
   }
 
   updateSyncProgress();
@@ -639,6 +645,17 @@ void NearbyStatsSyncActivity::renderReady(const std::string& primary, const std:
   }
   if (state_ == State::READY) {
     renderer.drawCenteredText(SMALL_FONT_ID, y, tr(STR_NEARBY_STATS_READY_HINT), true);
+  }
+
+  if (mappedInput.hasTouch()) {
+    const int buttonWidth = std::min(300, renderer.getScreenWidth() - 48);
+    const int buttonHeight = 48;
+    const int buttonX = (renderer.getScreenWidth() - buttonWidth) / 2;
+    const int buttonY = renderer.getScreenHeight() - buttonHeight - 28;
+    renderer.fillRect(buttonX, buttonY, buttonWidth, buttonHeight, false);
+    renderer.drawRect(buttonX, buttonY, buttonWidth, buttonHeight, 2, true);
+    const int textY = buttonY + (buttonHeight - renderer.getLineHeight(UI_10_FONT_ID)) / 2;
+    renderer.drawCenteredText(UI_10_FONT_ID, textY, tr(STR_NEARBY_STATS_SYNC_BUTTON), true, EpdFontFamily::BOLD);
   }
 }
 

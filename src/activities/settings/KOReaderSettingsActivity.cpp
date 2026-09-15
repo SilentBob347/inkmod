@@ -1,5 +1,7 @@
 #include "KOReaderSettingsActivity.h"
 
+#include <cctype>
+
 #include <GfxRenderer.h>
 #include <I18n.h>
 
@@ -11,11 +13,22 @@
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchListNavigation.h"
 
 namespace {
-constexpr int MENU_ITEMS = 5;
+std::string trimCredentialField(std::string value) {
+  size_t start = 0;
+  while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start]))) start++;
+  size_t end = value.size();
+  while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1]))) end--;
+  return value.substr(start, end - start);
+}
+
+constexpr int MENU_ITEMS = 9;
 const StrId menuNames[MENU_ITEMS] = {StrId::STR_USERNAME, StrId::STR_PASSWORD, StrId::STR_SYNC_SERVER_URL,
-                                     StrId::STR_DOCUMENT_MATCHING, StrId::STR_AUTHENTICATE};
+                                     StrId::STR_DOCUMENT_MATCHING, StrId::STR_SEND_DOCUMENT_METADATA,
+                                     StrId::STR_BOOKMARKS, StrId::STR_CLIPPINGS, StrId::STR_READING_STATS,
+                                     StrId::STR_AUTHENTICATE};
 }  // namespace
 
 void KOReaderSettingsActivity::onEnter() {
@@ -28,12 +41,25 @@ void KOReaderSettingsActivity::onEnter() {
 void KOReaderSettingsActivity::onExit() { Activity::onExit(); }
 
 void KOReaderSettingsActivity::loop() {
+  bool touchActivate = false;
+  if (mappedInput.hasTouch()) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const auto safeArea = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+    const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+    const int contentHeight = safeArea.y + safeArea.height - contentTop - metrics.verticalSpacing * 2;
+    int touchIndex = static_cast<int>(selectedIndex);
+    auto touch = TouchListNavigation::handle(mappedInput, touchIndex, MENU_ITEMS,
+                                             Rect{safeArea.x, contentTop, safeArea.width, contentHeight}, metrics.listRowHeight);
+    selectedIndex = static_cast<decltype(selectedIndex)>(touchIndex);
+    if (touch.handled && !touch.activate) { requestUpdate(); return; }
+    touchActivate = touch.activate;
+  }
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
     finish();
     return;
   }
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+  if (touchActivate || mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     handleSelection();
     return;
   }
@@ -58,7 +84,7 @@ void KOReaderSettingsActivity::handleSelection() {
                            [this](const ActivityResult& result) {
                              if (!result.isCancelled) {
                                const auto& kb = std::get<KeyboardResult>(result.data);
-                               KOREADER_STORE.setCredentials(kb.text, KOREADER_STORE.getPassword());
+                               KOREADER_STORE.setCredentials(trimCredentialField(kb.text), KOREADER_STORE.getPassword());
                                KOREADER_STORE.saveToFile();
                              }
                            });
@@ -66,12 +92,17 @@ void KOReaderSettingsActivity::handleSelection() {
     // Password
     startActivityForResult(
         std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_KOREADER_PASSWORD),
-                                                KOREADER_STORE.getPassword(), 64, InputType::Password),
+                                                std::string(), 64, InputType::Password),
         [this](const ActivityResult& result) {
           if (!result.isCancelled) {
             const auto& kb = std::get<KeyboardResult>(result.data);
-            KOREADER_STORE.setCredentials(KOREADER_STORE.getUsername(), kb.text);
-            KOREADER_STORE.saveToFile();
+            // Password editor intentionally starts blank. Confirming an empty
+            // field leaves the existing password untouched; a non-empty entry
+            // replaces it exactly, avoiding accidental append/prepend corruption.
+            if (!kb.text.empty()) {
+              KOREADER_STORE.setCredentials(KOREADER_STORE.getUsername(), kb.text);
+              KOREADER_STORE.saveToFile();
+            }
           }
         });
   } else if (selectedIndex == 2) {
@@ -98,11 +129,24 @@ void KOReaderSettingsActivity::handleSelection() {
     KOREADER_STORE.saveToFile();
     requestUpdate();
   } else if (selectedIndex == 4) {
+    KOREADER_STORE.setSendMetadata(!KOREADER_STORE.getSendMetadata());
+    KOREADER_STORE.saveToFile();
+    requestUpdate();
+  } else if (selectedIndex == 5) {
+    KOREADER_STORE.setSyncBookmarks(!KOREADER_STORE.getSyncBookmarks());
+    KOREADER_STORE.saveToFile();
+    requestUpdate();
+  } else if (selectedIndex == 6) {
+    KOREADER_STORE.setSyncClippings(!KOREADER_STORE.getSyncClippings());
+    KOREADER_STORE.saveToFile();
+    requestUpdate();
+  } else if (selectedIndex == 7) {
+    KOREADER_STORE.setSyncStats(!KOREADER_STORE.getSyncStats());
+    KOREADER_STORE.saveToFile();
+    requestUpdate();
+  } else if (selectedIndex == 8) {
     // Authenticate
-    if (!KOREADER_STORE.hasCredentials()) {
-      // Can't authenticate without credentials - just show message briefly
-      return;
-    }
+    if (!KOREADER_STORE.hasCredentials()) return;
     startActivityForResult(std::make_unique<KOReaderAuthActivity>(renderer, mappedInput), [](const ActivityResult&) {});
   }
 }
@@ -135,6 +179,14 @@ void KOReaderSettingsActivity::render(RenderLock&&) {
           return KOREADER_STORE.getMatchMethod() == DocumentMatchMethod::FILENAME ? std::string(tr(STR_FILENAME))
                                                                                   : std::string(tr(STR_BINARY));
         } else if (index == 4) {
+          return KOREADER_STORE.getSendMetadata() ? std::string(tr(STR_YES)) : std::string(tr(STR_NO));
+        } else if (index == 5) {
+          return KOREADER_STORE.getSyncBookmarks() ? std::string(tr(STR_YES)) : std::string(tr(STR_NO));
+        } else if (index == 6) {
+          return KOREADER_STORE.getSyncClippings() ? std::string(tr(STR_YES)) : std::string(tr(STR_NO));
+        } else if (index == 7) {
+          return KOREADER_STORE.getSyncStats() ? std::string(tr(STR_YES)) : std::string(tr(STR_NO));
+        } else if (index == 8) {
           return KOREADER_STORE.hasCredentials() ? "" : std::string("[") + tr(STR_SET_CREDENTIALS_FIRST) + "]";
         }
         return std::string(tr(STR_NOT_SET));

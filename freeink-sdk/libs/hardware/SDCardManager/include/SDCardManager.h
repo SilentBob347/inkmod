@@ -63,6 +63,12 @@ class SDCardManager {
 
 #if FREEINK_SD_SDMMC
   freeink::SdmmcBlockDevice* rawBlockDevice() { return _dev; }
+  // Hand the mounted SDMMC card to a raw owner such as USB-MSC. The
+  // filesystem is unmounted, but the native block device stays alive.
+  FsBlockDeviceInterface* detachFilesystemForRawAccess();
+  void shutdown();
+#else
+  void shutdown() {}
 #endif
 
  static SDCardManager& getInstance() { return instance; }

@@ -1,12 +1,15 @@
 #pragma once
 #include <GfxRenderer.h>
 
+#include <array>
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <string>
 #include <utility>
 
 #include "activities/Activity.h"
+#include "components/themes/BaseTheme.h"
 #include "util/ButtonNavigator.h"
 
 struct KeyDef {
@@ -45,6 +48,20 @@ class KeyboardEntryActivity : public Activity {
   bool passwordVisible = false;
 
   ButtonNavigator buttonNavigator;
+
+  // Touch hit boxes are published by render() and consumed by loop().
+  // Keep two generations so the main task never reads a table while the
+  // render task is rebuilding it. This mirrors CrossPoint's published
+  // interaction-table model without replacing inkMOD's existing keyboard.
+  struct TouchKey {
+    Rect rect{};
+    int8_t row = -1;
+    int8_t col = -1;
+  };
+  static constexpr uint8_t TOUCH_KEY_CAPACITY = 46;
+  std::array<TouchKey, TOUCH_KEY_CAPACITY> touchKeys[2]{};
+  uint8_t touchKeyCounts[2] = {0, 0};
+  std::atomic<uint8_t> activeTouchTable{0};
 
   int selectedRow = 0;
   int selectedCol = 0;
@@ -232,4 +249,6 @@ class KeyboardEntryActivity : public Activity {
   bool insertChar(char c);
   void insertString(const std::string& str);
   void mapColContentBottom(int& col, bool goingUp) const;
+  bool activateTouchKey(int row, int col, bool longPress);
+  bool findTouchKey(int x, int y, int& row, int& col) const;
 };

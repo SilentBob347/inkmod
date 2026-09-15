@@ -23,7 +23,11 @@ void ConfirmationActivity::onEnter() {
   lineHeight = renderer.getLineHeight(fontId);
   const int maxWidth = safeArea.width - (margin * 2);
   const int contentTop = safeArea.y + margin;
-  const int contentBottom = safeArea.y + safeArea.height - margin;
+  // Touch devices need real action buttons in confirmation dialogs. They are
+  // not passive hardware-key hints, so reserve room for them even though the
+  // global X4 Pro theme hides normal on-screen button hints.
+  const int touchActionReserve = mappedInput.hasTouch() ? 66 : 0;
+  const int contentBottom = safeArea.y + safeArea.height - margin - touchActionReserve;
   const int contentHeight = contentBottom - contentTop;
   const int maxTotalLines = std::max(1, contentHeight / lineHeight);
 
@@ -67,14 +71,76 @@ void ConfirmationActivity::render(RenderLock&& lock) {
     currentY += lineHeight;
   }
 
-  // Draw UI Elements
-  const auto labels = mappedInput.mapLabels(I18N.get(StrId::STR_CANCEL), I18N.get(StrId::STR_CONFIRM), "", "");
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  // Confirmation buttons are real actions on touch devices, not hardware-key
+  // hints. Keep them visible on X4 Pro while the rest of the UI stays clean.
+  if (mappedInput.hasTouch()) {
+    const int pageWidth = renderer.getScreenWidth();
+    const int pageHeight = renderer.getScreenHeight();
+    constexpr int side = 20;
+    constexpr int gap = 12;
+    constexpr int buttonH = 48;
+    const int buttonW = (pageWidth - side * 2 - gap) / 2;
+    const int buttonY = pageHeight - buttonH - 12;
+    const bool deleteDialog = heading.find(I18N.get(StrId::STR_DELETE)) != std::string::npos;
+    const char* leftLabel = deleteDialog ? I18N.get(StrId::STR_NO) : I18N.get(StrId::STR_CANCEL);
+    const char* rightLabel = deleteDialog ? I18N.get(StrId::STR_DELETE) : I18N.get(StrId::STR_CONFIRM);
+    renderer.drawRect(side, buttonY, buttonW, buttonH);
+    renderer.drawRect(side + buttonW + gap, buttonY, buttonW, buttonH);
+    const int leftTextW = renderer.getTextWidth(UI_10_FONT_ID, leftLabel);
+    const int rightTextW = renderer.getTextWidth(UI_10_FONT_ID, rightLabel);
+    renderer.drawText(UI_10_FONT_ID, side + (buttonW - leftTextW) / 2, buttonY + 10, leftLabel);
+    renderer.drawText(UI_10_FONT_ID, side + buttonW + gap + (buttonW - rightTextW) / 2, buttonY + 10, rightLabel);
+  } else {
+    const auto labels = mappedInput.mapLabels(I18N.get(StrId::STR_CANCEL), I18N.get(StrId::STR_CONFIRM), "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  }
 
   renderer.displayBuffer(HalDisplay::RefreshMode::FAST_REFRESH);
 }
 
 void ConfirmationActivity::loop() {
+  if (mappedInput.hasTouch()) {
+    int tx = 0, ty = 0;
+
+    // React as soon as the contact has been stable for the touch backend's
+    // short tap-candidate delay (~90 ms).  Waiting exclusively for release
+    // made confirmation dialogs feel as if the first tap was ignored,
+    // especially on e-ink where the action itself can take noticeable time.
+    // Keep the completed-tap path as a fallback for very quick contacts.
+    const bool touchAction = mappedInput.wasScreenTouchDown(tx, ty) || mappedInput.wasScreenTapped(tx, ty);
+    if (touchAction) {
+      const int pageWidth = renderer.getScreenWidth();
+      const int pageHeight = renderer.getScreenHeight();
+      constexpr int side = 20;
+      constexpr int gap = 12;
+      constexpr int buttonH = 48;
+      const int buttonW = (pageWidth - side * 2 - gap) / 2;
+      const int buttonY = pageHeight - buttonH - 12;
+      // Keep the drawn buttons compact, but make the finger target taller.
+      // The extra area is split only horizontally, so adjacent actions never
+      // overlap. This makes confirmation reliable without changing the theme.
+      constexpr int touchPadY = 14;
+      if (ty >= buttonY - touchPadY && ty < buttonY + buttonH + touchPadY) {
+        ActivityResult res;
+        if (tx >= 0 && tx < side + buttonW + gap / 2) {
+          res.isCancelled = true;
+          mappedInput.suppressTouchContact();
+          setResult(std::move(res));
+          finish();
+          return;
+        }
+        const int rightX = side + buttonW + gap / 2;
+        if (tx >= rightX && tx < pageWidth) {
+          res.isCancelled = false;
+          mappedInput.suppressTouchContact();
+          setResult(std::move(res));
+          finish();
+          return;
+        }
+      }
+    }
+  }
+
   if (ignoreConfirmRelease) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       ignoreConfirmRelease = false;

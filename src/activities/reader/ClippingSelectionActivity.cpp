@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "MappedInputManager.h"
+#include "BoardConfig.h"
 #include "ReaderUtils.h"
 #include "activities/ActivityResult.h"
 #include "components/UITheme.h"
@@ -253,6 +254,139 @@ void ClippingSelectionActivity::saveSelection() {
   finish();
 }
 
+
+bool ClippingSelectionActivity::wordAtPoint(const int x, const int y, size_t& wordIndex) const {
+  if (!page_ || words_.empty()) return false;
+  const int lineHeight = std::max(1, renderer.getLineHeight(fontId_));
+  constexpr int verticalSlop = 8;
+  constexpr int horizontalSlop = 10;
+
+  size_t bestIndex = 0;
+  int bestDistance = INT_MAX;
+  bool foundLine = false;
+
+  for (size_t i = 0; i < words_.size(); ++i) {
+    const auto& ref = words_[i];
+    if (ref.elementIndex < 0 || ref.elementIndex >= static_cast<int>(page_->elements.size())) continue;
+    const auto& element = page_->elements[ref.elementIndex];
+    if (!element || element->getTag() != TAG_PageLine) continue;
+    const auto& line = static_cast<const PageLine&>(*element);
+    const auto& block = line.getBlock();
+    if (!block || ref.wordIndex >= block->getWords().size() ||
+        ref.wordIndex >= block->getWordXPositions().size() ||
+        ref.wordIndex >= block->getWordStyles().size()) continue;
+
+    const int lineY = marginTop_ + line.yPos;
+    if (y < lineY - verticalSlop || y >= lineY + lineHeight + verticalSlop) continue;
+    foundLine = true;
+
+    const auto& word = block->getWords()[ref.wordIndex];
+    const auto style = block->getWordStyles()[ref.wordIndex];
+    const int wordX = marginLeft_ + line.xPos + block->getWordXPositions()[ref.wordIndex];
+    const int wordWidth = std::max(4, renderer.getTextAdvanceX(fontId_, word.c_str(), style));
+    if (x >= wordX - horizontalSlop && x < wordX + wordWidth + horizontalSlop) {
+      wordIndex = i;
+      return true;
+    }
+
+    const int distance = std::abs(x - (wordX + wordWidth / 2));
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = i;
+    }
+  }
+
+  if (foundLine && bestDistance <= 28) {
+    wordIndex = bestIndex;
+    return true;
+  }
+  return false;
+}
+
+bool ClippingSelectionActivity::handleTouchInput() {
+  if (!mappedInput.hasTouch()) return false;
+
+  const auto swipe = mappedInput.wasSwipe();
+  if (swipe == MappedInputManager::SwipeDir::Left) {
+    jumpPage(1);
+    return true;
+  }
+  if (swipe == MappedInputManager::SwipeDir::Right) {
+    jumpPage(-1);
+    return true;
+  }
+  if (swipe == MappedInputManager::SwipeDir::Up) {
+    moveVertical(1);
+    return true;
+  }
+  if (swipe == MappedInputManager::SwipeDir::Down) {
+    moveVertical(-1);
+    return true;
+  }
+
+  int tx = 0;
+  int ty = 0;
+  if (!mappedInput.wasScreenTapped(tx, ty)) return false;
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int hintsTop = renderer.getScreenHeight() - metrics.buttonHintsHeight;
+
+  // X4 Pro: once a range is selected, expose a real on-screen Save button.
+  // The old UI only had the tiny hardware-button hint at the very bottom,
+  // which is easy to miss and does not look like an actionable touch control.
+  if (BoardConfig::isX4Pro() && selecting_) {
+    constexpr int saveButtonH = 48;
+    constexpr int saveButtonSide = 110;
+    constexpr int saveButtonGap = 8;
+    const int saveButtonY = hintsTop - saveButtonH - saveButtonGap;
+    if (ty >= saveButtonY && ty < saveButtonY + saveButtonH &&
+        tx >= saveButtonSide && tx < renderer.getScreenWidth() - saveButtonSide) {
+      saveSelection();
+      return true;
+    }
+  }
+
+  if (ty >= hintsTop) {
+    const int quarter = std::max(1, renderer.getScreenWidth() / 4);
+    const int button = std::min(3, tx / quarter);
+    if (button == 0) {
+      ActivityResult result;
+      result.isCancelled = true;
+      setResult(std::move(result));
+      finish();
+    } else if (button == 1) {
+      if (words_.empty()) return true;
+      if (!selecting_) {
+        selecting_ = true;
+        anchorPage_ = currentPage_;
+        anchorWord_ = cursor_;
+        requestUpdate();
+      } else {
+        saveSelection();
+      }
+    } else if (button == 2) {
+      moveHorizontal(-1);
+    } else {
+      moveHorizontal(1);
+    }
+    return true;
+  }
+
+  size_t tappedWord = 0;
+  if (wordAtPoint(tx, ty, tappedWord)) {
+    cursor_ = tappedWord;
+    if (!selecting_) {
+      // First tap defines the beginning of the clipping. A second tap can
+      // move the end point anywhere on the page; tap Done to save.
+      selecting_ = true;
+      anchorPage_ = currentPage_;
+      anchorWord_ = cursor_;
+    }
+    requestUpdate();
+  }
+  return true;
+}
+
 void ClippingSelectionActivity::loop() {
   if (!inputArmed_) {
     const bool anyHeld =
@@ -274,6 +408,8 @@ void ClippingSelectionActivity::loop() {
     inputArmed_ = true;
     return;
   }
+  if (handleTouchInput()) return;
+
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     ActivityResult result;
     result.isCancelled = true;
@@ -374,10 +510,29 @@ void ClippingSelectionActivity::render(RenderLock&&) {
     char pageLabel[48];
     snprintf(pageLabel, sizeof(pageLabel), "%d/%u  удерж. ←/→ = страница",
              currentPage_ + 1, static_cast<unsigned>(section_.pageCount));
-    const int labelY = std::max(0, hintsTop - renderer.getLineHeight(SMALL_FONT_ID) - 4);
+
+    const bool touchSaveButton = BoardConfig::isX4Pro() && selecting_;
+    constexpr int saveButtonH = 48;
+    constexpr int saveButtonSide = 110;
+    constexpr int saveButtonGap = 8;
+    const int saveButtonY = hintsTop - saveButtonH - saveButtonGap;
+    const int labelY = std::max(0, (touchSaveButton ? saveButtonY : hintsTop) -
+                                      renderer.getLineHeight(SMALL_FONT_ID) - 4);
     renderer.fillRect(0, labelY - 2, renderer.getScreenWidth(), renderer.getLineHeight(SMALL_FONT_ID) + 4,
                       ReaderUtils::readerDarkModeEnabled());
     renderer.drawCenteredText(SMALL_FONT_ID, labelY, pageLabel, ReaderUtils::readerForegroundBlack());
+
+    if (touchSaveButton) {
+      const int buttonW = renderer.getScreenWidth() - saveButtonSide * 2;
+      renderer.fillRect(saveButtonSide, saveButtonY, buttonW, saveButtonH,
+                        ReaderUtils::readerDarkModeEnabled());
+      renderer.drawRect(saveButtonSide, saveButtonY, buttonW, saveButtonH,
+                        ReaderUtils::readerForegroundBlack());
+      const int textY = saveButtonY +
+                        std::max(0, (saveButtonH - renderer.getLineHeight(SMALL_FONT_ID)) / 2);
+      renderer.drawCenteredText(SMALL_FONT_ID, textY, tr(STR_CLIPPING_DONE),
+                                ReaderUtils::readerForegroundBlack());
+    }
 
     const auto labels =
         mappedInput.mapLabels(tr(STR_BACK), selecting_ ? tr(STR_CLIPPING_DONE) : tr(STR_CLIPPING_START),

@@ -144,6 +144,12 @@ class ChapterHtmlSlimParser {
   uint8_t currentTableCellColSpan = 1;
   std::unique_ptr<BufferedTable> currentTableBuffer = nullptr;
   std::vector<CssAncestorEntry> ancestorStack_;
+  // Compatibility for broken-but-well-formed XHTML produced by some converters:
+  // <body><span ...><div>...<p>...</p></div>...</span></body>.  HTML forbids
+  // block children inside span, but XML parsers accept it.  Treat a direct body
+  // span as a transparent block wrapper so our block-style stack stays aligned
+  // with the document's real paragraph structure.
+  std::vector<int> promotedBodySpanDepths_;
 
   // Anchor-to-page mapping: tracks which page each HTML id attribute lands on
   int completedPageCount = 0;

@@ -6,6 +6,7 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchListNavigation.h"
 
 int EpubReaderChapterSelectionActivity::getTotalItems() const { return epub->getTocItemsCount(); }
 
@@ -30,6 +31,31 @@ void EpubReaderChapterSelectionActivity::onExit() { Activity::onExit(); }
 void EpubReaderChapterSelectionActivity::loop() {
   const int totalItems = getTotalItems();
   constexpr int kChapterJump = 5;
+
+  if (totalItems > 0) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+    const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+    const int contentHeight = screen.height - contentTop - metrics.verticalSpacing;
+    auto touch = TouchListNavigation::handle(mappedInput, selectorIndex, totalItems,
+                                              Rect{screen.x, contentTop, screen.width, contentHeight},
+                                              metrics.listRowHeight);
+    if (touch.handled) {
+      requestUpdate();
+      if (touch.activate) {
+        const auto tocItem = epub->getTocItem(selectorIndex);
+        if (tocItem.spineIndex == -1) {
+          ActivityResult result;
+          result.isCancelled = true;
+          setResult(std::move(result));
+        } else {
+          setResult(ChapterResult{tocItem.spineIndex, tocItem.anchor});
+        }
+        finish();
+      }
+      return;
+    }
+  }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     const auto tocItem = epub->getTocItem(selectorIndex);

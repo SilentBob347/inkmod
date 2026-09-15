@@ -188,6 +188,36 @@ bool ClippingStore::removeAt(const size_t index) {
   return save();
 }
 
+bool ClippingStore::upsertFromSync(const Clipping& clipping) {
+  const auto sameIdentity = [&clipping](const Clipping& existing) {
+    return existing.timestamp == clipping.timestamp && std::strcmp(existing.text, clipping.text) == 0;
+  };
+  auto it = std::find_if(clippings_.begin(), clippings_.end(), sameIdentity);
+  if (it != clippings_.end()) {
+    *it = clipping;
+    return save();
+  }
+
+  const auto sameRange = [&clipping](const Clipping& existing) {
+    return existing.spineIndex == clipping.spineIndex && existing.pageNumber == clipping.pageNumber &&
+           existing.endPageNumber == clipping.endPageNumber && existing.startWordIndex == clipping.startWordIndex &&
+           existing.endWordIndex == clipping.endWordIndex;
+  };
+  it = std::find_if(clippings_.begin(), clippings_.end(), sameRange);
+  if (it != clippings_.end()) {
+    *it = clipping;
+    return save();
+  }
+
+  if (clippings_.size() >= MAX_CLIPPINGS) return false;
+  clippings_.push_back(clipping);
+  if (!save()) {
+    clippings_.pop_back();
+    return false;
+  }
+  return true;
+}
+
 void ClippingStore::clearAll() {
   clippings_.clear();
   save();

@@ -9,6 +9,7 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchListNavigation.h"
 
 OptionSelectionActivity::OptionSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                                  std::string activityName, StrId titleId,
@@ -68,6 +69,30 @@ void OptionSelectionActivity::loop() {
   }
 
   const int listSize = static_cast<int>(options_.size());
+
+  // X4 Pro/touch: select rows directly and page long lists with vertical swipes.
+  {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const int pageHeight = renderer.getScreenHeight();
+    const auto orientation = renderer.getOrientation();
+    const bool isLandscapeCw = readerMode_ && orientation == GfxRenderer::Orientation::LandscapeClockwise;
+    const bool isLandscapeCcw = readerMode_ && orientation == GfxRenderer::Orientation::LandscapeCounterClockwise;
+    const int hintGutterWidth = (isLandscapeCw || isLandscapeCcw) ? metrics.buttonHintsHeight : 0;
+    const int contentX = isLandscapeCw ? hintGutterWidth : 0;
+    const int contentWidth = renderer.getScreenWidth() - hintGutterWidth;
+    const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+    const int longPressHintHeight = enableLongPressSelect_ ? 22 : 0;
+    const int contentHeight =
+        pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing - longPressHintHeight;
+    auto touch = TouchListNavigation::handle(mappedInput, selectedIndex_, listSize,
+                                              Rect{contentX, contentTop, contentWidth, contentHeight},
+                                              metrics.listRowHeight);
+    if (touch.handled) {
+      requestUpdate();
+      if (touch.activate) select(false);
+      return;
+    }
+  }
 
   buttonNavigator_.onNextRelease([this, listSize] {
     selectedIndex_ = ButtonNavigator::nextIndex(selectedIndex_, listSize);

@@ -1,5 +1,6 @@
 #include "DictionaryActivity.h"
 
+#include <BoardConfig.h>
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
@@ -115,6 +116,11 @@ void DictionaryActivity::onEnter() {
   Activity::onEnter();
   inputArmed_ = false;
   quietInputFrames_ = 0;
+  if (BoardConfig::isX4Pro()) {
+    // Quarantine the touch contact that opened Dictionary so it cannot leak
+    // through to the reader underneath. Visuals and dictionary controls stay unchanged.
+    mappedInput.suppressTouchContact();
+  }
 
   const uint32_t tScan = millis();
   dictionaries_.scan();
@@ -502,6 +508,205 @@ int DictionaryActivity::articleFontId() const {
   return fontId_;
 }
 
+
+bool DictionaryActivity::selectWordAtPoint(const int x, const int y) {
+  if (!page_) return false;
+  const int lineHeight = std::max(1, renderer.getLineHeight(fontId_));
+  constexpr int verticalSlop = 8;
+  constexpr int horizontalSlop = 10;
+
+  int bestElement = -1;
+  size_t bestWord = 0;
+  int bestDistance = INT_MAX;
+
+  for (int elementIndex = 0; elementIndex < static_cast<int>(page_->elements.size()); ++elementIndex) {
+    const auto& element = page_->elements[elementIndex];
+    if (!element || element->getTag() != TAG_PageLine) continue;
+    const auto& line = static_cast<const PageLine&>(*element);
+    const auto& block = line.getBlock();
+    if (!block) continue;
+
+    const int lineY = marginTop_ + line.yPos;
+    if (y < lineY - verticalSlop || y >= lineY + lineHeight + verticalSlop) continue;
+
+    const auto& words = block->getWords();
+    const auto& positions = block->getWordXPositions();
+    const auto& styles = block->getWordStyles();
+    const size_t count = std::min(words.size(), std::min(positions.size(), styles.size()));
+    for (size_t wordIndex = 0; wordIndex < count; ++wordIndex) {
+      if (!isSelectableWord(elementIndex, wordIndex)) continue;
+      const int wordX = marginLeft_ + line.xPos + positions[wordIndex];
+      const int wordWidth = std::max(4, renderer.getTextAdvanceX(fontId_, words[wordIndex].c_str(), styles[wordIndex]));
+      const int left = wordX - horizontalSlop;
+      const int right = wordX + wordWidth + horizontalSlop;
+      if (x >= left && x < right) {
+        selectedElement_ = elementIndex;
+        selectedWord_ = wordIndex;
+        return true;
+      }
+
+      const int center = wordX + wordWidth / 2;
+      const int distance = std::abs(x - center);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestElement = elementIndex;
+        bestWord = wordIndex;
+      }
+    }
+  }
+
+  // Make narrow words and inter-word gaps finger friendly, but never snap a
+  // tap from another line or from far outside the text column.
+  if (bestElement >= 0 && bestDistance <= 28) {
+    selectedElement_ = bestElement;
+    selectedWord_ = bestWord;
+    return true;
+  }
+  return false;
+}
+
+bool DictionaryActivity::handleTouchInput() {
+  if (!mappedInput.hasTouch()) return false;
+
+  const auto consumeTouch = [this]() {
+    if (BoardConfig::isX4Pro()) mappedInput.suppressTouchContact();
+  };
+
+  if (mode_ == Mode::SelectWord) {
+    const auto swipe = mappedInput.wasSwipe();
+    if (swipe != MappedInputManager::SwipeDir::None) consumeTouch();
+    if (swipe == MappedInputManager::SwipeDir::Left) {
+      moveHorizontal(1);
+      return true;
+    }
+    if (swipe == MappedInputManager::SwipeDir::Right) {
+      moveHorizontal(-1);
+      return true;
+    }
+    if (swipe == MappedInputManager::SwipeDir::Up) {
+      moveVertical(1);
+      return true;
+    }
+    if (swipe == MappedInputManager::SwipeDir::Down) {
+      moveVertical(-1);
+      return true;
+    }
+
+    int tx = 0;
+    int ty = 0;
+    if (!mappedInput.wasScreenTapped(tx, ty)) return false;
+    consumeTouch();
+
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const int dictionaryHintsHeight = BoardConfig::isX4Pro() ? 40 : metrics.buttonHintsHeight;
+    const int footerTop = std::max(0, renderer.getScreenHeight() - dictionaryHintsHeight - 4);
+    if (ty >= footerTop) {
+      const int quarter = std::max(1, renderer.getScreenWidth() / 4);
+      const int button = std::min(3, tx / quarter);
+      if (button == 0) {
+        ActivityResult result;
+        result.isCancelled = true;
+        setResult(std::move(result));
+        finish();
+      } else if (button == 1) {
+        lookupSelectedWord();
+      } else if (button == 2) {
+        moveHorizontal(-1);
+      } else {
+        moveHorizontal(1);
+      }
+      return true;
+    }
+
+    // On touch hardware the natural dictionary action is direct: tap the word
+    // you want, rather than moving a cursor with four virtual arrows first.
+    if (selectWordAtPoint(tx, ty)) {
+      lookupSelectedWord();
+      return true;
+    }
+    return true;
+  }
+
+  if (mode_ == Mode::Article) {
+    const auto swipe = mappedInput.wasSwipe();
+    if (swipe != MappedInputManager::SwipeDir::None) consumeTouch();
+    if (swipe == MappedInputManager::SwipeDir::Left) {
+      if (currentArticlePage_ + 1 < articlePageCount_) {
+        ++currentArticlePage_;
+        requestUpdate();
+      }
+      return true;
+    }
+    if (swipe == MappedInputManager::SwipeDir::Right) {
+      if (currentArticlePage_ > 0) {
+        --currentArticlePage_;
+        requestUpdate();
+      }
+      return true;
+    }
+    if (swipe == MappedInputManager::SwipeDir::Up) {
+      changeDictionary(1);
+      return true;
+    }
+    if (swipe == MappedInputManager::SwipeDir::Down) {
+      changeDictionary(-1);
+      return true;
+    }
+
+    int tx = 0;
+    int ty = 0;
+    if (!mappedInput.wasScreenTapped(tx, ty)) return false;
+    consumeTouch();
+
+    int popupX = 0;
+    int popupY = 0;
+    int popupWidth = 0;
+    int popupHeight = 0;
+    int contentWidth = 0;
+    int maxLines = 0;
+    getPopupLayout(popupX, popupY, popupWidth, popupHeight, contentWidth, maxLines);
+    constexpr int padding = 14;
+    constexpr int footerHeight = 62;
+    constexpr int pageBandHeight = 25;
+    const int footerTop = popupY + popupHeight - footerHeight;
+    const int buttonY = footerTop + pageBandHeight;
+    const int buttonWidth = std::max(1, (popupWidth - padding * 2) / 4);
+
+    // The four drawn footer buttons are real touch targets on X4 Pro.
+    if (ty >= buttonY && ty < popupY + popupHeight && tx >= popupX + padding &&
+        tx < popupX + popupWidth - padding) {
+      const int button = std::min(3, (tx - (popupX + padding)) / buttonWidth);
+      if (button == 0) {
+        mode_ = Mode::SelectWord;
+        requestUpdate();
+      } else if (button == 1) {
+        if (dictionaries_.count() > 1) changeDictionary(1);
+      } else if (button == 2) {
+        if (currentArticlePage_ > 0) {
+          --currentArticlePage_;
+          requestUpdate();
+        }
+      } else {
+        if (currentArticlePage_ + 1 < articlePageCount_) {
+          ++currentArticlePage_;
+          requestUpdate();
+        }
+      }
+      return true;
+    }
+
+    // A tap outside the popup closes only the article and returns to word
+    // selection; it does not throw the user out of the dictionary Activity.
+    if (tx < popupX || tx >= popupX + popupWidth || ty < popupY || ty >= popupY + popupHeight) {
+      mode_ = Mode::SelectWord;
+      requestUpdate();
+    }
+    return true;
+  }
+
+  return false;
+}
+
 void DictionaryActivity::loop() {
   // Quick-action entry quarantine.
   //
@@ -535,6 +740,8 @@ void DictionaryActivity::loop() {
     inputArmed_ = true;
     return;
   }
+
+  if (handleTouchInput()) return;
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     if (mode_ == Mode::Article) {
@@ -784,12 +991,13 @@ void DictionaryActivity::drawSelectionPage(const bool showHints) {
   if (showHints) {
     const auto& metrics = UITheme::getInstance().getMetrics();
     const bool foreground = ReaderUtils::readerForegroundBlack();
-    const int footerTop = std::max(0, renderer.getScreenHeight() - metrics.buttonHintsHeight - 4);
+    const int dictionaryHintsHeight = BoardConfig::isX4Pro() ? 40 : metrics.buttonHintsHeight;
+    const int footerTop = std::max(0, renderer.getScreenHeight() - dictionaryHintsHeight - 4);
     renderer.fillRect(0, footerTop, renderer.getScreenWidth(), renderer.getScreenHeight() - footerTop,
                       !foreground);
     renderer.drawLine(0, footerTop, renderer.getScreenWidth(), footerTop, foreground);
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true);
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true, true);
   }
 }
 
@@ -873,7 +1081,7 @@ void DictionaryActivity::drawEmptyState(const StrId title, const StrId body) {
     y += renderer.getLineHeight(UI_10_FONT_ID);
   }
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true);
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true, true);
 }
 
 void DictionaryActivity::drawCurrentMode() {

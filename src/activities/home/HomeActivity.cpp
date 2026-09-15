@@ -1307,6 +1307,61 @@ void HomeActivity::loop() {
         minimalMenuIndex = ButtonNavigator::nextIndex(minimalMenuIndex, menuCount);
         requestUpdate();
       });
+
+      // Minimalism has its own Home/menu loop, so the generic list touch path
+      // used by the other themes never reaches it. Mirror the exact geometry
+      // used by MinimalTheme::drawButtonMenu() and make every visible row a
+      // real touch target on X4 Pro.
+      if (mappedInput.hasTouch()) {
+        constexpr int kMinimalTouchMenuWidth = 400;
+        constexpr int kMinimalTouchMenuTop = 200;
+        constexpr int kMinimalTouchMenuRowHeight = 68;
+        const int panelWidth = std::min(kMinimalTouchMenuWidth, renderer.getScreenWidth() - 80);
+        const int panelX = (renderer.getScreenWidth() - panelWidth) / 2;
+        int touchedRow = -1;
+        const auto menuTouch = mappedInput.rowTouch(touchedRow, kMinimalTouchMenuTop + 2,
+                                                    kMinimalTouchMenuRowHeight, menuCount,
+                                                    panelX, panelX + panelWidth,
+                                                    kMinimalTouchMenuRowHeight);
+        if (menuTouch != MappedInputManager::RowTouch::None && touchedRow >= 0 && touchedRow < menuCount) {
+          minimalMenuIndex = touchedRow;
+          requestUpdate();
+          if (menuTouch == MappedInputManager::RowTouch::Tap) {
+            switch (menuItems[minimalMenuIndex].action) {
+              case HomeMenuAction::BrowseFiles:
+                onFileBrowserOpen();
+                break;
+              case HomeMenuAction::SearchFiles:
+                onSearchFilesOpen();
+                break;
+              case HomeMenuAction::RecentBooks:
+                onRecentsOpen();
+                break;
+              case HomeMenuAction::OpdsBrowser:
+                onOpdsBrowserOpen();
+                break;
+              case HomeMenuAction::ReadingStats:
+                onReadingStatsOpen();
+                break;
+              case HomeMenuAction::Bookmarks:
+                onBookmarksOpen();
+                break;
+              case HomeMenuAction::FileTransfer:
+                onFileTransferOpen();
+                break;
+              case HomeMenuAction::ContinueReading:
+              case HomeMenuAction::Settings:
+                break;
+            }
+          }
+          return;
+        }
+
+        // Do not move one menu item at a time with vertical swipes. On X4 Pro
+        // menu rows are direct touch targets; swipes are reserved for screens
+        // that actually need page/list scrolling.
+      }
+
       if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
         minimalMenuOpen = false;
         minimalHomeNavIndex = -1;
@@ -1409,8 +1464,35 @@ void HomeActivity::loop() {
       }
       return;
     }
+
+    // Touch taps on the four bottom button hints are exposed by
+    // MappedInputManager as the same logical front-button actions. The
+    // Minimalism branch previously only consumed Confirm here, which is why
+    // Menu/Browse/Settings/Read looked tappable but did nothing on X4 Pro.
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      minimalHomeNavIndex = 0;
+      activateMinimalHomeNav(minimalHomeNavIndex);
+      return;
+    }
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      // A direct tap on the second bottom hint means Browse. Keyboard/button
+      // navigation still activates the currently highlighted item.
+      if (mappedInput.hasTouch()) {
+        minimalHomeNavIndex = 1;
+      }
       if (minimalHomeNavIndex >= 0) {
+        activateMinimalHomeNav(minimalHomeNavIndex);
+      }
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
+      minimalHomeNavIndex = 2;
+      activateMinimalHomeNav(minimalHomeNavIndex);
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
+      if (!recentBooks.empty()) {
+        minimalHomeNavIndex = 3;
         activateMinimalHomeNav(minimalHomeNavIndex);
       }
       return;
@@ -1540,7 +1622,7 @@ void HomeActivity::loop() {
     updateHighlightedBookContext();
   }
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+  auto activateSelection = [this, visibleBookCount]() {
     const auto& metrics = UITheme::getInstance().getMetrics();
     if (!metrics.homeContinueReadingInMenu && selectorIndex < visibleBookCount) {
       onSelectBook(recentBooks[selectorIndex].path);
@@ -1550,40 +1632,229 @@ void HomeActivity::loop() {
     auto menuItems = buildSelectableHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks,
                                                   metrics.homeContinueReadingInMenu && !recentBooks.empty());
     const int menuSelectedIndex = selectorIndex - getHomeMenuSelectionOffset(recentBooks);
-    if (menuSelectedIndex < 0 || menuSelectedIndex >= static_cast<int>(menuItems.size())) {
-      return;
-    }
+    if (menuSelectedIndex < 0 || menuSelectedIndex >= static_cast<int>(menuItems.size())) return;
 
     switch (menuItems[menuSelectedIndex].action) {
-      case HomeMenuAction::BrowseFiles:
-        onFileBrowserOpen();
-        break;
-      case HomeMenuAction::SearchFiles:
-        onSearchFilesOpen();
-        break;
-      case HomeMenuAction::ContinueReading:
-        onContinueReading();
-        break;
-      case HomeMenuAction::RecentBooks:
-        onRecentsOpen();
-        break;
-      case HomeMenuAction::OpdsBrowser:
-        onOpdsBrowserOpen();
-        break;
-      case HomeMenuAction::ReadingStats:
-        onReadingStatsOpen();
-        break;
-      case HomeMenuAction::Bookmarks:
-        onBookmarksOpen();
-        break;
-      case HomeMenuAction::FileTransfer:
-        onFileTransferOpen();
-        break;
-      case HomeMenuAction::Settings:
-        onSettingsOpen();
-        break;
+      case HomeMenuAction::BrowseFiles: onFileBrowserOpen(); break;
+      case HomeMenuAction::SearchFiles: onSearchFilesOpen(); break;
+      case HomeMenuAction::ContinueReading: onContinueReading(); break;
+      case HomeMenuAction::RecentBooks: onRecentsOpen(); break;
+      case HomeMenuAction::OpdsBrowser: onOpdsBrowserOpen(); break;
+      case HomeMenuAction::ReadingStats: onReadingStatsOpen(); break;
+      case HomeMenuAction::Bookmarks: onBookmarksOpen(); break;
+      case HomeMenuAction::FileTransfer: onFileTransferOpen(); break;
+      case HomeMenuAction::Settings: onSettingsOpen(); break;
+    }
+  };
+
+  // X4 Pro Home is direct-touch first. Use the same geometry that each
+  // theme actually renders instead of translating gestures into cursor moves.
+  if (mappedInput.hasTouch()) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const int pageWidth = renderer.getScreenWidth();
+    const int pageHeight = renderer.getScreenHeight();
+    const auto theme = static_cast<InkMODSettings::UI_THEME>(SETTINGS.uiTheme);
+    int tx = 0;
+    int ty = 0;
+
+    // Carousel: use a short activity-owned horizontal drag that starts on an
+    // actual visible book cover. This feels like swiping the book itself and
+    // does not change the global swipe threshold used by the reader/Back/etc.
+    if (theme == InkMODSettings::UI_THEME::LYRA_CAROUSEL && !recentBooks.empty()) {
+      const int bookCount = static_cast<int>(recentBooks.size());
+      const int centerIdx =
+          (selectorIndex < bookCount) ? selectorIndex : std::clamp(lastCarouselBookIndex, 0, bookCount - 1);
+      const Rect coverRect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight};
+
+      int pressX = 0;
+      int pressY = 0;
+      if (mappedInput.wasScreenTouchPressed(pressX, pressY)) {
+        const int touchedBook =
+            LyraCarouselTheme::hitTestBook(renderer, coverRect, bookCount, centerIdx, pressX, pressY);
+        carouselTouchTracking = touchedBook >= 0;
+        if (carouselTouchTracking) {
+          carouselTouchStartX = pressX;
+          carouselTouchStartY = pressY;
+        }
+      }
+
+      if (carouselTouchTracking) {
+        int heldX = 0;
+        int heldY = 0;
+        if (bookCount > 1 && mappedInput.isScreenTouchHeld(heldX, heldY)) {
+          const int dx = heldX - carouselTouchStartX;
+          const int dy = heldY - carouselTouchStartY;
+          const int adx = std::abs(dx);
+          const int ady = std::abs(dy);
+          // About one twelfth of the screen (40 px on 480-wide portrait), with
+          // a small floor for other orientations. Short enough to feel like a
+          // card carousel, but large enough not to steal ordinary book taps.
+          const int dragThreshold = std::max(36, pageWidth / 12);
+          const bool horizontalDrag = adx >= dragThreshold && adx > ady + 8;
+          // A rightward gesture beginning in the left-edge Back band remains
+          // exclusively Back. Leftward drags from the same area are harmless.
+          const bool reservedBack = carouselTouchStartX <= pageWidth / 4 && dx > 0;
+          if (horizontalDrag && !reservedBack) {
+            const int nextIdx = dx < 0 ? (centerIdx + 1) % bookCount
+                                       : (centerIdx + bookCount - 1) % bookCount;
+            mappedInput.suppressTouchContact();
+            carouselTouchTracking = false;
+            selectorIndex = nextIdx;
+            lastCarouselBookIndex = nextIdx;
+            updateHighlightedBookContext();
+            requestUpdate();
+            return;
+          }
+        }
+
+        // A contact that started on a cover must remain eligible for a normal
+        // cover tap. Handle that on release so the 90-ms touch-down helper below
+        // cannot open a book while the user is beginning a drag.
+        int tapX = 0;
+        int tapY = 0;
+        if (mappedInput.wasScreenTapped(tapX, tapY)) {
+          const int touchedBook =
+              LyraCarouselTheme::hitTestBook(renderer, coverRect, bookCount, centerIdx, tapX, tapY);
+          carouselTouchTracking = false;
+          if (touchedBook >= 0) {
+            mappedInput.suppressTouchContact();
+            if (touchedBook == centerIdx) {
+              selectorIndex = touchedBook;
+              lastCarouselBookIndex = touchedBook;
+              updateHighlightedBookContext();
+              activateSelection();
+            } else {
+              selectorIndex = touchedBook;
+              lastCarouselBookIndex = touchedBook;
+              updateHighlightedBookContext();
+              requestUpdate();
+            }
+            return;
+          }
+        } else if (mappedInput.wasScreenTouchReleased()) {
+          carouselTouchTracking = false;
+        }
+      }
+    } else {
+      carouselTouchTracking = false;
+    }
+
+    // Touch-down is deliberately used here rather than a very strict completed
+    // tap. The touch backend only reports this after the contact has remained a
+    // tap candidate for ~90 ms, so a real swipe will normally have left the
+    // candidate state already. This is much more reliable on X4 Pro panels.
+    if (!carouselTouchTracking && mappedInput.wasScreenTouchDown(tx, ty)) {
+      auto menuItems = buildSelectableHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks,
+                                                    metrics.homeContinueReadingInMenu && !recentBooks.empty());
+      const int menuCount = static_cast<int>(menuItems.size());
+
+      if (theme == InkMODSettings::UI_THEME::LYRA_CAROUSEL) {
+        const int bookCount = static_cast<int>(recentBooks.size());
+        const int centerIdx = (selectorIndex < bookCount) ? selectorIndex : lastCarouselBookIndex;
+        const Rect coverRect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight};
+        const int touchedBook = LyraCarouselTheme::hitTestBook(renderer, coverRect, bookCount, centerIdx, tx, ty);
+        if (touchedBook >= 0) {
+          mappedInput.suppressTouchContact();
+          if (touchedBook == centerIdx) {
+            selectorIndex = touchedBook;
+            lastCarouselBookIndex = touchedBook;
+            updateHighlightedBookContext();
+            activateSelection();
+          } else {
+            // Side cover tap brings that book to the centre; tapping the centre
+            // cover opens it. This makes every visible carousel book reachable
+            // without reintroducing swipe-as-menu-navigation.
+            selectorIndex = touchedBook;
+            lastCarouselBookIndex = touchedBook;
+            updateHighlightedBookContext();
+            requestUpdate();
+          }
+          return;
+        }
+
+        if (menuCount > 0) {
+          const int menuIndex = LyraCarouselTheme::hitTestMenuItem(
+              renderer, menuCount, tx, ty,
+              [&menuItems](int index) { return std::string(menuItems[index].label); });
+          if (menuIndex >= 0) {
+            mappedInput.suppressTouchContact();
+            selectorIndex = getHomeMenuSelectionOffset(recentBooks) + menuIndex;
+            activateSelection();
+            return;
+          }
+        }
+      } else {
+        // Book area for Classic, Lyra, Lyra-3-covers, RoundedRaff and Dashboard.
+        const int recentCount = std::min(visibleBookCount, std::max(1, metrics.homeRecentBooksCount));
+        if (recentCount > 0 && !metrics.homeContinueReadingInMenu) {
+          const bool lyra3 = theme == InkMODSettings::UI_THEME::LYRA_3_COVERS;
+          const int coverTileHeight =
+              lyra3 ? Lyra3CoversTheme::computeCoverTileHeight(renderer, pageWidth, recentBooks)
+                    : metrics.homeCoverTileHeight;
+          const int coverLeft = metrics.contentSidePadding;
+          const int coverRight = pageWidth - metrics.contentSidePadding;
+          const int coverTop = metrics.homeTopPadding;
+          const int coverBottom = metrics.homeTopPadding + coverTileHeight;
+          if (tx >= coverLeft && tx < coverRight && ty >= coverTop && ty < coverBottom) {
+            const int coverColumnWidth = std::max(1, (coverRight - coverLeft) / recentCount);
+            const int touchedBook = std::clamp((tx - coverLeft) / coverColumnWidth, 0, recentCount - 1);
+            mappedInput.suppressTouchContact();
+            selectorIndex = touchedBook;
+            updateHighlightedBookContext();
+            activateSelection();
+            return;
+          }
+        }
+
+        if (menuCount > 0) {
+          const bool lyra3 = theme == InkMODSettings::UI_THEME::LYRA_3_COVERS;
+          const int coverTileHeight =
+              lyra3 ? Lyra3CoversTheme::computeCoverTileHeight(renderer, pageWidth, recentBooks)
+                    : metrics.homeCoverTileHeight;
+          const int menuRectTop = metrics.homeTopPadding + coverTileHeight + metrics.homeMenuTopOffset;
+          int firstRowTop = menuRectTop;
+          int rowHeight = std::max(1, GUI.getMenuRowHeight(renderer));
+          int rowStep = std::max(1, rowHeight + metrics.menuSpacing);
+          int pageItems = 7;
+
+          // BaseTheme (Classic/Dashboard) intentionally adds its own 10 px top
+          // inset and uses BaseMetrics for row geometry. Match that exactly.
+          if (theme == InkMODSettings::UI_THEME::CLASSIC || theme == InkMODSettings::UI_THEME::DASHBOARD) {
+            firstRowTop += BaseMetrics::values.verticalSpacing;
+            rowHeight = BaseMetrics::values.menuRowHeight;
+            rowStep = BaseMetrics::values.menuRowHeight + BaseMetrics::values.menuSpacing;
+          } else if (theme == InkMODSettings::UI_THEME::ROUNDEDRAFF) {
+            const int available = std::max(1, pageHeight - metrics.buttonHintsHeight - menuRectTop);
+            pageItems = std::max(1, available / rowStep);
+          }
+
+          const int selectedMenu = std::max(0, selectorIndex - getHomeMenuSelectionOffset(recentBooks));
+          const int pageStart = (selectedMenu / std::max(1, pageItems)) * std::max(1, pageItems);
+          const int menuBottom = pageHeight - metrics.buttonHintsHeight;
+
+          if (tx >= 0 && tx < pageWidth && ty >= firstRowTop && ty < menuBottom) {
+            const int touchedRow = (ty - firstRowTop) / rowStep;
+            const int withinRow = (ty - firstRowTop) % rowStep;
+            // Treat the small visual gap as part of the preceding row. That is
+            // friendlier on e-ink touch panels and cannot collide with another
+            // control because rows are the only controls in this area.
+            if (touchedRow >= 0 && touchedRow < pageItems && withinRow < rowStep) {
+              const int menuIndex = pageStart + touchedRow;
+              if (menuIndex >= 0 && menuIndex < menuCount) {
+                mappedInput.suppressTouchContact();
+                selectorIndex = getHomeMenuSelectionOffset(recentBooks) + menuIndex;
+                activateSelection();
+                return;
+              }
+            }
+          }
+        }
+      }
     }
   }
+
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) activateSelection();
+
 }
 
 void HomeActivity::render(RenderLock&&) {
@@ -1621,8 +1892,11 @@ void HomeActivity::render(RenderLock&&) {
       minimalHomeNavIndex = homeNavCount - 1;
     }
     MinimalTheme::setHomeButtonHintSelection(minimalHomeNavIndex);
+    // Minimal Home uses these four items as real primary actions, not passive
+    // hardware-key hints. Keep them visible on X4 Pro even though ordinary
+    // button hints are hidden on touch devices.
     GUI.drawButtonHints(renderer, tr(STR_MENU), tr(STR_BROWSE), tr(STR_SETTINGS_SHORT),
-                        recentBooks.empty() ? "" : tr(STR_READ));
+                        recentBooks.empty() ? "" : tr(STR_READ), false, BoardConfig::isX4Pro());
 
     renderer.displayBuffer();
 

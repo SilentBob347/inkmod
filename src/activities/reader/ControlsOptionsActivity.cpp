@@ -13,6 +13,7 @@
 #include "activities/util/OptionSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/TouchListNavigation.h"
 
 namespace {
 uint8_t enumDisplayIndexForRawValue(const SettingInfo& setting, uint8_t rawValue) {
@@ -208,6 +209,36 @@ void ControlsOptionsActivity::toggleCurrentSetting() {
 }
 
 void ControlsOptionsActivity::loop() {
+  bool touchActivate = false;
+  if (mappedInput.hasTouch() && settingsCount > 0) {
+    const auto pageWidth = renderer.getScreenWidth();
+    const auto pageHeight = renderer.getScreenHeight();
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const auto orientation = renderer.getOrientation();
+    const bool isLandscapeCw = orientation == GfxRenderer::Orientation::LandscapeClockwise;
+    const bool isLandscapeCcw = orientation == GfxRenderer::Orientation::LandscapeCounterClockwise;
+    const int hintGutterWidth = (isLandscapeCw || isLandscapeCcw) ? metrics.buttonHintsHeight : 0;
+    const int contentX = isLandscapeCw ? hintGutterWidth : 0;
+    const int contentWidth = pageWidth - hintGutterWidth;
+    Rect listRect{contentX, metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing, contentWidth,
+                  pageHeight - (metrics.topPadding + metrics.headerHeight + metrics.buttonHintsHeight +
+                                metrics.verticalSpacing * 2)};
+    const StrId submenuTitleId = activeSubmenuTitleId();
+    if (submenuTitleId != StrId::STR_NONE_OPT) {
+      const int headerOffset = renderer.getLineHeight(UI_10_FONT_ID) + metrics.verticalSpacing;
+      listRect.y += headerOffset;
+      listRect.height = std::max(0, listRect.height - headerOffset);
+    }
+    auto touch = TouchListNavigation::handle(mappedInput, selectedIndex, settingsCount, listRect, metrics.listRowHeight);
+    if (touch.handled && !touch.activate) { requestUpdate(); return; }
+    touchActivate = touch.activate;
+    if (touchActivate && (*currentSettings)[selectedIndex].type == SettingType::SECTION_HEADER) {
+      touchActivate = false;
+      requestUpdate();
+      return;
+    }
+  }
+
   buttonNavigator.onNext([this] {
     moveSelection(true);
     requestUpdate();
@@ -218,7 +249,7 @@ void ControlsOptionsActivity::loop() {
     requestUpdate();
   });
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+  if (touchActivate || mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     toggleCurrentSetting();
     requestUpdate();
     return;

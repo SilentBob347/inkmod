@@ -18,6 +18,9 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#ifndef SIMULATOR
+#include <esp_mac.h>
+#endif
 #include <memory>
 #include <string>
 
@@ -35,7 +38,18 @@ int KOReaderSyncClient::lastHttpCode = 0;
 int KOReaderSyncClient::lastTransportError = 0;
 
 namespace {
-constexpr char DEVICE_ID[] = "inkmod-device";
+std::string syncDeviceId() {
+#ifdef SIMULATOR
+  return "inkmod-simulator";
+#else
+  uint8_t mac[6] = {};
+  if (esp_efuse_mac_get_default(mac) != ESP_OK) return "inkmod-device";
+  char buf[32];
+  snprintf(buf, sizeof(buf), "inkmod-%02x%02x%02x%02x%02x%02x",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  return std::string(buf);
+#endif
+}
 
 constexpr bool isSuccessfulHttpCode(int httpCode) { return httpCode >= 200 && httpCode < 300; }
 
@@ -140,9 +154,27 @@ void applyAuthHeaders(freeink::SecureHttpClient& http) {
   http.addHeader("Accept", "application/vnd.koreader.v1+json");
   http.addHeader("x-auth-user", KOREADER_STORE.getUsername());
   http.addHeader("x-auth-key", KOREADER_STORE.getMd5Password());
-  const std::string credentials = KOREADER_STORE.getUsername() + ":" + KOREADER_STORE.getPassword();
-  const String encoded = base64::encode(credentials.c_str());
-  http.addHeader("Authorization", std::string("Basic ") + encoded.c_str());
+
+  // CrossPoint Sync implements the native KOSync authentication scheme.
+  // Do not also attach HTTP Basic auth there: it is unnecessary and some
+  // reverse-proxy/auth stacks may give Authorization precedence over x-auth-*.
+  // Keep Basic auth only for third-party servers that need it (e.g. CWA).
+  if (!KOREADER_STORE.usesCrossPointSyncServer()) {
+    const std::string credentials = KOREADER_STORE.getUsername() + ":" + KOREADER_STORE.getPassword();
+    const String encoded = base64::encode(credentials.c_str());
+    http.addHeader("Authorization", std::string("Basic ") + encoded.c_str());
+  }
+}
+
+void logAuthHttpFailure(int httpCode, const std::string& body) {
+  char preview[161];
+  size_t out = 0;
+  for (size_t i = 0; i < body.size() && out < sizeof(preview) - 1; ++i) {
+    const char c = body[i];
+    preview[out++] = (c == '\r' || c == '\n' || c == '\t') ? ' ' : c;
+  }
+  preview[out] = '\0';
+  LOG_ERR("KOSync", "Auth failed: HTTP %d, response=\"%s\"", httpCode, preview);
 }
 #endif
 
@@ -201,6 +233,14 @@ KOReaderSyncClient::Error KOReaderSyncClient::authenticate() {
 #else
   freeink::SecureHttpClient http;
   http.setInsecure();
+  // The public CrossPoint endpoint is fronted by a normal HTTPS edge and may
+  // redirect during maintenance/canonicalization.  Auth only needs one request,
+  // so force Connection: close to avoid waiting on a keep-alive body terminator
+  // and follow a small number of safe HTTPS redirects.
+  http.setReuse(false);
+  http.setFollowRedirects(3);
+  http.setTimeout(12000);
+  http.setUserAgent("inkMOD-KOSync/1.1");
   if (!http.begin(url)) {
     LOG_ERR("KOSync", "Bad URL: %s", url.c_str());
     return NETWORK_ERROR;
@@ -212,12 +252,25 @@ KOReaderSyncClient::Error KOReaderSyncClient::authenticate() {
 
   LOG_DBG("KOSync", "Auth response: %d", httpCode);
 
+  if (httpCode <= 0) {
+    http.end();
+    return NETWORK_ERROR;
+  }
+
+  // Capture the response before end() so authentication failures are
+  // diagnosable on-device. Never log credentials or the x-auth-key itself.
+  const std::string body = http.getString();
+  if (!isSuccessfulHttpCode(httpCode)) {
+    logAuthHttpFailure(httpCode, body);
+  } else {
+    LOG_INF("KOSync", "Authentication accepted: HTTP %d", httpCode);
+  }
+
   http.end();
-  if (httpCode <= 0) return NETWORK_ERROR;
   // Current CrossPoint treats every 2xx response as successful authentication.
   // Several compatible servers return 200/204 without the legacy JSON body.
   if (isSuccessfulHttpCode(httpCode)) return OK;
-  if (httpCode == 401) return AUTH_FAILED;
+  if (httpCode == 401 || httpCode == 403) return AUTH_FAILED;
   return SERVER_ERROR;
 #endif
 }
@@ -428,7 +481,7 @@ KOReaderSyncClient::Error KOReaderSyncClient::updateProgress(const KOReaderProgr
   doc["progress"] = progress.progress;
   doc["percentage"] = progress.percentage;
   doc["device"] = progress.device;
-  doc["device_id"] = DEVICE_ID;
+  doc["device_id"] = syncDeviceId();
   if (progress.position.has_value() && KOREADER_STORE.usesCrossPointSyncServer()) {
     // CrossPoint-specific extension: do not send it to third-party KOSync servers.
     const auto& p = *progress.position;

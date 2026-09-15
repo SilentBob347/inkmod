@@ -13,6 +13,7 @@ inline bool isPowerButtonActionAvailableOutsideReader(const InkMODSettings::SHOR
     case InkMODSettings::SHORT_PWRBTN::CALIBRE_WIRELESS:
     case InkMODSettings::SHORT_PWRBTN::JOIN_NETWORK:
     case InkMODSettings::SHORT_PWRBTN::CREATE_HOTSPOT:
+    case InkMODSettings::SHORT_PWRBTN::TOGGLE_FRONTLIGHT:
       return true;
     case InkMODSettings::SHORT_PWRBTN::IGNORE:
     case InkMODSettings::SHORT_PWRBTN::PAGE_TURN:
@@ -36,3 +37,8 @@ inline bool isPowerButtonActionAvailableOutsideReader(const InkMODSettings::SHOR
 }
 
 void enterDeepSleep(bool fromTimeout = false);
+
+// Execute an action that is valid outside a reader. Used by both Power and
+// X4 Pro Home-key shortcuts. Reader-specific actions are offered to the
+// current Activity first.
+bool handleGlobalShortcutAction(InkMODSettings::SHORT_PWRBTN action);

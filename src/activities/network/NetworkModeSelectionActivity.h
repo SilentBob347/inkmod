@@ -5,7 +5,11 @@
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
 
-enum class NetworkMode { JOIN_NETWORK, CONNECT_CALIBRE, CREATE_HOTSPOT, NEARBY_STATS_SYNC };
+enum class NetworkMode { JOIN_NETWORK, CONNECT_CALIBRE, CREATE_HOTSPOT, NEARBY_STATS_SYNC
+#if FREEINK_CAP_USB_MSC
+, USB_DRIVE
+#endif
+};
 
 /**
  * NetworkModeSelectionActivity presents the user with a choice:

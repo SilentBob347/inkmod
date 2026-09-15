@@ -13,3 +13,13 @@ build-*.out.log
 build-*.err.log
 device-monitor*.log
 CHANGES.diff
+
+# Local PlatformIO overrides / editor state
+platformio.local.ini
+.vscode/
+.idea/
+
+# OS / archive clutter
+.DS_Store
+Thumbs.db
+*.zip

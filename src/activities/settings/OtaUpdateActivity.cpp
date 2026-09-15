@@ -13,6 +13,28 @@
 #include "fontIds.h"
 #include "network/OtaUpdater.h"
 
+namespace {
+struct TouchActionRects { Rect left; Rect right; };
+
+TouchActionRects otaTouchRects(const GfxRenderer& renderer) {
+  constexpr int margin = 24;
+  constexpr int gap = 12;
+  constexpr int height = 48;
+  const int width = (renderer.getScreenWidth() - margin * 2 - gap) / 2;
+  const int y = renderer.getScreenHeight() - height - 24;
+  return {Rect{margin, y, width, height}, Rect{margin + width + gap, y, width, height}};
+}
+
+void drawTouchAction(GfxRenderer& renderer, Rect rect, const char* label) {
+  renderer.fillRect(rect.x, rect.y, rect.width, rect.height, false);
+  renderer.drawRect(rect.x, rect.y, rect.width, rect.height, 2, true);
+  const int y = rect.y + (rect.height - renderer.getLineHeight(UI_10_FONT_ID)) / 2;
+  const auto text = renderer.truncatedText(UI_10_FONT_ID, label, rect.width - 12);
+  const int textWidth = renderer.getTextWidth(UI_10_FONT_ID, text.c_str());
+  renderer.drawText(UI_10_FONT_ID, rect.x + (rect.width - textWidth) / 2, y, text.c_str());
+}
+}
+
 void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
   if (!success) {
     LOG_ERR("OTA", "WiFi connection failed, exiting");
@@ -123,8 +145,14 @@ void OtaUpdateActivity::render(RenderLock&&) {
     renderer.drawText(UI_10_FONT_ID, metrics.contentSidePadding, top + height * 2 + metrics.verticalSpacing * 2,
                       (std::string(tr(STR_NEW_VERSION)) + updater.getLatestVersion()).c_str());
 
-    const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_UPDATE), "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    if (mappedInput.hasTouch()) {
+      const auto buttons = otaTouchRects(renderer);
+      drawTouchAction(renderer, buttons.left, tr(STR_CANCEL));
+      drawTouchAction(renderer, buttons.right, tr(STR_UPDATE));
+    } else {
+      const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_UPDATE), "", "");
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    }
   } else if (state == UPDATE_IN_PROGRESS) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATING));
 
@@ -143,12 +171,22 @@ void OtaUpdateActivity::render(RenderLock&&) {
         (std::to_string(updater.getProcessedSize()) + " / " + std::to_string(updater.getTotalSize())).c_str());
   } else if (state == NO_UPDATE) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_NO_UPDATE), true, EpdFontFamily::BOLD);
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    if (mappedInput.hasTouch()) {
+      const auto buttons = otaTouchRects(renderer);
+      drawTouchAction(renderer, buttons.left, tr(STR_BACK));
+    } else {
+      const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    }
   } else if (state == FAILED) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATE_FAILED), true, EpdFontFamily::BOLD);
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    if (mappedInput.hasTouch()) {
+      const auto buttons = otaTouchRects(renderer);
+      drawTouchAction(renderer, buttons.left, tr(STR_BACK));
+    } else {
+      const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    }
   } else if (state == FINISHED) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_UPDATE_COMPLETE), true, EpdFontFamily::BOLD);
     renderer.drawCenteredText(UI_10_FONT_ID, top + height + metrics.verticalSpacing, tr(STR_POWER_ON_HINT));
@@ -159,7 +197,14 @@ void OtaUpdateActivity::render(RenderLock&&) {
 
 void OtaUpdateActivity::loop() {
   if (state == WAITING_CONFIRMATION) {
-    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    const auto buttons = otaTouchRects(renderer);
+    if (mappedInput.hasTouch() && mappedInput.wasTapInRect(buttons.left.x, buttons.left.y, buttons.left.width, buttons.left.height)) {
+      finish();
+      return;
+    }
+    const bool touchUpdate = mappedInput.hasTouch() &&
+                             mappedInput.wasTapInRect(buttons.right.x, buttons.right.y, buttons.right.width, buttons.right.height);
+    if (touchUpdate || mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       LOG_DBG("OTA", "New update available, starting download...");
       {
         RenderLock lock(*this);
@@ -218,14 +263,18 @@ void OtaUpdateActivity::loop() {
   }
 
   if (state == FAILED) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    const auto buttons = otaTouchRects(renderer);
+    if ((mappedInput.hasTouch() && mappedInput.wasTapInRect(buttons.left.x, buttons.left.y, buttons.left.width, buttons.left.height)) ||
+        mappedInput.wasPressed(MappedInputManager::Button::Back)) {
       finish();
     }
     return;
   }
 
   if (state == NO_UPDATE) {
-    if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    const auto buttons = otaTouchRects(renderer);
+    if ((mappedInput.hasTouch() && mappedInput.wasTapInRect(buttons.left.x, buttons.left.y, buttons.left.width, buttons.left.height)) ||
+        mappedInput.wasPressed(MappedInputManager::Button::Back)) {
       finish();
     }
     return;

@@ -54,6 +54,9 @@ class HalDisplay {
 
   void displayGrayBuffer(bool turnOffScreen = false);
 
+  // Global output polarity (CrossPoint X4 Pro control-center night mode).
+  void setInverted(bool inverted);
+
   // Tiled grayscale: stream one band of a plane (lsbPlane selects LSB/MSB RAM)
   // straight to the controller; supportsStripGrayscale() gates the path. See
   // EInkDisplay::writeGrayscalePlaneStrip.

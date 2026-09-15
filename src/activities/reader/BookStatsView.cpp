@@ -1,5 +1,6 @@
 #include "BookStatsView.h"
 
+#include <BoardConfig.h>
 #include <GfxRenderer.h>
 #include <HalClock.h>
 #include <I18n.h>
@@ -93,11 +94,10 @@ int sectionCardHeight(const StatsLayout& layout, const int rowCount) {
 }
 
 bool shouldShowRtcBasedStats() {
-  // X4 can emulate a clock in software, so halClock may remain "available"
-  // even after the user explicitly disables the clock. In that mode return
-  // to the compact no-RTC/X4 statistics layout rather than showing X3-style
-  // date/streak/time-of-day sections.
-  return !SETTINGS.clockDisabled && halClock.isAvailable();
+  // The detailed reading-statistics layout does not depend on the physical RTC.
+  // X4 Pro uses its BM8563 RTC, while X3/X4 may use the software clock.
+  // Hiding the clock in UI must not collapse reading statistics to the compact layout.
+  return true;
 }
 
 int noRtcCardBaseHeight(const StatsLayout& layout) { return layout.globalCardH; }
@@ -119,7 +119,15 @@ int noRtcCombinedContentHeight(const StatsLayout& layout, const bool showAllDevi
 }
 
 int statsBottomInset(const ThemeMetrics& metrics, const bool showButtonHints) {
-  return metrics.verticalSpacing + (showButtonHints ? metrics.buttonHintsHeight + kStatsButtonHintTopGap : 0);
+  if (!showButtonHints) {
+    return metrics.verticalSpacing;
+  }
+
+  // On X4 Pro these footer controls are real touch buttons on the statistics
+  // screens, not decorative hardware hints. Keep the footer area reserved even
+  // though most other activities hide button hints on touch devices.
+  const int buttonHintsHeight = BoardConfig::isX4Pro() ? 40 : metrics.buttonHintsHeight;
+  return metrics.verticalSpacing + buttonHintsHeight + kStatsButtonHintTopGap;
 }
 
 int perBookRtcTopCardHeight(const StatsLayout& layout, const int extraHeight) {
@@ -529,9 +537,19 @@ void renderPerBookStatsPage(GfxRenderer& renderer, const MappedInputManager* map
   }
 
   if (showButtonHints && mappedInput) {
-    const auto labels = mappedInput->mapLabels(tr(STR_BACK), "", showEditButton ? tr(STR_EDIT) : "",
-                                               showMoreButton ? tr(STR_MORE) : "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true);
+    if (BoardConfig::isX4Pro()) {
+      // X4 Pro has no reliable front-button label mapping for these actions.
+      // Draw the statistics actions in fixed footer slots instead of passing
+      // them through mapLabels(), which can legitimately return empty labels
+      // on touch-first configurations. The Activity handles these slots as
+      // direct touch targets.
+      GUI.drawButtonHints(renderer, tr(STR_BACK), "", showEditButton ? tr(STR_EDIT) : "",
+                          showMoreButton ? tr(STR_STATS_THIS_DEVICE_SCREEN) : "", true, true);
+    } else {
+      const auto labels = mappedInput->mapLabels(tr(STR_BACK), "", showEditButton ? tr(STR_EDIT) : "",
+                                                 showMoreButton ? tr(STR_STATS_THIS_DEVICE_SCREEN) : "");
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true, true);
+    }
   }
 }
 
@@ -585,8 +603,12 @@ void renderGlobalStatsPage(GfxRenderer& renderer, const MappedInputManager* mapp
   }
 
   if (showButtonHints && mappedInput) {
-    const auto labels = mappedInput->mapLabels(tr(STR_BACK), tr(STR_HOME), "", showMoreButton ? tr(STR_MORE) : "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true);
+    if (BoardConfig::isX4Pro()) {
+      GUI.drawButtonHints(renderer, tr(STR_BACK), "", "", showMoreButton ? tr(STR_MORE) : "", true, true);
+    } else {
+      const auto labels = mappedInput->mapLabels(tr(STR_BACK), tr(STR_HOME), "", showMoreButton ? tr(STR_MORE) : "");
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true, true);
+    }
   }
 }
 
@@ -632,7 +654,7 @@ void renderNoRtcCombinedStatsPage(GfxRenderer& renderer, const MappedInputManage
 
   if (showButtonHints && mappedInput) {
     const auto labels = mappedInput->mapLabels(tr(STR_BACK), "", "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true);
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true, true);
   }
 }
 
@@ -698,6 +720,6 @@ void renderEditBookDatesPage(GfxRenderer& renderer, const MappedInputManager* ma
 
   if (showButtonHints && mappedInput) {
     const auto labels = mappedInput->mapLabels(tr(STR_BACK), tr(STR_NEXT_FIELD), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true);
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true, true);
   }
 }

@@ -1,5 +1,6 @@
 #include "BaseTheme.h"
 
+#include <BoardConfig.h>
 #include <GfxRenderer.h>
 #include <HalClock.h>
 #include <HalPowerManager.h>
@@ -151,7 +152,8 @@ void BaseTheme::drawProgressBar(const GfxRenderer& renderer, Rect rect, const si
 }
 
 void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
-                                const char* btn4, const bool allowInvertedText) const {
+                                const char* btn4, const bool allowInvertedText, const bool forceOnTouch) const {
+  if (BoardConfig::isX4Pro() && !forceOnTouch) return;
   const GfxRenderer::Orientation orig_orientation = renderer.getOrientation();
   const bool invertText = allowInvertedText && orig_orientation == GfxRenderer::Orientation::PortraitInverted;
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
@@ -195,6 +197,7 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
 }
 
 void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const {
+  if (BoardConfig::isX4Pro()) return;
   const int screenWidth = renderer.getScreenWidth();
   constexpr int buttonWidth = BaseMetrics::values.sideButtonHintsWidth;  // Width on screen (height when rotated)
   constexpr int buttonHeight = 80;                                       // Height on screen (width when rotated)
@@ -300,6 +303,9 @@ void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
   int rowHeight = hasSubtitle
                       ? std::max(BaseMetrics::values.listWithSubtitleRowHeight, dynamicSubtitleRowHeight)
                       : BaseMetrics::values.listRowHeight;
+  if (BoardConfig::isX4Pro()) {
+    rowHeight = std::max(rowHeight, hasSubtitle ? 68 : 56);
+  }
   int pageItems = rect.height / rowHeight;
   constexpr int sectionHeaderTopPadding = 15;
 
@@ -683,6 +689,8 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
     renderer.drawCenteredText(UI_10_FONT_ID, y + renderer.getLineHeight(UI_12_FONT_ID), tr(STR_START_READING));
   }
 }
+
+int BaseTheme::getMenuRowHeight(const GfxRenderer&) const { return UITheme::getInstance().getMetrics().menuRowHeight; }
 
 void BaseTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                                const std::function<std::string(int index)>& buttonLabel,

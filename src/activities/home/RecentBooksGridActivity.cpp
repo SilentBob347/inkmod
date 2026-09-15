@@ -387,6 +387,51 @@ void RecentBooksGridActivity::loop() {
   }
 
   const int listSize = static_cast<int>(recentBooks.size());
+
+  // Touch the cover itself to open it. Long-press opens the same action
+  // menu as holding Confirm. Swipes retain the same grid navigation
+  // semantics as the four directional buttons.
+  if (mappedInput.hasTouch() && listSize > 0) {
+    constexpr int contentTop = kLyraGridContentTop;
+    constexpr int titleStripHeight = 32;
+    constexpr int titleGridGap = 16;
+    constexpr int gridSpacing = kLyraGridSpacing;
+    constexpr int rowSpacing = gridSpacing + 4;
+    constexpr int totalGridWidth = kGridColumns * COVER_WIDTH + (kGridColumns - 1) * gridSpacing;
+    const int startXOffset = (renderer.getScreenWidth() - totalGridWidth) / 2;
+    const int pageStart = (selectorIndex / BOOKS_PER_PAGE) * BOOKS_PER_PAGE;
+    int tx = 0, ty = 0;
+    if (mappedInput.wasScreenLongPress(tx, ty)) {
+      for (int i = 0; i < BOOKS_PER_PAGE && pageStart + i < listSize; ++i) {
+        const int col = i % kGridColumns;
+        const int row = i / kGridColumns;
+        const int x = startXOffset + col * (COVER_WIDTH + gridSpacing);
+        const int y = contentTop + titleStripHeight + titleGridGap + row * (COVER_HEIGHT + rowSpacing);
+        if (tx >= x - 6 && tx < x + COVER_WIDTH + 6 && ty >= y - 6 && ty < y + COVER_HEIGHT + 6) {
+          selectorIndex = pageStart + i;
+          ensureProgressLoaded(selectorIndex);
+          requestUpdate();
+          showBookActionMenu(selectorIndex, false);
+          return;
+        }
+      }
+    }
+    if (mappedInput.wasScreenTapped(tx, ty)) {
+      for (int i = 0; i < BOOKS_PER_PAGE && pageStart + i < listSize; ++i) {
+        const int col = i % kGridColumns;
+        const int row = i / kGridColumns;
+        const int x = startXOffset + col * (COVER_WIDTH + gridSpacing);
+        const int y = contentTop + titleStripHeight + titleGridGap + row * (COVER_HEIGHT + rowSpacing);
+        if (tx >= x - 6 && tx < x + COVER_WIDTH + 6 && ty >= y - 6 && ty < y + COVER_HEIGHT + 6) {
+          selectorIndex = pageStart + i;
+          ensureProgressLoaded(selectorIndex);
+          onSelectBook(recentBooks[selectorIndex].book.path);
+          return;
+        }
+      }
+    }
+  }
+
   enum class NavDirection { Right, Left, Down, Up };
   auto handleNav = [this, listSize](NavDirection direction) {
     switch (direction) {
@@ -406,6 +451,14 @@ void RecentBooksGridActivity::loop() {
     ensureProgressLoaded(selectorIndex);
     requestUpdate();
   };
+
+  if (mappedInput.hasTouch()) {
+    const auto swipe = mappedInput.wasSwipe();
+    if (swipe == MappedInputManager::SwipeDir::Left) { handleNav(NavDirection::Right); return; }
+    if (swipe == MappedInputManager::SwipeDir::Right) { handleNav(NavDirection::Left); return; }
+    if (swipe == MappedInputManager::SwipeDir::Up) { handleNav(NavDirection::Down); return; }
+    if (swipe == MappedInputManager::SwipeDir::Down) { handleNav(NavDirection::Up); return; }
+  }
 
   buttonNavigator.onRelease({MappedInputManager::Button::Right}, [&] { handleNav(NavDirection::Right); });
   buttonNavigator.onRelease({MappedInputManager::Button::Left}, [&] { handleNav(NavDirection::Left); });

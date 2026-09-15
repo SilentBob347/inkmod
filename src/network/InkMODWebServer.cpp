@@ -1,4 +1,5 @@
 #include "InkMODWebServer.h"
+#include "util/TaskWatchdog.h"
 
 #include <ArduinoJson.h>
 #ifdef SIMULATOR
@@ -525,7 +526,7 @@ void InkMODWebServer::scanFiles(const char* path, const std::function<void(FileI
 
     file.close();
     yield();               // Yield to allow WiFi and other tasks to process during long scans
-    esp_task_wdt_reset();  // Reset watchdog to prevent timeout on large directories
+    resetTaskWatchdogIfSubscribed();  // Reset watchdog to prevent timeout on large directories
     file = root.openNextFile();
   }
   root.close();
@@ -637,6 +638,8 @@ void InkMODWebServer::handleFileListData() const {
     }
 
     if (seenFirst) {
+      resetTaskWatchdogIfSubscribed();
+      yield();
       server->sendContent(",");
     } else {
       seenFirst = true;
@@ -708,7 +711,7 @@ void InkMODWebServer::handleDownload() const {
     size_t bytesRead = static_cast<size_t>(result);
     size_t totalWritten = 0;
     while (totalWritten < bytesRead) {
-      esp_task_wdt_reset();
+      resetTaskWatchdogIfSubscribed();
       size_t wrote = client.write(buffer + totalWritten, bytesRead - totalWritten);
       if (wrote == 0) {
         downloadOk = false;
@@ -730,12 +733,12 @@ static size_t writeCount = 0;
 
 static bool flushUploadBuffer(InkMODWebServer::UploadState& state) {
   if (state.bufferPos > 0 && state.file) {
-    esp_task_wdt_reset();  // Reset watchdog before potentially slow SD write
+    resetTaskWatchdogIfSubscribed();  // Reset watchdog before potentially slow SD write
     const unsigned long writeStart = millis();
     const size_t written = state.file.write(state.buffer.data(), state.bufferPos);
     totalWriteTime += millis() - writeStart;
     writeCount++;
-    esp_task_wdt_reset();  // Reset watchdog after SD write
+    resetTaskWatchdogIfSubscribed();  // Reset watchdog after SD write
 
     if (written != state.bufferPos) {
       LOG_DBG("WEB", "[UPLOAD] Buffer flush failed: expected %d, wrote %d", state.bufferPos, written);
@@ -753,7 +756,7 @@ void InkMODWebServer::handleUpload(UploadState& state, const bool preparedBookCa
   static size_t lastLoggedSize = 0;
 
   // Reset watchdog at start of every upload callback - HTTP parsing can be slow
-  esp_task_wdt_reset();
+  resetTaskWatchdogIfSubscribed();
 
   // Safety check: ensure server is still valid
   if (!running || !server) {
@@ -765,7 +768,7 @@ void InkMODWebServer::handleUpload(UploadState& state, const bool preparedBookCa
 
   if (upload.status == UPLOAD_FILE_START) {
     // Reset watchdog - this is the critical 1% crash point
-    esp_task_wdt_reset();
+    resetTaskWatchdogIfSubscribed();
 
     state.file.close();
     // Browsers (notably Safari directory uploads) may report multipart
@@ -865,21 +868,21 @@ void InkMODWebServer::handleUpload(UploadState& state, const bool preparedBookCa
     }
 
     // Check if file already exists - SD operations can be slow
-    esp_task_wdt_reset();
+    resetTaskWatchdogIfSubscribed();
     if (Storage.exists(filePath.c_str())) {
       LOG_DBG("WEB", "[UPLOAD] Overwriting existing file: %s", filePath.c_str());
-      esp_task_wdt_reset();
+      resetTaskWatchdogIfSubscribed();
       Storage.remove(filePath.c_str());
     }
 
     // Open file for writing - this can be slow due to FAT cluster allocation
-    esp_task_wdt_reset();
+    resetTaskWatchdogIfSubscribed();
     if (!Storage.openFileForWrite("WEB", filePath, state.file)) {
       state.error = "Failed to create file on SD card";
       LOG_DBG("WEB", "[UPLOAD] FAILED to create file: %s", filePath.c_str());
       return;
     }
-    esp_task_wdt_reset();
+    resetTaskWatchdogIfSubscribed();
 
     LOG_DBG("WEB", "[UPLOAD] File created successfully: %s", filePath.c_str());
   } else if (upload.status == UPLOAD_FILE_WRITE) {
@@ -1270,7 +1273,7 @@ void clearBookCachesRecursively(const String& itemPath) {
     else
       clearBookCache(childPath.c_str());
 
-    esp_task_wdt_reset();
+    resetTaskWatchdogIfSubscribed();
     yield();
     child = node.openNextFile();
   }
@@ -1430,7 +1433,16 @@ void InkMODWebServer::handleGetSettings() const {
   // fragment/exhaust that heap and make the whole reader appear frozen. The
   // built-in font choices are sufficient for this constrained mode; STA keeps
   // exposing the full registry as before.
-  const auto settings = getSettingsList(apMode ? nullptr : &sdFontSystem.registry());
+  // Keep the web settings API independent from the SD font registry.  The
+  // Fonts tab owns SD-font management; copying the full registry here can be
+  // expensive enough on X4 Pro to starve the loop/watchdog before we even
+  // reach the streaming code.  Device-side Reader settings still use the
+  // registry normally.
+  resetTaskWatchdogIfSubscribed();
+  yield();
+  const auto settings = getSettingsList(nullptr);
+  resetTaskWatchdogIfSubscribed();
+  yield();
 
   char output[512];
   constexpr size_t outputSize = sizeof(output);
@@ -1443,8 +1455,17 @@ void InkMODWebServer::handleGetSettings() const {
   // keeps peak RAM low without relying on chunked encoding.
   size_t responseLength = 2;  // '[' + ']'
   size_t responseItems = 0;
+  size_t settingsPassCount = 0;
   for (const auto& s : settings) {
+    if ((++settingsPassCount & 0x07u) == 0u) {
+      // Building the settings JSON can be surprisingly expensive when the SD
+      // font registry contains many families. Keep Wi-Fi and the task watchdog
+      // serviced while doing the length pass.
+      resetTaskWatchdogIfSubscribed();
+      yield();
+    }
     if (!s.key) continue;
+    if (std::strcmp(s.key, "fontFamily") == 0 || std::strcmp(s.key, "fontSize") == 0) continue;
 
     doc.clear();
     doc["key"] = s.key;
@@ -1504,9 +1525,15 @@ void InkMODWebServer::handleGetSettings() const {
   server->sendContent("[");
 
   bool seenFirst = false;
+  settingsPassCount = 0;
 
   for (const auto& s : settings) {
+    if ((++settingsPassCount & 0x07u) == 0u) {
+      resetTaskWatchdogIfSubscribed();
+      yield();
+    }
     if (!s.key) continue;  // Skip ACTION-only entries
+    if (std::strcmp(s.key, "fontFamily") == 0 || std::strcmp(s.key, "fontSize") == 0) continue;
 
     doc.clear();
     doc["key"] = s.key;
@@ -1564,9 +1591,22 @@ void InkMODWebServer::handleGetSettings() const {
         continue;
     }
 
+    // Use the same size decision as the first pass.  Do not rely on the
+    // return value of serializeJson() to detect truncation: depending on the
+    // writer it can report bytes actually written, which would make the body
+    // differ from the Content-Length calculated above and leave the browser
+    // with invalid JSON.
+    const size_t itemLength = measureJson(doc);
+    if (itemLength >= outputSize) {
+      LOG_DBG("WEB", "Skipping oversized setting JSON for: %s (%u bytes)",
+              s.key, static_cast<unsigned>(itemLength));
+      continue;
+    }
+
     const size_t written = serializeJson(doc, output, outputSize);
-    if (written >= outputSize) {
-      LOG_DBG("WEB", "Skipping oversized setting JSON for: %s", s.key);
+    if (written != itemLength) {
+      LOG_DBG("WEB", "Skipping short setting JSON for: %s (%u/%u bytes)",
+              s.key, static_cast<unsigned>(written), static_cast<unsigned>(itemLength));
       continue;
     }
 
@@ -1575,10 +1615,18 @@ void InkMODWebServer::handleGetSettings() const {
     } else {
       seenFirst = true;
     }
+    resetTaskWatchdogIfSubscribed();
+    yield();
     server->sendContent(output);
+    // sendContent() may block while the browser/TCP window catches up.
+    resetTaskWatchdogIfSubscribed();
+    yield();
   }
 
+  resetTaskWatchdogIfSubscribed();
+  yield();
   server->sendContent("]");
+  resetTaskWatchdogIfSubscribed();
   LOG_DBG("WEB", "Served settings API");
 }
 
@@ -1596,11 +1644,16 @@ void InkMODWebServer::handlePostSettings() {
     return;
   }
 
-  const auto& settings = getSettingsList(&sdFontSystem.registry());
+  resetTaskWatchdogIfSubscribed();
+  yield();
+  const auto settings = getSettingsList(nullptr);
+  resetTaskWatchdogIfSubscribed();
+  yield();
   int applied = 0;
 
   for (const auto& s : settings) {
     if (!s.key) continue;
+    if (std::strcmp(s.key, "fontFamily") == 0 || std::strcmp(s.key, "fontSize") == 0) continue;
     if (!doc[s.key].is<JsonVariant>()) continue;
 
     switch (s.type) {
@@ -2008,20 +2061,20 @@ void InkMODWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payl
                   filePath.c_str());
 
           // Check if file exists and remove it
-          esp_task_wdt_reset();
+          resetTaskWatchdogIfSubscribed();
           if (Storage.exists(filePath.c_str())) {
             Storage.remove(filePath.c_str());
           }
 
           // Open file for writing
-          esp_task_wdt_reset();
+          resetTaskWatchdogIfSubscribed();
           if (!Storage.openFileForWrite("WS", filePath, wsUploadFile)) {
             wsServer->sendTXT(num, "ERROR:Failed to create file");
             wsUploadInProgress = false;
             wsUploadClientNum = 255;
             return;
           }
-          esp_task_wdt_reset();
+          resetTaskWatchdogIfSubscribed();
 
           // Zero-byte upload: complete immediately without waiting for BIN frames
           if (wsUploadSize == 0) {
@@ -2060,9 +2113,9 @@ void InkMODWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payl
         wsServer->sendTXT(num, "ERROR:Upload overflow");
         return;
       }
-      esp_task_wdt_reset();
+      resetTaskWatchdogIfSubscribed();
       size_t written = wsUploadFile.write(payload, length);
-      esp_task_wdt_reset();
+      resetTaskWatchdogIfSubscribed();
 
       if (written != length) {
         abortWsUpload("WS");
@@ -2166,7 +2219,7 @@ void InkMODWebServer::handleFontUploadData() {
 
   switch (upload.status) {
     case UPLOAD_FILE_START: {
-      esp_task_wdt_reset();
+      resetTaskWatchdogIfSubscribed();
       String family = server->arg("family");
       fontUpload.file = HalFile();
       fontUpload.familyName.clear();
@@ -2217,7 +2270,7 @@ void InkMODWebServer::handleFontUploadData() {
 
     case UPLOAD_FILE_WRITE: {
       if (!fontUpload.valid) break;
-      esp_task_wdt_reset();
+      resetTaskWatchdogIfSubscribed();
 
       // Validate magic bytes on first chunk only
       if (!fontUpload.magicChecked && upload.currentSize >= 8) {
@@ -2244,7 +2297,7 @@ void InkMODWebServer::handleFontUploadData() {
           fontUpload.file.write(fontUpload.buffer.data(), fontUpload.bufferPos);
           fontUpload.bytesWritten += fontUpload.bufferPos;
           fontUpload.bufferPos = 0;
-          esp_task_wdt_reset();
+          resetTaskWatchdogIfSubscribed();
         }
       }
       break;

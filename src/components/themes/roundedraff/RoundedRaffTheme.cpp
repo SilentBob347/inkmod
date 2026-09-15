@@ -1,5 +1,6 @@
 #include "RoundedRaffTheme.h"
 
+#include <BoardConfig.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <HalTiltSensor.h>
@@ -213,6 +214,10 @@ void RoundedRaffTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, con
   }
 }
 
+int RoundedRaffTheme::getMenuRowHeight(const GfxRenderer& renderer) const {
+  return renderer.getLineHeight(kTitleFontId) + 15;
+}
+
 void RoundedRaffTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                                       const std::function<std::string(int index)>& buttonLabel,
                                       const std::function<UIIcon(int index)>& rowIcon) const {
@@ -347,8 +352,11 @@ void RoundedRaffTheme::drawList(const GfxRenderer& renderer, Rect rect, int item
   constexpr int subtitleInterLineGap = 4;
   const int subtitleRowHeight =
       subtitleTopPadding + titleLineHeight + subtitleInterLineGap + subtitleLineHeight + subtitleBottomPadding;
-  const int rowHeight = hasSubtitle ? subtitleRowHeight
-                                    : std::max(RoundedRaffMetrics::values.listRowHeight, titleLineHeight + 8);
+  int rowHeight = hasSubtitle ? subtitleRowHeight
+                              : std::max(RoundedRaffMetrics::values.listRowHeight, titleLineHeight + 8);
+  if (BoardConfig::isX4Pro()) {
+    rowHeight = std::max(rowHeight, hasSubtitle ? 68 : 56);
+  }
   const auto isHeaderRow = [&isHeader](int index) { return isHeader != nullptr && isHeader(index); };
   bool hasHeaderRows = false;
   for (int i = 0; i < itemCount; ++i) {
@@ -455,7 +463,8 @@ void RoundedRaffTheme::drawList(const GfxRenderer& renderer, Rect rect, int item
 }
 
 void RoundedRaffTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
-                                       const char* btn4, const bool allowInvertedText) const {
+                                       const char* btn4, const bool allowInvertedText, const bool forceOnTouch) const {
+  if (BoardConfig::isX4Pro() && !forceOnTouch) return;
   const GfxRenderer::Orientation origOrientation = renderer.getOrientation();
   const bool invertText = allowInvertedText && origOrientation == GfxRenderer::Orientation::PortraitInverted;
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);

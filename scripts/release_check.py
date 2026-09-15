@@ -47,21 +47,34 @@ def main() -> None:
         fail("generated/local artifacts present: " + ", ".join(present))
 
 
-    # Production releases must use the true release environment. The OTA client
-    # in a release build searches for firmware-release*.bin assets.
+    # Production releases must build both hardware families.  The legacy
+    # firmware-release alias is intentionally kept for OTA migration of already
+    # installed C3 builds from the old environment naming.
     release_workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
-    if "pio run -e release" not in release_workflow:
-        fail("release workflow is not building the release environment")
-    if "firmware-release-v" not in release_workflow:
-        fail("release workflow does not publish firmware-release-v<version>.bin")
+    required_release_tokens = (
+        "pio run -e x3x4-release",
+        "pio run -e x4pro-release",
+        "firmware-x3x4-v",
+        "firmware-x4pro-v",
+        "firmware-release-v",
+    )
+    for token in required_release_tokens:
+        if token not in release_workflow:
+            fail(f"release workflow is missing {token!r}")
 
     reader_activity = (ROOT / "src/activities/reader/ReaderActivity.cpp").read_text(encoding="utf-8")
     if "const std::string readPath = EpubChapterSplitter::resolveReadPath" in reader_activity:
         fail("unstable runtime EPUB pre-splitter is enabled in ReaderActivity")
 
-    release_section = cfg.get("env:release", "build_flags", fallback="") if cfg.has_section("env:release") else ""
-    if "-DLOG_LEVEL=-1" not in release_section:
-        fail("release environment must compile verbose LOG_* output out")
+    for env_name in ("env:x3x4-release", "env:x4pro-release"):
+        if not cfg.has_section(env_name):
+            fail(f"platformio.ini has no [{env_name}] section")
+        release_section = cfg.get(env_name, "build_flags", fallback="")
+        if "-DLOG_LEVEL=-1" not in release_section:
+            fail(f"{env_name} must compile verbose LOG_* output out")
+
+    if cfg.get("platformio", "default_envs", fallback="").strip() != "x3x4-release":
+        fail("default_envs must be x3x4-release")
 
     # The abandoned experimental UI waveform was observed to cause ghosting.
     # Fail release validation if those debug labels accidentally reappear.

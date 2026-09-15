@@ -34,6 +34,7 @@ class UITheme {
 
  private:
   const ThemeMetrics* currentMetrics = nullptr;
+  ThemeMetrics effectiveMetrics{};
   std::unique_ptr<BaseTheme> currentTheme;
   InkMODSettings::UI_THEME currentType = static_cast<InkMODSettings::UI_THEME>(0xFF);
 };

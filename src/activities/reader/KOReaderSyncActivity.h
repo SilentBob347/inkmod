@@ -93,6 +93,7 @@ class KOReaderSyncActivity final : public Activity {
   // WiFi.getMode() because performUpload() calls esp_wifi_stop() on the way out,
   // which makes WiFi.getMode() return WIFI_MODE_NULL.
   bool wifiActivated = false;
+  bool extendedSyncAttempted = false;
 
   void onWifiSelectionComplete(bool success);
   void performSync();
@@ -101,4 +102,5 @@ class KOReaderSyncActivity final : public Activity {
   void ensureEpubLoaded();
   void saveProgressAndReturn(const InkMODPosition& position);
   void returnToReader();
+  void runExtendedSyncBestEffort();
 };
