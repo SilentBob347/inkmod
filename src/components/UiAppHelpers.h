@@ -161,7 +161,7 @@ inline freeink::ui::InputSnapshot touchSnapshotFrom(const MappedInputManager& ma
     snap.touchX = static_cast<int16_t>(tx);
     snap.touchY = static_cast<int16_t>(ty);
   }
-  if (mappedInput.wasScreenTouchDown(tx, ty)) {
+  if (mappedInput.wasScreenTouchPressed(tx, ty)) {
     snap.touchPressed = true;
     snap.touchX = static_cast<int16_t>(tx);
     snap.touchY = static_cast<int16_t>(ty);

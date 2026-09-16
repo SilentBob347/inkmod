@@ -21,7 +21,7 @@ void LegacyRenderPromptActivity::loop() {
   // this activity can only contribute a release here, not a new touch-down.
   if (mappedInput.hasTouch()) {
     int tx = 0, ty = 0;
-    if (mappedInput.wasScreenTouchDown(tx, ty)) {
+    if (mappedInput.wasScreenTapped(tx, ty)) {
       const int screenWidth = renderer.getScreenWidth();
       const int screenHeight = renderer.getScreenHeight();
       const int cardWidth = std::min(screenWidth - 36, 520);

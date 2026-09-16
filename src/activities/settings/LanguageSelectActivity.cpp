@@ -35,7 +35,7 @@ void LanguageSelectActivity::loop() {
     const int contentHeight = safeArea.y + safeArea.height - contentTop - metrics.verticalSpacing;
 
     int tx = 0, ty = 0;
-    if (mappedInput.wasScreenTouchDown(tx, ty)) {
+    if (mappedInput.wasScreenTapped(tx, ty)) {
       const int rowHeight = std::max(1, metrics.listRowHeight);
       const int pageItems = std::max(1, contentHeight / rowHeight);
       const int pageStart = (std::max(0, selectedIndex) / pageItems) * pageItems;

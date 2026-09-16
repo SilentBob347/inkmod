@@ -1,6 +1,7 @@
 #include "SystemDiagnosticsActivity.h"
 
 #include <Arduino.h>
+#include <BoardConfig.h>
 #include <GfxRenderer.h>
 #include <HalGPIO.h>
 #include <HalPowerManager.h>
@@ -69,12 +70,63 @@ std::string sinceLastChargeDisplay() {
   else snprintf(buf, sizeof(buf), "%u %s", minutes, tr(STR_UNIT_MIN_SHORT));
   return std::string(buf);
 }
+std::string displayControllerDisplay() {
+  using DC = BoardConfig::DisplayController;
+  const auto controller = BoardConfig::ACTIVE.displayController;
+  const uint8_t variant = BoardConfig::ACTIVE.displayControllerVariant;
+  char buf[40];
+  switch (controller) {
+    case DC::SSD1677:
+      return "SSD1677";
+    case DC::UC8179:
+      return "UC8179";
+    case DC::UC8279:
+      if (BoardConfig::isX4Pro() && variant != 0) {
+        snprintf(buf, sizeof(buf), "UC8279 / LUT %02X", static_cast<unsigned>(variant));
+        return std::string(buf);
+      }
+      return "UC8279";
+    case DC::UC8253:
+      return "UC8253";
+    default:
+      return "Other";
+  }
+}
+
 std::string bytesHuman(uint64_t bytes) {
   char buf[32];
   if (bytes >= 1073741824ULL) snprintf(buf, sizeof(buf), "%.1f GB", bytes / 1073741824.0);
   else if (bytes >= 1048576ULL) snprintf(buf, sizeof(buf), "%.1f MB", bytes / 1048576.0);
   else snprintf(buf, sizeof(buf), "%llu KB", static_cast<unsigned long long>(bytes / 1024ULL));
   return buf;
+}
+
+using DiagnosticRows = std::vector<std::pair<std::string, std::string>>;
+
+DiagnosticRows buildDiagnosticRows() {
+  const auto heap = MemoryBudget::snapshot();
+  const bool crashReport = Storage.exists("/crash_report.txt");
+  DiagnosticRows rows;
+  rows.reserve(12);
+  rows.push_back({tr(STR_DIAG_FIRMWARE), std::string(INKMOD_VERSION) + " (" + INKMOD_FIRMWARE_VARIANT + ")"});
+  rows.push_back({tr(STR_DIAG_DEVICE), BoardConfig::isX4Pro() ? "X4 Pro" : (gpio.deviceIsX3() ? "X3" : "X4")});
+  if (BoardConfig::isX4Pro()) rows.push_back({tr(STR_CAT_DISPLAY), displayControllerDisplay()});
+  rows.push_back({tr(STR_DIAG_FREE_HEAP), bytesHuman(heap.freeHeap)});
+  rows.push_back({tr(STR_DIAG_MAX_ALLOC), bytesHuman(heap.maxAllocHeap)});
+  rows.push_back({tr(STR_INTERNAL_STORAGE), StorageUsageCalc::display()});
+  rows.push_back({tr(STR_BATTERY), std::to_string(powerManager.getBatteryPercentage()) + "%"});
+  if (!SETTINGS.clockDisabled) rows.push_back({tr(STR_SINCE_LAST_CHARGE), sinceLastChargeDisplay()});
+  rows.push_back({tr(STR_DIAG_RESET_REASON), resetReasonDisplay()});
+  rows.push_back({tr(STR_DIAG_CRASH_REPORT), crashReport ? tr(STR_YES) : tr(STR_NO)});
+  return rows;
+}
+
+bool diagnosticRowNeedsTwoLines(const GfxRenderer& renderer, const std::pair<std::string, std::string>& row,
+                                const int availableWidth) {
+  constexpr int kLabelValueGap = 10;
+  return renderer.getTextWidth(UI_10_FONT_ID, row.first.c_str()) + kLabelValueGap +
+             renderer.getTextWidth(UI_10_FONT_ID, row.second.c_str()) >
+         availableWidth;
 }
 }
 
@@ -100,22 +152,30 @@ void SystemDiagnosticsActivity::loop() {
   bool touchActivate = false;
   if (mappedInput.hasTouch()) {
     const auto& metrics = UITheme::getInstance().getMetrics();
+    const int pageWidth = renderer.getScreenWidth();
     const int pageHeight = renderer.getScreenHeight();
     const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
-    int y = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-    int rowCount = 8 + (!SETTINGS.clockDisabled ? 1 : 0);
-    for (int i = 0; i < rowCount; ++i) {
-      if (y + lineH >= pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing) break;
-      y += lineH + metrics.verticalSpacing;
-    }
-    y += metrics.verticalSpacing;
     int tx = 0, ty = 0;
-    if (mappedInput.wasScreenTapped(tx, ty) && ty >= y) {
-      const int row = (ty - y) / (lineH + metrics.verticalSpacing);
-      if (row >= 0 && row < ACTION_COUNT) {
-        selectedAction = row;
-        touchActivate = true;
-        requestUpdate();
+    if (mappedInput.wasScreenTapped(tx, ty)) {
+      const int left = metrics.contentSidePadding;
+      const int right = pageWidth - metrics.contentSidePadding;
+      int y = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+      const auto rows = buildDiagnosticRows();
+      for (const auto& row : rows) {
+        const bool twoLines = diagnosticRowNeedsTwoLines(renderer, row, right - left);
+        const int neededH = twoLines ? (lineH * 2 + metrics.verticalSpacing) : lineH;
+        if (y + neededH >= pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing) break;
+        y += lineH + metrics.verticalSpacing;
+        if (twoLines) y += lineH + metrics.verticalSpacing;
+      }
+      y += metrics.verticalSpacing;
+      if (ty >= y) {
+        const int row = (ty - y) / (lineH + metrics.verticalSpacing);
+        if (row >= 0 && row < ACTION_COUNT) {
+          selectedAction = row;
+          touchActivate = true;
+          requestUpdate();
+        }
       }
     }
   }
@@ -162,28 +222,24 @@ void SystemDiagnosticsActivity::render(RenderLock&&) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth(), pageHeight = renderer.getScreenHeight();
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_DIAGNOSTICS));
-  const auto heap = MemoryBudget::snapshot();
-  const bool crashReport = Storage.exists("/crash_report.txt");
-  std::vector<std::pair<std::string, std::string>> rows;
-  rows.reserve(10);
-  rows.push_back({tr(STR_DIAG_FIRMWARE), std::string(INKMOD_VERSION) + " (" + INKMOD_FIRMWARE_VARIANT + ")"});
-  rows.push_back({tr(STR_DIAG_DEVICE), gpio.deviceIsX3() ? "X3" : "X4"});
-  rows.push_back({tr(STR_DIAG_FREE_HEAP), bytesHuman(heap.freeHeap)});
-  rows.push_back({tr(STR_DIAG_MAX_ALLOC), bytesHuman(heap.maxAllocHeap)});
-  rows.push_back({tr(STR_INTERNAL_STORAGE), StorageUsageCalc::display()});
-  rows.push_back({tr(STR_BATTERY), std::to_string(powerManager.getBatteryPercentage()) + "%"});
-  if (!SETTINGS.clockDisabled) rows.push_back({tr(STR_SINCE_LAST_CHARGE), sinceLastChargeDisplay()});
-  rows.push_back({tr(STR_DIAG_RESET_REASON), resetReasonDisplay()});
-  rows.push_back({tr(STR_DIAG_CRASH_REPORT), crashReport ? tr(STR_YES) : tr(STR_NO)});
+  const auto rows = buildDiagnosticRows();
 
   const int left = metrics.contentSidePadding, right = pageWidth - metrics.contentSidePadding;
   int y = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
   for (const auto& row : rows) {
-    if (y + lineH >= pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing) break;
+    const bool twoLines = diagnosticRowNeedsTwoLines(renderer, row, right - left);
+    const int neededH = twoLines ? (lineH * 2 + metrics.verticalSpacing) : lineH;
+    if (y + neededH >= pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing) break;
+
     renderer.drawText(UI_10_FONT_ID, left, y, row.first.c_str());
     const int valueW = renderer.getTextWidth(UI_10_FONT_ID, row.second.c_str());
-    renderer.drawText(UI_10_FONT_ID, std::max(left, right - valueW), y, row.second.c_str());
+    if (twoLines) {
+      y += lineH + metrics.verticalSpacing;
+      renderer.drawText(UI_10_FONT_ID, std::max(left, right - valueW), y, row.second.c_str());
+    } else {
+      renderer.drawText(UI_10_FONT_ID, std::max(left, right - valueW), y, row.second.c_str());
+    }
     y += lineH + metrics.verticalSpacing;
   }
   y += metrics.verticalSpacing;

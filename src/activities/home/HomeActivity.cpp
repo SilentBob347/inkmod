@@ -1739,11 +1739,11 @@ void HomeActivity::loop() {
       carouselTouchTracking = false;
     }
 
-    // Touch-down is deliberately used here rather than a very strict completed
-    // tap. The touch backend only reports this after the contact has remained a
-    // tap candidate for ~90 ms, so a real swipe will normally have left the
-    // candidate state already. This is much more reliable on X4 Pro panels.
-    if (!carouselTouchTracking && mappedInput.wasScreenTouchDown(tx, ty)) {
+    // Ordinary Home actions fire on a completed tap. Using the old
+    // wasScreenTouchDown() helper here imposed an artificial ~90 ms hold,
+    // making quick/light X4 Pro taps look unresponsive. Carousel drags keep
+    // their dedicated immediate press/held path above.
+    if (!carouselTouchTracking && mappedInput.wasScreenTapped(tx, ty)) {
       auto menuItems = buildSelectableHomeMenuItems(hasOpdsServers, hasReadingStats, hasBookmarks,
                                                     metrics.homeContinueReadingInMenu && !recentBooks.empty());
       const int menuCount = static_cast<int>(menuItems.size());

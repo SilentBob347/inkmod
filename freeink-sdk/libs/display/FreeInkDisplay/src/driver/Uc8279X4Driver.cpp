@@ -30,7 +30,10 @@ constexpr uint8_t CMD_GATE_SCAN = 0xE1;           // gate-scan selection
 constexpr uint8_t CMD_TSSET = 0xE5;               // TSSET (forced temperature)
 
 // External AA grayscale waveforms (`xtfAa`), 5 x 49 data bytes, command sent
-// separately. Two byte sets exist, selected by the probed LUT_VER (VER byte2):
+// separately. Two byte sets exist, selected by the probed LUT_VER (VER byte2).
+// The background-charge fix is handled by a dedicated B/W(mid) preconditioning
+// pass plus a two-plane B/W RAM rebase; keep the vendor WW transitions intact.
+// Two byte sets exist, selected by the probed LUT_VER (VER byte2):
 // 0x02 and 0x68 differ only in the third/fourth frame-group bytes. With the AA
 // CDI (0x97, DDX=1) the old/new transition tables map WW->0x21, BW->0x22,
 // WB->0x23, BB->0x24; BW/WB carry the dark-gray channel. Only the first 14
@@ -53,6 +56,19 @@ const GrayLut kXtfAa68[5] = {
     {0x22, {0x01, 0x02, 0x83, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}},  // BW (dark gray)
     {0x23, {0x01, 0x02, 0x83, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}},  // WB (dark gray)
     {0x24, {0x01, 0x02, 0x03, 0x81, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}},  // BB
+};
+
+// OEM-style AA pre-conditioning bank.  The UC8279 family uses this weak
+// B/W(mid) settle pass before the two grayscale planes are loaded.  It does
+// not change RAM; it only conditions pigment charge so the following AA LUT
+// does not progressively over-drive the background.  Table format is the
+// UC8279 command-prefixed 5 x 43 layout (cmd + 42 bytes).
+const uint8_t kXtfPreBwMid[5][43] = {
+    {0x20, 0x01, 0x06, 0x01, 0x06, 0x06, 0x01, 0x01, 0x01, 0x02, 0x04, 0x00, 0x00, 0x01, 0x01},
+    {0x21, 0x01, 0x06, 0x81, 0x06, 0x06, 0x01, 0x01, 0x01, 0x02, 0x04, 0x00, 0x00, 0x01, 0x01},
+    {0x22, 0x01, 0x86, 0x81, 0x86, 0x86, 0x01, 0x01, 0x01, 0x82, 0x84, 0x00, 0x00, 0x01, 0x01},
+    {0x23, 0x01, 0x46, 0x41, 0x46, 0x46, 0x01, 0x01, 0x01, 0x42, 0x44, 0x00, 0x00, 0x01, 0x01},
+    {0x24, 0x01, 0x06, 0x01, 0x06, 0x06, 0x01, 0x01, 0x01, 0x02, 0x44, 0x00, 0x00, 0x01, 0x01},
 };
 
 const GrayLut* selectAaLuts() {
@@ -296,11 +312,57 @@ void Uc8279X4Driver::deepSleep(EpdBus& bus) {
 // AA plane order is the reverse of the built-in 4-gray order: plane0/LSB -> 0x10,
 // plane1/MSB -> 0x13, and BOTH planes are bitwise-inverted on this controller.
 void Uc8279X4Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
-  if (lsb) streamPlane(bus, CMD_DTM1, lsb, /*invert=*/true);
+  if (!lsb) return;
+
+  // PRECONDITION BEFORE OVERWRITING DTM1.  At this point the normal B/W page
+  // refresh has completed and displayFinish() has synchronized DTM1 to the
+  // visible frame; DTM2 already contains that same new frame.  Run the weak
+  // OEM-style B/W(mid) settle waveform while those clean B/W planes are still
+  // resident, then load the actual grayscale bitplanes.  This is the missing
+  // stage that the X3 UC8279 pipeline already uses and prevents repeated AA
+  // passes from accumulating a white/gray charge imbalance.
+  const uint16_t xEnd = static_cast<uint16_t>(_w - 1);
+  const uint16_t yStart = _cfg.gateOffset;
+  const uint16_t yEnd = static_cast<uint16_t>(_cfg.gateOffset + _h - 1);
+  bus.cmd(CMD_PARTIAL_IN);
+  bus.cmd(CMD_PARTIAL_WINDOW);
+  bus.data(0x00);
+  bus.data(0x00);
+  bus.data(static_cast<uint8_t>(xEnd >> 8));
+  bus.data(static_cast<uint8_t>(xEnd | 0x07));
+  bus.data(static_cast<uint8_t>(yStart >> 8));
+  bus.data(static_cast<uint8_t>(yStart & 0xFF));
+  bus.data(static_cast<uint8_t>(yEnd >> 8));
+  bus.data(static_cast<uint8_t>(yEnd & 0xFF));
+  bus.data(0x01);
+
+  bus.cmd(CMD_PANEL_SETTING);
+  bus.data(_cfg.psr0);   // REG=1, external preconditioning LUT
+  bus.data(_cfg.psr1);
+  bus.cmd(CMD_VCOM_DATA_INTERVAL);
+  bus.data(_cfg.cdiAaLater);
+  bus.cmd(CMD_CCSET);
+  bus.data(_cfg.ccset);  // 0x02
+  bus.cmd(CMD_TSSET);
+  bus.data(_cfg.tssetFast);  // 0x5A, weak/fast settle
+  for (int i = 0; i < 5; ++i) {
+    bus.cmd(kXtfPreBwMid[i][0]);
+    bus.data(&kXtfPreBwMid[i][1], 42);
+  }
+  powerOnIfNeeded(bus, " 8279x4_pre_PON");
+  bus.cmd(CMD_DISPLAY_REFRESH);
+  bus.waitBusy(" 8279x4_pre");
+  bus.cmd(CMD_PARTIAL_OUT);
+
+  // Both field-tested X4 Pro UC8279 variants (LUT_VER 0x68 and 0x02) use the
+  // renderer plane polarity directly. Keep variant differences in the LUT
+  // bytes themselves, not in framebuffer polarity.
+  streamPlane(bus, CMD_DTM1, lsb, false);
 }
 
 void Uc8279X4Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
-  if (msb) streamPlane(bus, CMD_DTM2, msb, /*invert=*/true);
+  if (!msb) return;
+  streamPlane(bus, CMD_DTM2, msb, false);
 }
 
 void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
@@ -351,6 +413,12 @@ void Uc8279X4Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
     _needFullClear = true;
     _oldPlaneValid = false;
   }
+
+  // Do not special-case LUT 0x02 with an extra POF here.  The field
+  // report showed the same gray-fill symptom even with that power cycle, while
+  // it only adds latency.  The variant-specific behavior is now isolated to
+  // the AA LUT selection and the shared, non-inverted plane polarity above.
+
 }
 
 void Uc8279X4Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
@@ -359,9 +427,20 @@ void Uc8279X4Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
     _oldPlaneValid = false;
     return;
   }
-  // Re-seed the OLD plane (0x10) with the clean B/W frame the reader restored —
-  // same rationale as the UC8179 sibling.
+
+  // AA overwrites BOTH controller RAM planes.  Rebase both to the exact clean
+  // B/W framebuffer without a visible refresh.  DTM1 becomes the differential
+  // baseline and DTM2 is kept coherent too, which is important because the next
+  // AA preconditioning pass runs before either gray plane is written.
   streamPlane(bus, CMD_DTM1, bw);
+  streamPlane(bus, CMD_DTM2, bw);
+
+  // Leave the controller in the normal OTP B/W register mode between pages.
+  // The next AA pass explicitly switches REG back on before loading its LUT.
+  bus.cmd(CMD_PANEL_SETTING);
+  bus.data(static_cast<uint8_t>(_cfg.psr0 & 0xDF));
+  bus.data(_cfg.psr1);
+
   _oldPlaneValid = true;
   _needFullClear = false;
 }

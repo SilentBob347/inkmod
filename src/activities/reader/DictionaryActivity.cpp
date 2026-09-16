@@ -1080,8 +1080,13 @@ void DictionaryActivity::drawEmptyState(const StrId title, const StrId body) {
     renderer.drawCenteredText(UI_10_FONT_ID, y, line.c_str());
     y += renderer.getLineHeight(UI_10_FONT_ID);
   }
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true, true);
+  // Physical button-hint boxes belong to X3/X4.  On X4 Pro they look like
+  // dead on-screen buttons when no dictionary is installed; touch devices use
+  // the normal left-edge Back gesture / Home key instead.
+  if (!mappedInput.hasTouch()) {
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, true, true);
+  }
 }
 
 void DictionaryActivity::drawCurrentMode() {

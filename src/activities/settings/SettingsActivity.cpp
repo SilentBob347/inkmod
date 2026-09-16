@@ -563,9 +563,10 @@ void SettingsActivity::loop() {
   // Keep this at the activity level so the existing inkMOD settings lists/themes stay intact.
   if (mappedInput.hasTouch()) {
     int tx = 0, ty = 0;
-    // X4 Pro: act on touch-down instead of waiting for a perfectly still tap.
-    // This makes the whole visible row easy to hit even if the finger moves a few pixels.
-    if (mappedInput.wasScreenTouchDown(tx, ty)) {
+    // X4 Pro: activate tabs/rows on a normal completed tap. The previous
+    // wasScreenTouchDown() helper required ~90 ms of stationary contact, which
+    // made light taps feel as if extra pressure was required.
+    if (mappedInput.wasScreenTapped(tx, ty)) {
       const auto& metrics = UITheme::getInstance().getMetrics();
       const auto safeArea = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
       const int tabTop = metrics.topPadding + metrics.headerHeight;

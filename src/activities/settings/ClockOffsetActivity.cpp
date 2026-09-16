@@ -111,7 +111,7 @@ void ClockOffsetActivity::adjustActiveField(int delta) {
 void ClockOffsetActivity::loop() {
   if (mappedInput.hasTouch()) {
     int tx = 0, ty = 0;
-    if (mappedInput.wasScreenTouchDown(tx, ty)) {
+    if (mappedInput.wasScreenTapped(tx, ty)) {
       const auto& metrics = UITheme::getInstance().getMetrics();
       const int pageWidth = renderer.getScreenWidth();
       const int pageHeight = renderer.getScreenHeight();

@@ -4467,14 +4467,9 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
   const bool foregroundBlack = ReaderUtils::readerForegroundBlack();
   bool needsImageGrayscale = pageHasImages;
   bool needsTextGrayscale = SETTINGS.textAntiAliasing && foregroundBlack;
-  // UC8279 on X4 Pro retains a strong gray charge after the delayed grayscale
-  // pass, producing severe ghosting about a second after the clean BW page is
-  // shown. Until the controller-specific grayscale waveform is ported, keep
-  // X4 Pro on the clean BW path; X3/X4 grayscale behaviour is unchanged.
-  if (mappedInput.hasTouch()) {
-    needsImageGrayscale = false;
-    needsTextGrayscale = false;
-  }
+  // X4 Pro UC8279 grayscale/AA support is now provided by the dedicated
+  // UC8279 X4 driver in FreeInkDisplay, so touch-capable X4 Pro devices can use
+  // the same text anti-aliasing pipeline instead of being forced to pure B/W.
   const bool needsAnyGrayscale = needsTextGrayscale || needsImageGrayscale;
 
   const auto finalizeBufferComposition = [&]() {
@@ -4615,6 +4610,13 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
     renderer.setRenderMode(GfxRenderer::BW);
     // restore the bw data
     renderer.restoreBwBuffer();
+    // Full-buffer grayscale fallback (used by X4 Pro controller variants that
+    // do not support strip grayscale, notably UC8179) must re-seed the panel
+    // controller's B/W baseline after the AA planes have been shown. Without
+    // this RAM-only cleanup the next FAST page turn diffs against a grayscale
+    // plane and the background progressively turns gray / ghosts. The strip
+    // path already performs the same cleanup in runTiledGrayscalePass().
+    renderer.cleanupGrayscaleWithFrameBuffer();
     const auto tBwRestore = millis();
 
     const auto tEnd = millis();
