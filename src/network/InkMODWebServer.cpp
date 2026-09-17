@@ -265,13 +265,22 @@ void InkMODWebServer::begin() {
 
   server->begin();
 
-  // Start WebSocket server for fast binary uploads
-  LOG_DBG("WEB", "Starting WebSocket server on port %d...", wsPort);
-  wsServer.reset(new WebSocketsServer(wsPort));
-  wsInstance = const_cast<InkMODWebServer*>(this);
-  wsServer->begin();
-  wsServer->onEvent(wsEventCallback);
-  LOG_DBG("WEB", "WebSocket server started");
+  // SoftAP on X3/X4 has a much tighter heap budget. Running a second TCP
+  // server for WebSocket uploads alongside SoftAP + captive DNS + HTTP can
+  // exhaust/fragment heap during large transfers. In AP mode keep only the
+  // normal HTTP uploader; STA mode retains the fast WebSocket path.
+  if (!apMode) {
+    LOG_DBG("WEB", "Starting WebSocket server on port %d...", wsPort);
+    wsServer.reset(new WebSocketsServer(wsPort));
+    wsInstance = const_cast<InkMODWebServer*>(this);
+    wsServer->begin();
+    wsServer->onEvent(wsEventCallback);
+    LOG_DBG("WEB", "WebSocket server started");
+  } else {
+    wsServer.reset();
+    wsInstance = nullptr;
+    LOG_DBG("WEB", "SoftAP mode: WebSocket uploader disabled to preserve heap");
+  }
 
   udpActive = udp.begin(LOCAL_UDP_PORT);
   LOG_DBG("WEB", "Discovery UDP %s on port %d", udpActive ? "enabled" : "failed", LOCAL_UDP_PORT);
@@ -282,7 +291,9 @@ void InkMODWebServer::begin() {
   // Show the correct IP based on network mode
   const String ipAddr = apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
   LOG_DBG("WEB", "Access at http://%s/", ipAddr.c_str());
-  LOG_DBG("WEB", "WebSocket at ws://%s:%d/", ipAddr.c_str(), wsPort);
+  if (wsServer) {
+    LOG_DBG("WEB", "WebSocket at ws://%s:%d/", ipAddr.c_str(), wsPort);
+  }
   LOG_DBG("WEB", "[MEM] Free heap after server.begin(): %d bytes", ESP.getFreeHeap());
 }
 
