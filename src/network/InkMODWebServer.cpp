@@ -903,11 +903,11 @@ void InkMODWebServer::handleUpload(UploadState& state, const bool preparedBookCa
         // Avoid accumulating a large secondary upload buffer here: a long SD
         // flush can starve the Wi-Fi/AP task long enough for Android clients to
         // stall or for the reader watchdog/network stack to reset. Write the
-        // incoming multipart chunk in small pieces and explicitly yield between
-        // writes. STA keeps the faster buffered path below.
+        // incoming multipart chunk in SD-friendly 8 KB pieces and explicitly yield
+        // after each write. STA keeps the faster buffered path below.
         const uint8_t* data = upload.buf;
         size_t remaining = upload.currentSize;
-        constexpr size_t AP_WRITE_CHUNK = 2048;
+        constexpr size_t AP_WRITE_CHUNK = 8192;
 
         while (remaining > 0) {
           const size_t toWrite = remaining < AP_WRITE_CHUNK ? remaining : AP_WRITE_CHUNK;
