@@ -5104,7 +5104,7 @@ function uploadFile() {
 
   let currentIndex = 0;
   const failedFiles = [];
-  let useWebSocket = !IS_SAFARI; // Safari/macOS is more reliable with HTTP multipart
+  let useWebSocket = true; // Always try WebSocket first; HTTP is fallback only after a real WS failure
 
   // Check if we should use batch logging mode
   const epubFilesToConvert = files.filter(f => {
