@@ -265,15 +265,15 @@ void InkMODWebServer::begin() {
 
   server->begin();
 
-  // Keep the fast WebSocket uploader in both STA and SoftAP. SoftAP uses a
-  // cooperative/chunked SD write path in WStype_BIN below so large frames do
-  // not block the Wi-Fi/captive-portal loop long enough to trip the watchdog.
+  // Keep the fast WebSocket uploader in both STA and SoftAP. Match the
+  // proven CrossPoint/al-rudi path: WebSocket frames are written directly to
+  // SD; watchdog handling is done around the potentially slow SD write.
   LOG_DBG("WEB", "Starting WebSocket server on port %d...", wsPort);
   wsServer.reset(new WebSocketsServer(wsPort));
   wsInstance = const_cast<InkMODWebServer*>(this);
   wsServer->begin();
   wsServer->onEvent(wsEventCallback);
-  LOG_DBG("WEB", "WebSocket server started%s", apMode ? " (SoftAP safe-write mode)" : "");
+  LOG_DBG("WEB", "WebSocket server started");
 
   udpActive = udp.begin(LOCAL_UDP_PORT);
   LOG_DBG("WEB", "Discovery UDP %s on port %d", udpActive ? "enabled" : "failed", LOCAL_UDP_PORT);
@@ -891,56 +891,26 @@ void InkMODWebServer::handleUpload(UploadState& state, const bool preparedBookCa
     LOG_DBG("WEB", "[UPLOAD] File created successfully: %s", filePath.c_str());
   } else if (upload.status == UPLOAD_FILE_WRITE) {
     if (state.file && state.error.isEmpty()) {
-      if (apMode) {
-        // SoftAP already carries AP + captive DNS + HTTP on the same C3.
-        // Avoid accumulating a large secondary upload buffer here: a long SD
-        // flush can starve the Wi-Fi/AP task long enough for Android clients to
-        // stall or for the reader watchdog/network stack to reset. Write the
-        // incoming multipart chunk in SD-friendly 8 KB pieces and explicitly yield
-        // after each write. STA keeps the faster buffered path below.
-        const uint8_t* data = upload.buf;
-        size_t remaining = upload.currentSize;
-        constexpr size_t AP_WRITE_CHUNK = 8192;
+      // Use the same buffered HTTP fallback in STA and SoftAP. This matches
+      // the proven CrossPoint/al-rudi path and avoids the very slow AP-only
+      // 8 KB/yield loop. flushUploadBuffer() resets the watchdog around SD I/O.
+      const uint8_t* data = upload.buf;
+      size_t remaining = upload.currentSize;
 
-        while (remaining > 0) {
-          const size_t toWrite = remaining < AP_WRITE_CHUNK ? remaining : AP_WRITE_CHUNK;
-          resetTaskWatchdogIfSubscribed();
-          const unsigned long writeStart = millis();
-          const size_t written = state.file.write(data, toWrite);
-          totalWriteTime += millis() - writeStart;
-          writeCount++;
-          resetTaskWatchdogIfSubscribed();
+      while (remaining > 0) {
+        const size_t space = UploadState::UPLOAD_BUFFER_SIZE - state.bufferPos;
+        const size_t toCopy = (remaining < space) ? remaining : space;
 
-          if (written != toWrite) {
+        memcpy(state.buffer.data() + state.bufferPos, data, toCopy);
+        state.bufferPos += toCopy;
+        data += toCopy;
+        remaining -= toCopy;
+
+        if (state.bufferPos >= UploadState::UPLOAD_BUFFER_SIZE) {
+          if (!flushUploadBuffer(state)) {
             state.error = "Failed to write to SD card - disk may be full";
             state.file.close();
             return;
-          }
-
-          data += written;
-          remaining -= written;
-          yield();
-        }
-      } else {
-        // STA mode has more headroom and keeps the original buffered fast path.
-        const uint8_t* data = upload.buf;
-        size_t remaining = upload.currentSize;
-
-        while (remaining > 0) {
-          const size_t space = UploadState::UPLOAD_BUFFER_SIZE - state.bufferPos;
-          const size_t toCopy = (remaining < space) ? remaining : space;
-
-          memcpy(state.buffer.data() + state.bufferPos, data, toCopy);
-          state.bufferPos += toCopy;
-          data += toCopy;
-          remaining -= toCopy;
-
-          if (state.bufferPos >= UploadState::UPLOAD_BUFFER_SIZE) {
-            if (!flushUploadBuffer(state)) {
-              state.error = "Failed to write to SD card - disk may be full";
-              state.file.close();
-              return;
-            }
           }
         }
       }
@@ -2147,37 +2117,17 @@ void InkMODWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payl
         wsServer->sendTXT(num, "ERROR:Upload overflow");
         return;
       }
-      size_t written = 0;
-      if (apMode) {
-        // SoftAP has to service the AP/TCP stack while SD writes are in
-        // progress. Split a WebSocket frame into moderate writes and yield
-        // between them. This keeps the fast WS transport without the long
-        // blocking write that previously caused stalls/reboots on X3/X4.
-        constexpr size_t AP_WS_WRITE_CHUNK = 8192;
-        while (written < length) {
-          const size_t left = length - written;
-          const size_t chunk = left < AP_WS_WRITE_CHUNK ? left : AP_WS_WRITE_CHUNK;
-          resetTaskWatchdogIfSubscribed();
-          const size_t n = wsUploadFile.write(payload + written, chunk);
-          resetTaskWatchdogIfSubscribed();
-          if (n != chunk) {
-            abortWsUpload("WS");
-            wsServer->sendTXT(num, "ERROR:Write failed - disk full?");
-            return;
-          }
-          written += n;
-          yield();
-        }
-      } else {
-        // Preserve the original fast STA path.
-        resetTaskWatchdogIfSubscribed();
-        written = wsUploadFile.write(payload, length);
-        resetTaskWatchdogIfSubscribed();
-        if (written != length) {
-          abortWsUpload("WS");
-          wsServer->sendTXT(num, "ERROR:Write failed - disk full?");
-          return;
-        }
+      // Match the proven CrossPoint/al-rudi fast path in both STA and SoftAP:
+      // one WebSocket frame -> one SD write. Do not split frames or yield
+      // between 8 KB pieces; that throttles AP uploads heavily.
+      resetTaskWatchdogIfSubscribed();
+      const size_t written = wsUploadFile.write(payload, length);
+      resetTaskWatchdogIfSubscribed();
+
+      if (written != length) {
+        abortWsUpload("WS");
+        wsServer->sendTXT(num, "ERROR:Write failed - disk full?");
+        return;
       }
 
       wsUploadReceived += written;
