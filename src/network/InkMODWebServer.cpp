@@ -265,22 +265,15 @@ void InkMODWebServer::begin() {
 
   server->begin();
 
-  // SoftAP on X3/X4 has a much tighter heap budget. Running a second TCP
-  // server for WebSocket uploads alongside SoftAP + captive DNS + HTTP can
-  // exhaust/fragment heap during large transfers. In AP mode keep only the
-  // normal HTTP uploader; STA mode retains the fast WebSocket path.
-  if (!apMode) {
-    LOG_DBG("WEB", "Starting WebSocket server on port %d...", wsPort);
-    wsServer.reset(new WebSocketsServer(wsPort));
-    wsInstance = const_cast<InkMODWebServer*>(this);
-    wsServer->begin();
-    wsServer->onEvent(wsEventCallback);
-    LOG_DBG("WEB", "WebSocket server started");
-  } else {
-    wsServer.reset();
-    wsInstance = nullptr;
-    LOG_DBG("WEB", "SoftAP mode: WebSocket uploader disabled to preserve heap");
-  }
+  // Keep the fast WebSocket uploader in both STA and SoftAP. SoftAP uses a
+  // cooperative/chunked SD write path in WStype_BIN below so large frames do
+  // not block the Wi-Fi/captive-portal loop long enough to trip the watchdog.
+  LOG_DBG("WEB", "Starting WebSocket server on port %d...", wsPort);
+  wsServer.reset(new WebSocketsServer(wsPort));
+  wsInstance = const_cast<InkMODWebServer*>(this);
+  wsServer->begin();
+  wsServer->onEvent(wsEventCallback);
+  LOG_DBG("WEB", "WebSocket server started%s", apMode ? " (SoftAP safe-write mode)" : "");
 
   udpActive = udp.begin(LOCAL_UDP_PORT);
   LOG_DBG("WEB", "Discovery UDP %s on port %d", udpActive ? "enabled" : "failed", LOCAL_UDP_PORT);
@@ -2154,14 +2147,37 @@ void InkMODWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payl
         wsServer->sendTXT(num, "ERROR:Upload overflow");
         return;
       }
-      resetTaskWatchdogIfSubscribed();
-      size_t written = wsUploadFile.write(payload, length);
-      resetTaskWatchdogIfSubscribed();
-
-      if (written != length) {
-        abortWsUpload("WS");
-        wsServer->sendTXT(num, "ERROR:Write failed - disk full?");
-        return;
+      size_t written = 0;
+      if (apMode) {
+        // SoftAP has to service the AP/TCP stack while SD writes are in
+        // progress. Split a WebSocket frame into moderate writes and yield
+        // between them. This keeps the fast WS transport without the long
+        // blocking write that previously caused stalls/reboots on X3/X4.
+        constexpr size_t AP_WS_WRITE_CHUNK = 8192;
+        while (written < length) {
+          const size_t left = length - written;
+          const size_t chunk = left < AP_WS_WRITE_CHUNK ? left : AP_WS_WRITE_CHUNK;
+          resetTaskWatchdogIfSubscribed();
+          const size_t n = wsUploadFile.write(payload + written, chunk);
+          resetTaskWatchdogIfSubscribed();
+          if (n != chunk) {
+            abortWsUpload("WS");
+            wsServer->sendTXT(num, "ERROR:Write failed - disk full?");
+            return;
+          }
+          written += n;
+          yield();
+        }
+      } else {
+        // Preserve the original fast STA path.
+        resetTaskWatchdogIfSubscribed();
+        written = wsUploadFile.write(payload, length);
+        resetTaskWatchdogIfSubscribed();
+        if (written != length) {
+          abortWsUpload("WS");
+          wsServer->sendTXT(num, "ERROR:Write failed - disk full?");
+          return;
+        }
       }
 
       wsUploadReceived += written;
