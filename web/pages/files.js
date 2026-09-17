@@ -1396,7 +1396,6 @@ let currentUploadXhr = null;    // Active XHR reference for external abort
 let folderPickedFiles = null;   // Preserve Safari's original File objects + webkitRelativePath
 const WS_PORT = 81;
 const WS_CHUNK_SIZE = 4096; // 4KB chunks - smaller for ESP32 stability
-const WS_LARGE_FILE_LIMIT = 8 * 1024 * 1024; // large files use HTTP from the start
 const IS_SAFARI = /^((?!chrome|chromium|crios|android).)*safari/i.test(navigator.userAgent);
 
 // ============================================================================
@@ -5173,11 +5172,10 @@ function uploadFile() {
     const relPath = originalFile.webkitRelativePath || '';
     const relDir = relPath ? relPath.slice(0, relPath.length - originalFile.name.length).replace(/\/+$/, '') : '';
     const targetPath = relDir ? joinRemotePath(currentPath, relDir) : currentPath;
-    // Large transfers are deliberately sent over HTTP. ESP32 WebSocket upload
-    // remains the fast path for small files, but Safari/large-file buffering can
-    // outrun the device and stall before DONE. HTTP streaming is slower but far
-    // more predictable for 10–100+ MB books and big folder batches.
-    if (originalFile.size >= WS_LARGE_FILE_LIMIT) useWebSocket = false;
+    // Keep WebSocket as the primary transport for large files too. The device
+    // streams each WS frame directly to SD and provides backpressure via the
+    // browser's bufferedAmount. HTTP remains only a fallback after a real WS
+    // connection/transfer failure.
     // Reset progress bar instantly without transition when starting a new file
     progressFill.classList.add('no-transition');
     progressFill.style.width = '0%';
