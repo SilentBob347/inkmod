@@ -919,31 +919,68 @@ void FileBrowserActivity::loop() {
     const int contentHeight = renderer.getScreenHeight() - contentTop - metrics.buttonHintsHeight -
                               metrics.verticalSpacing - pathReserved;
     const bool compact = SETTINGS.fileBrowserDisplay == InkMODSettings::FILE_BROWSER_DISPLAY_2_LINES;
-    const int rowHeight = compact ? MinimalTheme::compactFileBrowserRowHeightFor(renderer)
-                                  : std::max(1, metrics.listRowHeight);
-    const int touchPageItems = std::max(1, contentHeight / std::max(1, rowHeight));
-    const int pageStart = (static_cast<int>(selectorIndex) / touchPageItems) * touchPageItems;
+    const int fileRowHeight = compact ? MinimalTheme::compactFileBrowserRowHeightFor(renderer)
+                                      : std::max(1, metrics.listRowHeight);
+    // IMPORTANT: MinimalTheme renders folders shorter than two-line file rows on
+    // X4 Pro. Touch hit-testing must use the exact same per-row geometry;
+    // treating every compact row as fileRowHeight makes the hit position drift
+    // upward after each folder and eventually selects the row above the finger.
+    const int folderRowHeight = compact && BoardConfig::isX4Pro() ? std::max(metrics.listRowHeight, 56)
+                                                                  : std::max(1, metrics.listRowHeight);
+    const auto rowHeightFor = [&](const int index) -> int {
+      if (!compact) return fileRowHeight;
+      const bool isFolder = index >= 0 && index < static_cast<int>(files.size()) && !files[index].empty() &&
+                            files[index].back() == '/';
+      return isFolder ? folderRowHeight : fileRowHeight;
+    };
+    const auto pageEndFor = [&](const int startIndex) -> int {
+      int usedHeight = 0;
+      int endIndex = startIndex;
+      while (endIndex < static_cast<int>(files.size())) {
+        const int nextRowHeight = rowHeightFor(endIndex);
+        if (endIndex > startIndex && usedHeight + nextRowHeight > contentHeight) break;
+        usedHeight += nextRowHeight;
+        endIndex++;
+      }
+      return std::max(startIndex + 1, endIndex);
+    };
+
+    int pageStart = 0;
+    int pageEnd = pageEndFor(pageStart);
+    while (static_cast<int>(selectorIndex) >= pageEnd && pageEnd < static_cast<int>(files.size())) {
+      pageStart = pageEnd;
+      pageEnd = pageEndFor(pageStart);
+    }
 
     auto indexAtTouch = [&](const int tx, const int ty) -> int {
       if (tx < 0 || tx >= renderer.getScreenWidth() || ty < contentTop || ty >= contentTop + contentHeight) return -1;
-      const int touched = pageStart + (ty - contentTop) / std::max(1, rowHeight);
-      return touched >= 0 && touched < static_cast<int>(files.size()) ? touched : -1;
+      int y = contentTop;
+      for (int index = pageStart; index < pageEnd; ++index) {
+        const int h = rowHeightFor(index);
+        if (ty >= y && ty < y + h) return index;
+        y += h;
+      }
+      return -1;
     };
 
-    // Touch scrolling is page-oriented in the file browser. The global touch
-    // fallback intentionally maps a vertical swipe to Up/Down button navigation,
-    // but that only moves one file. Consume the real swipe here first and jump
-    // by one visible page, preserving the original button behaviour separately.
+    // Touch scrolling is page-oriented in the file browser. Use the same
+    // variable-height page boundaries as the renderer in compact/two-line mode.
     const auto touchSwipe = mappedInput.wasSwipe();
     if (touchSwipe == MappedInputManager::SwipeDir::Up) {
-      selectorIndex = static_cast<size_t>(ButtonNavigator::nextPageIndex(
-          static_cast<int>(selectorIndex), static_cast<int>(files.size()), touchPageItems));
+      if (pageEnd < static_cast<int>(files.size())) selectorIndex = static_cast<size_t>(pageEnd);
       requestUpdate();
       return;
     }
     if (touchSwipe == MappedInputManager::SwipeDir::Down) {
-      selectorIndex = static_cast<size_t>(ButtonNavigator::previousPageIndex(
-          static_cast<int>(selectorIndex), static_cast<int>(files.size()), touchPageItems));
+      int previousPageStart = 0;
+      int scanStart = 0;
+      while (scanStart < pageStart) {
+        previousPageStart = scanStart;
+        const int next = pageEndFor(scanStart);
+        if (next >= pageStart) break;
+        scanStart = next;
+      }
+      selectorIndex = static_cast<size_t>(previousPageStart);
       requestUpdate();
       return;
     }
