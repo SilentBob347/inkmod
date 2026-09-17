@@ -898,26 +898,56 @@ void InkMODWebServer::handleUpload(UploadState& state, const bool preparedBookCa
     LOG_DBG("WEB", "[UPLOAD] File created successfully: %s", filePath.c_str());
   } else if (upload.status == UPLOAD_FILE_WRITE) {
     if (state.file && state.error.isEmpty()) {
-      // Buffer incoming data and flush when buffer is full
-      // This reduces SD card write operations and improves throughput
-      const uint8_t* data = upload.buf;
-      size_t remaining = upload.currentSize;
+      if (apMode) {
+        // SoftAP already carries AP + captive DNS + HTTP on the same C3.
+        // Avoid accumulating a large secondary upload buffer here: a long SD
+        // flush can starve the Wi-Fi/AP task long enough for Android clients to
+        // stall or for the reader watchdog/network stack to reset. Write the
+        // incoming multipart chunk in small pieces and explicitly yield between
+        // writes. STA keeps the faster buffered path below.
+        const uint8_t* data = upload.buf;
+        size_t remaining = upload.currentSize;
+        constexpr size_t AP_WRITE_CHUNK = 2048;
 
-      while (remaining > 0) {
-        const size_t space = UploadState::UPLOAD_BUFFER_SIZE - state.bufferPos;
-        const size_t toCopy = (remaining < space) ? remaining : space;
+        while (remaining > 0) {
+          const size_t toWrite = remaining < AP_WRITE_CHUNK ? remaining : AP_WRITE_CHUNK;
+          resetTaskWatchdogIfSubscribed();
+          const unsigned long writeStart = millis();
+          const size_t written = state.file.write(data, toWrite);
+          totalWriteTime += millis() - writeStart;
+          writeCount++;
+          resetTaskWatchdogIfSubscribed();
 
-        memcpy(state.buffer.data() + state.bufferPos, data, toCopy);
-        state.bufferPos += toCopy;
-        data += toCopy;
-        remaining -= toCopy;
-
-        // Flush buffer when full
-        if (state.bufferPos >= UploadState::UPLOAD_BUFFER_SIZE) {
-          if (!flushUploadBuffer(state)) {
+          if (written != toWrite) {
             state.error = "Failed to write to SD card - disk may be full";
             state.file.close();
             return;
+          }
+
+          data += written;
+          remaining -= written;
+          yield();
+        }
+      } else {
+        // STA mode has more headroom and keeps the original buffered fast path.
+        const uint8_t* data = upload.buf;
+        size_t remaining = upload.currentSize;
+
+        while (remaining > 0) {
+          const size_t space = UploadState::UPLOAD_BUFFER_SIZE - state.bufferPos;
+          const size_t toCopy = (remaining < space) ? remaining : space;
+
+          memcpy(state.buffer.data() + state.bufferPos, data, toCopy);
+          state.bufferPos += toCopy;
+          data += toCopy;
+          remaining -= toCopy;
+
+          if (state.bufferPos >= UploadState::UPLOAD_BUFFER_SIZE) {
+            if (!flushUploadBuffer(state)) {
+              state.error = "Failed to write to SD card - disk may be full";
+              state.file.close();
+              return;
+            }
           }
         }
       }
