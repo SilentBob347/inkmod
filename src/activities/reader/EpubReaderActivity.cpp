@@ -91,6 +91,7 @@ constexpr char FB2_LOGICAL_PAGES_FILE_NAME[] = "/logical_pages.bin";
 
 constexpr uint32_t BOOK_WIDE_PAGES_MAGIC = 0x47505742U;  // "BWPG"
 constexpr uint16_t BOOK_WIDE_PAGES_VERSION = 1;
+constexpr uint32_t BOOK_WIDE_LAYOUT_SEMANTICS_GENERATION = 1;
 constexpr char BOOK_WIDE_PAGES_FILE_NAME[] = "/book_wide_pages.bin";
 
 struct BookWidePagesRecord {
@@ -104,7 +105,8 @@ struct BookWidePagesRecord {
 };
 
 bool loadBookWidePagesTotal(const std::shared_ptr<Epub>& epub, const uint32_t layoutSignature,
-                            int& totalPagesOut) {
+                            int& totalPagesOut, uint32_t* sampleBytesOut = nullptr,
+                            int* samplePagesOut = nullptr) {
   if (!epub) return false;
   const std::string path = epub->getCachePath() + BOOK_WIDE_PAGES_FILE_NAME;
   if (!Storage.exists(path.c_str())) return false;
@@ -119,6 +121,8 @@ bool loadBookWidePagesTotal(const std::shared_ptr<Epub>& epub, const uint32_t la
     return false;
   }
   totalPagesOut = record.totalPages;
+  if (sampleBytesOut) *sampleBytesOut = record.sampleBytes;
+  if (samplePagesOut) *samplePagesOut = record.samplePages;
   return true;
 }
 
@@ -196,6 +200,26 @@ uint32_t fb2LogicalPagesLayoutSignature(const int fontId, const uint16_t viewpor
                                         const uint16_t viewportHeight) {
   uint32_t hash = 2166136261U;
   hashLayoutValue(hash, FB2_LAYOUT_SEMANTICS_GENERATION);
+  hashLayoutValue(hash, fontId);
+  const float lineCompression = SETTINGS.getReaderLineCompression();
+  hashLayoutValue(hash, lineCompression);
+  hashLayoutValue(hash, SETTINGS.extraParagraphSpacing);
+  hashLayoutValue(hash, SETTINGS.forceParagraphIndents);
+  hashLayoutValue(hash, SETTINGS.paragraphAlignment);
+  hashLayoutValue(hash, viewportWidth);
+  hashLayoutValue(hash, viewportHeight);
+  hashLayoutValue(hash, SETTINGS.hyphenationEnabled);
+  hashLayoutValue(hash, SETTINGS.embeddedStyle);
+  hashLayoutValue(hash, SETTINGS.imageRendering);
+  hashLayoutValue(hash, SETTINGS.bionicReadingEnabled);
+  hashLayoutValue(hash, SETTINGS.guideReadingEnabled);
+  return hash;
+}
+
+uint32_t bookWidePagesLayoutSignature(const int fontId, const uint16_t viewportWidth,
+                                      const uint16_t viewportHeight) {
+  uint32_t hash = 2166136261U;
+  hashLayoutValue(hash, BOOK_WIDE_LAYOUT_SEMANTICS_GENERATION);
   hashLayoutValue(hash, fontId);
   const float lineCompression = SETTINGS.getReaderLineCompression();
   hashLayoutValue(hash, lineCompression);
@@ -4845,11 +4869,13 @@ void EpubReaderActivity::renderStatusBar() const {
   if (SETTINGS.statusBarChapterPageCount == 2 && section->pageCount > 0) {
     const auto bookWideLayout = computeReaderViewportLayout(renderer, automaticPageTurnActive);
     const uint32_t layoutSignature =
-        fb2LogicalPagesLayoutSignature(SETTINGS.getReaderFontId(), bookWideLayout.viewportWidth,
-                                       bookWideLayout.viewportHeight);
+        bookWidePagesLayoutSignature(SETTINGS.getReaderFontId(), bookWideLayout.viewportWidth,
+                                     bookWideLayout.viewportHeight);
 
     int lockedTotal = 0;
-    if (loadBookWidePagesTotal(epub, layoutSignature, lockedTotal)) {
+    uint32_t lockedSampleBytes = 0;
+    int lockedSamplePages = 0;
+    if (loadBookWidePagesTotal(epub, layoutSignature, lockedTotal, &lockedSampleBytes, &lockedSamplePages)) {
       bookWideTotalPages = lockedTotal;
     } else {
       int sampleStartSpine = currentSpineIndex;
@@ -4888,9 +4914,10 @@ void EpubReaderActivity::renderStatusBar() const {
         const float avgPagesPerByte = samplePageCount / static_cast<float>(sampleChapterBytes);
         const float estimatedTotalPages = avgPagesPerByte * static_cast<float>(totalBookBytes);
         bookWideTotalPages = std::max(1, static_cast<int>(std::lround(estimatedTotalPages)));
+        lockedSampleBytes = static_cast<uint32_t>(std::min<size_t>(sampleChapterBytes, UINT32_MAX));
+        lockedSamplePages = static_cast<int>(std::lround(samplePageCount));
         if (saveBookWidePagesTotal(epub, layoutSignature, bookWideTotalPages,
-                                   static_cast<uint32_t>(std::min<size_t>(sampleChapterBytes, UINT32_MAX)),
-                                   static_cast<int>(std::lround(samplePageCount)))) {
+                                   lockedSampleBytes, lockedSamplePages)) {
           LOG_INF("ERS", "Locked book-wide page estimate: total=%d samplePages=%d sampleBytes=%u",
                   bookWideTotalPages, static_cast<int>(std::lround(samplePageCount)),
                   static_cast<unsigned>(std::min<size_t>(sampleChapterBytes, UINT32_MAX)));
@@ -4899,9 +4926,27 @@ void EpubReaderActivity::renderStatusBar() const {
     }
 
     if (bookWideTotalPages > 0) {
-      bookWideCurrentPage =
-          std::max(1, static_cast<int>(std::lround(bookProgress / 100.0f * bookWideTotalPages)));
-      bookWideCurrentPage = std::min(bookWideCurrentPage, bookWideTotalPages);
+      // Keep the numerator stable as well as the denominator. Mapping the
+      // percentage back onto the estimated total made one physical page turn
+      // jump several displayed pages whenever byte density differed between
+      // chapters. The locked sample already gives us a fixed pages-per-byte
+      // density: use it only to estimate pages before the current spine, then
+      // add the real local page index. Inside a spine every physical page turn
+      // therefore advances this counter by exactly one.
+      if (lockedSampleBytes > 0 && lockedSamplePages > 0) {
+        const size_t bytesBeforeCurrentSpine =
+            currentSpineIndex > 0 ? epub->getCumulativeSpineItemSize(currentSpineIndex - 1) : 0;
+        const double pagesPerByte =
+            static_cast<double>(lockedSamplePages) / static_cast<double>(lockedSampleBytes);
+        const int estimatedPagesBefore =
+            std::max(0, static_cast<int>(std::lround(static_cast<double>(bytesBeforeCurrentSpine) * pagesPerByte)));
+        bookWideCurrentPage = estimatedPagesBefore + std::max(0, section->currentPage) + 1;
+      } else {
+        // Compatibility fallback for a damaged/legacy cache record.
+        bookWideCurrentPage =
+            std::max(1, static_cast<int>(std::lround(bookProgress / 100.0f * bookWideTotalPages)));
+      }
+      bookWideCurrentPage = std::max(1, std::min(bookWideCurrentPage, bookWideTotalPages));
     }
   }
 

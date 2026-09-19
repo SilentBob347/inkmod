@@ -45,8 +45,10 @@ class InkMODWebServer {
     std::vector<uint8_t> buffer;
     size_t bufferPos = 0;
 
-    UploadState() { buffer.resize(UPLOAD_BUFFER_SIZE); }
-  } upload, bookCacheUpload, fb2PackageUpload, wrappedEpubUpload;
+    explicit UploadState(bool allocateBuffer = true) {
+      if (allocateBuffer) buffer.resize(UPLOAD_BUFFER_SIZE);
+    }
+  } upload, bookCacheUpload, fb2PackageUpload, wrappedEpubUpload{false};
 
   InkMODWebServer();
   ~InkMODWebServer();

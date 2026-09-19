@@ -86,6 +86,14 @@ class ChapterHtmlSlimParser {
   // the enclosing block again, otherwise its margin would accumulate.
   bool inlineLinePositionActive = false;
 
+  // FB2 <empty-line/> is converted to <p class="empty-line"><br/></p>.
+  // The generic empty-block reuse path intentionally collapses empty text
+  // containers, so remember when such a block has just closed. If the next
+  // real item is an image, the image path consumes this flag and restores one
+  // full line of vertical space instead of gluing the illustration to the
+  // preceding paragraph.
+  bool pendingFb2EmptyLineBeforeImage = false;
+
   // Style tracking (replaces depth-based approach)
   struct StyleStackEntry {
     int depth = 0;

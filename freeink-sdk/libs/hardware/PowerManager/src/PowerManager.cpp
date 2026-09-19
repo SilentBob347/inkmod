@@ -87,6 +87,18 @@ void PowerManager::powerDownRailsForSleep() {
   // active-low ones (e.g. X4 Pro's GPIO5, which powers the card while held LOW).
   holdRailOff(b.sd.powerEnable, b.sd.powerActiveHigh ? LOW : HIGH);
   holdRailOff(b.touch.powerEnable, b.touch.powerEnableActiveHigh ? LOW : HIGH);
+
+  // X4 Pro frontlight is driven directly from two active-high LEDC PWM GPIOs
+  // (cool/warm). GPIO isolation alone leaves those lines high-Z in deep sleep;
+  // on real hardware that can let the LED driver input float and keep drawing
+  // current while the reader appears off. Force both channels to their true
+  // inactive level and hold them there for the whole deep-sleep interval.
+  // For active-low frontlights the inactive level is HIGH. No-op on boards
+  // without a frontlight or without the warm channel.
+  const uint8_t frontlightOffLevel = b.frontlight.activeHigh ? LOW : HIGH;
+  holdRailOff(b.frontlight.gpio, frontlightOffLevel);
+  holdRailOff(b.frontlight.gpioWarm, frontlightOffLevel);
+
   // The mic enable also carries a polarity flag; OFF is the inactive level.
   holdRailOff(b.mic.enable, b.mic.enableActiveHigh ? LOW : HIGH);
 }

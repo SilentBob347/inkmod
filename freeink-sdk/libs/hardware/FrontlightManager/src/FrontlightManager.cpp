@@ -36,6 +36,15 @@ void FrontlightManager::begin() {
   const auto& fl = BoardConfig::ACTIVE.frontlight;
   if (fl.gpio == BoardConfig::PIN_UNASSIGNED) return;
 
+  // PowerManager holds the X4 Pro frontlight PWM pins at their inactive level
+  // through deep sleep. A deep-sleep wake is a reset, but the per-pin GPIO hold
+  // survives until explicitly released. Drop that hold before handing the pins
+  // back to LEDC, otherwise the first brightness write after wake can be ignored.
+  gpio_hold_dis(static_cast<gpio_num_t>(fl.gpio));
+  if (fl.gpioWarm != BoardConfig::PIN_UNASSIGNED) {
+    gpio_hold_dis(static_cast<gpio_num_t>(fl.gpioWarm));
+  }
+
   attachChannel(fl.gpio, LEDC_CH_COOL, fl.pwmFrequency, fl.pwmResolutionBits);
   if (fl.gpioWarm != BoardConfig::PIN_UNASSIGNED) {
     attachChannel(fl.gpioWarm, LEDC_CH_WARM, fl.pwmFrequency, fl.pwmResolutionBits);

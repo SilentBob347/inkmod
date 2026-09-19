@@ -1089,6 +1089,15 @@ void ChapterHtmlSlimParser::fallbackCurrentTableBufferIfNeeded(const char* stage
 
 void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char* name, const XML_Char** atts) {
   auto* self = static_cast<ChapterHtmlSlimParser*>(userData);
+
+  // This flag describes adjacency in the source stream. Whitespace text
+  // between tags does not clear it, but any real element other than the
+  // immediately following image does. <br> belongs to the generated
+  // empty-line wrapper itself and is therefore exempt.
+  const bool startingImage = matches(name, IMAGE_TAGS, std::size(IMAGE_TAGS));
+  if (self->pendingFb2EmptyLineBeforeImage && !startingImage && strcmp(name, "br") != 0) {
+    self->pendingFb2EmptyLineBeforeImage = false;
+  }
   if (self->cancellationToken && self->cancellationToken->isCancellationRequested()) {
     self->cancelled = true;
     return;
@@ -1383,6 +1392,9 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
   }
 
   if (matches(name, IMAGE_TAGS, std::size(IMAGE_TAGS))) {
+    const bool preserveFb2EmptyLine = self->pendingFb2EmptyLineBeforeImage;
+    self->pendingFb2EmptyLineBeforeImage = false;
+
     std::string src;
     std::string alt;
     bool lowMemoryPlaceholderText = false;
@@ -1692,6 +1704,18 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                     }
                   }
 
+                  // FB2 <empty-line/> is semantic content, not disposable
+                  // presentation whitespace. Its generated empty paragraph is
+                  // normally collapsed by startNewTextBlock(), so restore at
+                  // least one actual reader line before an immediately
+                  // following illustration. max() avoids double-spacing when
+                  // CSS already contributed a larger top inset.
+                  if (preserveFb2EmptyLine) {
+                    const int16_t explicitGap = static_cast<int16_t>(
+                        self->renderer.getLineHeight(self->fontId) * self->lineCompression + 0.5f);
+                    imageMarginTop = std::max(imageMarginTop, explicitGap);
+                  }
+
                   // Create page for image - only break if image won't fit remaining space.
                   //
                   // IMPORTANT: after the break we must fit the image against the *new*
@@ -1719,7 +1743,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                   // presentation whitespace. If keeping it would push a full-height
                   // illustration outside the content viewport, drop that leading gap.
                   // This does not affect pages that already contain real text/elements.
-                  if (self->currentPage && self->currentPage->elements.empty() &&
+                  if (!preserveFb2EmptyLine && self->currentPage && self->currentPage->elements.empty() &&
                       self->currentPageNextY > 0 &&
                       self->currentPageNextY + imageMarginTop + displayHeight + imageMarginBottom >
                           self->viewportHeight) {
@@ -2516,6 +2540,10 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
       willPopStyleStack || willClearBold || willClearItalic || willClearUnderline || willClearStrikethrough;
   const bool promotedBodySpan = strcmp(name, "span") == 0 && !self->promotedBodySpanDepths_.empty() &&
                                 self->promotedBodySpanDepths_.back() == self->depth - 1;
+  const bool closingFb2ExplicitEmptyLine =
+      self->epub && self->epub->isFb2Package() && strcmp(name, "p") == 0 &&
+      !self->ancestorStack_.empty() && self->ancestorStack_.back().depth == self->depth - 1 &&
+      attributeContainsToken(self->ancestorStack_.back().classAttr.c_str(), "empty-line");
   const bool headerOrBlockTag = isHeaderOrBlock(name) || promotedBodySpan;
   const bool tableStructuralTag = isTableStructuralTag(name);
 
@@ -2648,6 +2676,10 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
   }
   if (promotedBodySpan && !self->promotedBodySpanDepths_.empty()) {
     self->promotedBodySpanDepths_.pop_back();
+  }
+
+  if (closingFb2ExplicitEmptyLine) {
+    self->pendingFb2EmptyLineBeforeImage = true;
   }
 }
 

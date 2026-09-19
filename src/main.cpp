@@ -962,8 +962,21 @@ void setup() {
   HalSystem::checkPanic();
 
   SETTINGS.loadFromFile();
+
+  // Resolve the wake route before restoring the X4 Pro frontlight. A short
+  // power tap while the reader is asleep wakes the S3 long enough for
+  // verifyPowerButtonWakeup() to reject it and put the device back to sleep.
+  // Restoring the saved light state before that verification made the frontlight
+  // visibly flash for a few seconds on an otherwise rejected wake. Keep the light
+  // dark until the power-button hold has been accepted; ordinary/cold boots keep
+  // the previous restore-on-wake behaviour.
+  const auto wakeupReason = gpio.getWakeupReason();
+  const bool deferFrontlightRestore =
+      BoardConfig::isX4Pro() && wakeupReason == HalGPIO::WakeupReason::PowerButton;
+  const bool restoreFrontlight =
+      SETTINGS.frontlightOn != 0 && SETTINGS.frontlightRestoreOnWake != 0;
   Frontlight.begin(SETTINGS.frontlightBrightness, SETTINGS.frontlightWarmth,
-                   SETTINGS.frontlightOn != 0 && SETTINGS.frontlightRestoreOnWake != 0);
+                   restoreFrontlight && !deferFrontlightRestore);
   APP_STATE.loadFromFile();
   powerManager.seedLastChargeEpochSeconds(APP_STATE.lastChargeEpochSeconds);
 
@@ -998,7 +1011,6 @@ void setup() {
 
   // Check wake duration before the remaining file loads so the user does not
   // have to hold the power button across all of the SD reads below.
-  const auto wakeupReason = gpio.getWakeupReason();
   LOG_INF("BOOT", "Wake route: %s", wakeupRouteName(wakeupReason));
   switch (wakeupReason) {
     case HalGPIO::WakeupReason::PowerButton:
@@ -1022,6 +1034,14 @@ void setup() {
     default:
       LOG_INF("BOOT", "Other wake route: continuing boot");
       break;
+  }
+
+  // A PowerButton wake reaches this point only if verifyPowerButtonWakeup()
+  // accepted the hold. Restore the saved frontlight state now, after the rejected
+  // short-tap path has already gone back to deep sleep. X3/X4 behaviour is
+  // intentionally unchanged.
+  if (deferFrontlightRestore && restoreFrontlight) {
+    Frontlight.setOn(true);
   }
 
   // Recovery firmware mode: hold left side button (BTN_UP) together with the power button at

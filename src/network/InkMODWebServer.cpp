@@ -265,9 +265,7 @@ void InkMODWebServer::begin() {
 
   server->begin();
 
-  // Keep the fast WebSocket uploader in both STA and SoftAP. Match the
-  // proven CrossPoint/al-rudi path: WebSocket frames are written directly to
-  // SD; watchdog handling is done around the potentially slow SD write.
+  // Start WebSocket server for fast binary uploads
   LOG_DBG("WEB", "Starting WebSocket server on port %d...", wsPort);
   wsServer.reset(new WebSocketsServer(wsPort));
   wsInstance = const_cast<InkMODWebServer*>(this);
@@ -284,9 +282,7 @@ void InkMODWebServer::begin() {
   // Show the correct IP based on network mode
   const String ipAddr = apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
   LOG_DBG("WEB", "Access at http://%s/", ipAddr.c_str());
-  if (wsServer) {
-    LOG_DBG("WEB", "WebSocket at ws://%s:%d/", ipAddr.c_str(), wsPort);
-  }
+  LOG_DBG("WEB", "WebSocket at ws://%s:%d/", ipAddr.c_str(), wsPort);
   LOG_DBG("WEB", "[MEM] Free heap after server.begin(): %d bytes", ESP.getFreeHeap());
 }
 
@@ -394,7 +390,7 @@ void InkMODWebServer::handleClient() {
           if (hostname.isEmpty()) {
             hostname = "inkmod";
           }
-          String message = "crosspoint (on " + hostname + ");" + String(port);
+          String message = "crosspoint (on " + hostname + ");" + String(wsPort);
           udp.beginPacket(udp.remoteIP(), udp.remotePort());
           udp.write(reinterpret_cast<const uint8_t*>(message.c_str()), message.length());
           udp.endPacket();
@@ -775,6 +771,14 @@ void InkMODWebServer::handleUpload(UploadState& state, const bool preparedBookCa
     resetTaskWatchdogIfSubscribed();
 
     state.file.close();
+
+    // v1.1.7 added wrappedEpubUpload as a fourth UploadState. Keep that
+    // state buffer lazy so ordinary SoftAP transfers retain the same steady
+    // heap footprint as v1.1.6. Allocate it only when this endpoint is used.
+    if (state.buffer.size() != UploadState::UPLOAD_BUFFER_SIZE) {
+      state.buffer.resize(UploadState::UPLOAD_BUFFER_SIZE);
+    }
+
     // Browsers (notably Safari directory uploads) may report multipart
     // filename as "TopFolder/sub/file.ext". The destination directory is
     // already supplied separately in ?path=, so only keep the basename here.
@@ -891,9 +895,8 @@ void InkMODWebServer::handleUpload(UploadState& state, const bool preparedBookCa
     LOG_DBG("WEB", "[UPLOAD] File created successfully: %s", filePath.c_str());
   } else if (upload.status == UPLOAD_FILE_WRITE) {
     if (state.file && state.error.isEmpty()) {
-      // Use the same buffered HTTP fallback in STA and SoftAP. This matches
-      // the proven CrossPoint/al-rudi path and avoids the very slow AP-only
-      // 8 KB/yield loop. flushUploadBuffer() resets the watchdog around SD I/O.
+      // Buffer incoming data and flush when buffer is full
+      // This reduces SD card write operations and improves throughput
       const uint8_t* data = upload.buf;
       size_t remaining = upload.currentSize;
 
@@ -906,6 +909,7 @@ void InkMODWebServer::handleUpload(UploadState& state, const bool preparedBookCa
         data += toCopy;
         remaining -= toCopy;
 
+        // Flush buffer when full
         if (state.bufferPos >= UploadState::UPLOAD_BUFFER_SIZE) {
           if (!flushUploadBuffer(state)) {
             state.error = "Failed to write to SD card - disk may be full";
@@ -1002,6 +1006,11 @@ void InkMODWebServer::handleUpload(UploadState& state, const bool preparedBookCa
         }
       }
     }
+    if (preparedWrappedEpub) {
+      // Return the temporary 4 KB buffer after the wrapped-EPUB request so
+      // ordinary SoftAP mode goes back to the v1.1.6 steady-state footprint.
+      std::vector<uint8_t>().swap(state.buffer);
+    }
   } else if (upload.status == UPLOAD_FILE_ABORTED) {
     state.bufferPos = 0;  // Discard buffered data
     if (state.file) {
@@ -1013,6 +1022,9 @@ void InkMODWebServer::handleUpload(UploadState& state, const bool preparedBookCa
       Storage.remove(filePath.c_str());
     }
     state.error = "Upload aborted";
+    if (preparedWrappedEpub) {
+      std::vector<uint8_t>().swap(state.buffer);
+    }
     LOG_DBG("WEB", "Upload aborted");
   }
 }
@@ -2117,11 +2129,8 @@ void InkMODWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payl
         wsServer->sendTXT(num, "ERROR:Upload overflow");
         return;
       }
-      // Match the proven CrossPoint/al-rudi fast path in both STA and SoftAP:
-      // one WebSocket frame -> one SD write. Do not split frames or yield
-      // between 8 KB pieces; that throttles AP uploads heavily.
       resetTaskWatchdogIfSubscribed();
-      const size_t written = wsUploadFile.write(payload, length);
+      size_t written = wsUploadFile.write(payload, length);
       resetTaskWatchdogIfSubscribed();
 
       if (written != length) {
