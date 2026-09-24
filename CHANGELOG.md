@@ -1,5 +1,19 @@
 # Changelog
 
+## [v1.1.9] - 2026-09-24
+
+### Fixed
+- Fixed X4 Pro wake-up by short Power press when sleep is assigned to long press.
+- Fixed conflict between reader page-turn swipe and the left-edge Back gesture.
+- Fixed Home button settings when opened from the reader.
+- Added reader-menu invocation by control/gesture and full-screen tap page turning.
+- Renamed the Russian chapter picker label from "Выберите главу" to "Оглавление".
+- Improved X4 Pro line-spacing fine adjustment with side buttons.
+- Fixed clipped USB connection message on X4 Pro.
+- Improved X4 Pro CW2017 battery handling and power management.
+- Improved stability when many custom fonts are installed.
+- Restored missing letters in Russian and Ukrainian touch keyboard layouts.
+
 ## [v1.1.8] - 2026-09-15
 
 ### Added
