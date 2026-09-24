@@ -91,6 +91,9 @@ class MappedInputManager {
   // Returns a completed swipe only when the gesture started inside the given
   // logical screen rectangle. Left-edge Back gestures stay reserved for Back.
   SwipeDir wasSwipeStartedInRect(int x, int y, int width, int height) const;
+  // Returns a completed swipe that originated at the requested screen edge.
+  // Exposed for reader-specific gestures such as bottom-edge menu invocation.
+  bool wasEdgeSwipe(freeink::ui::ScreenEdge edge) const;
   bool wasBackGesture() const;
   bool hasHomeKey() const;
   bool wasHomeGesture() const;
@@ -126,5 +129,4 @@ class MappedInputManager {
   bool shouldUsePowerAsConfirmFallback() const;
   bool shouldMirrorPowerAsConfirmHold() const;
   bool decodeSwipe(int& sx, int& sy, int& ex, int& ey) const;
-  bool wasEdgeSwipe(freeink::ui::ScreenEdge edge) const;
 };
