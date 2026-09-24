@@ -2996,6 +2996,9 @@ void EpubReaderActivity::executeFootnoteQuickAction() {
 bool EpubReaderActivity::handleShortcutAction(const uint8_t rawAction) {
   const auto action = static_cast<InkMODSettings::SHORT_PWRBTN>(rawAction);
   switch (action) {
+    case InkMODSettings::SHORT_PWRBTN::OPEN_READER_MENU:
+      readerMenuRequested = true;
+      return true;
     case InkMODSettings::SHORT_PWRBTN::PAGE_TURN:
       if (!section) {
         requestUpdate();
@@ -3069,6 +3072,9 @@ bool EpubReaderActivity::executeShortPowerButtonAction() {
   }
 
   switch (SETTINGS.shortPwrBtn) {
+    case InkMODSettings::SHORT_PWRBTN::OPEN_READER_MENU:
+      readerMenuRequested = true;
+      return true;
     case InkMODSettings::SHORT_PWRBTN::TOGGLE_FONT:
       executeReaderQuickAction(InkMODSettings::LONG_MENU_CHANGE_FONT);
       return true;

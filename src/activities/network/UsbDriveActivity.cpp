@@ -135,7 +135,13 @@ void UsbDriveActivity::render(RenderLock&&) {
   const int centerY = metrics.topPadding + metrics.headerHeight +
                       (height - metrics.topPadding - metrics.headerHeight - metrics.buttonHintsHeight) / 2;
   renderer.drawCenteredText(UI_12_FONT_ID, centerY - 28, title, true, EpdFontFamily::BOLD);
-  renderer.drawCenteredText(UI_10_FONT_ID, centerY + 12, detail, true, EpdFontFamily::REGULAR);
+  if (state == UsbDriveState::Connected) {
+    renderer.drawCenteredText(UI_10_FONT_ID, centerY + 8, "Копируйте файлы.", true, EpdFontFamily::REGULAR);
+    renderer.drawCenteredText(UI_10_FONT_ID, centerY + 34,
+                              "Перед отключением безопасно извлеките диск", true, EpdFontFamily::REGULAR);
+  } else {
+    renderer.drawCenteredText(UI_10_FONT_ID, centerY + 12, detail, true, EpdFontFamily::REGULAR);
+  }
 
   if (!exitRequested && (state == UsbDriveState::WaitingForHost || startFailed)) {
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");

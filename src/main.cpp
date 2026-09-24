@@ -1015,9 +1015,11 @@ void setup() {
   switch (wakeupReason) {
     case HalGPIO::WakeupReason::PowerButton:
       LOG_INF("BOOT", "Power-button wake: verifying duration required=%u shortAllowed=%d",
-              SETTINGS.getPowerButtonWakeDuration(), SETTINGS.shortPwrBtn == InkMODSettings::SHORT_PWRBTN::SLEEP);
+              SETTINGS.getPowerButtonWakeDuration(),
+              BoardConfig::isX4Pro() || SETTINGS.shortPwrBtn == InkMODSettings::SHORT_PWRBTN::SLEEP);
       gpio.verifyPowerButtonWakeup(SETTINGS.getPowerButtonWakeDuration(),
-                                   SETTINGS.shortPwrBtn == InkMODSettings::SHORT_PWRBTN::SLEEP);
+                                   BoardConfig::isX4Pro() ||
+                                       SETTINGS.shortPwrBtn == InkMODSettings::SHORT_PWRBTN::SLEEP);
       break;
     case HalGPIO::WakeupReason::AfterUSBPower:
       // A cold boot caused only by external USB power should not leave the

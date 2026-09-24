@@ -367,7 +367,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                             "frontlightRestoreOnWake"));
     add(SettingInfo::Enum(StrId::STR_TOUCH_READER_CONTROLS, &InkMODSettings::touchReaderControls,
                           {StrId::STR_STATE_OFF, StrId::STR_TOUCH_MODE_TAP, StrId::STR_TOUCH_MODE_SWIPE,
-                           StrId::STR_TOUCH_MODE_INVERTED_TAP},
+                           StrId::STR_TOUCH_MODE_INVERTED_TAP, StrId::STR_TOUCH_MODE_FULL_TAP},
                           "touchReaderControls", StrId::STR_CAT_CONTROLS));
 
     // --- Reader ---
@@ -467,6 +467,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                            StrId::STR_BROWSE_FILES,
                            StrId::STR_DICTIONARY,
                            StrId::STR_CREATE_CLIPPING,
+                           StrId::STR_MENU,
                            StrId::STR_FRONTLIGHT},
                           "shortPwrBtn", StrId::STR_CAT_CONTROLS)
             .withEnumRawValues({InkMODSettings::IGNORE,
@@ -491,6 +492,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                                 InkMODSettings::FILE_BROWSER,
                                 InkMODSettings::DICTIONARY_LOOKUP,
                                 InkMODSettings::CREATE_CLIPPING,
+                                InkMODSettings::OPEN_READER_MENU,
                                 InkMODSettings::TOGGLE_FRONTLIGHT}));
     add(SettingInfo::Enum(StrId::STR_LONG_PRESS_ACTION, &InkMODSettings::longPwrBtn,
                           {StrId::STR_IGNORE,
@@ -607,6 +609,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                            StrId::STR_BROWSE_FILES,
                            StrId::STR_DICTIONARY,
                            StrId::STR_CREATE_CLIPPING,
+                           StrId::STR_MENU,
                            StrId::STR_FRONTLIGHT},
                           "homeDoublePressAction", StrId::STR_CAT_CONTROLS)
             .withEnumRawValues({InkMODSettings::IGNORE,
@@ -631,6 +634,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                                 InkMODSettings::FILE_BROWSER,
                                 InkMODSettings::DICTIONARY_LOOKUP,
                                 InkMODSettings::CREATE_CLIPPING,
+                                InkMODSettings::OPEN_READER_MENU,
                                 InkMODSettings::TOGGLE_FRONTLIGHT}));
     add(SettingInfo::Enum(StrId::STR_HOME_LONG_PRESS_ACTION, &InkMODSettings::homeLongPressAction,
                           {StrId::STR_IGNORE,
@@ -655,6 +659,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                            StrId::STR_BROWSE_FILES,
                            StrId::STR_DICTIONARY,
                            StrId::STR_CREATE_CLIPPING,
+                           StrId::STR_MENU,
                            StrId::STR_FRONTLIGHT},
                           "homeLongPressAction", StrId::STR_CAT_CONTROLS)
             .withEnumRawValues({InkMODSettings::IGNORE,
@@ -679,6 +684,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                                 InkMODSettings::FILE_BROWSER,
                                 InkMODSettings::DICTIONARY_LOOKUP,
                                 InkMODSettings::CREATE_CLIPPING,
+                                InkMODSettings::OPEN_READER_MENU,
                                 InkMODSettings::TOGGLE_FRONTLIGHT}));
     add(SettingInfo::Toggle(StrId::STR_PWR_BTN_FOOTNOTE_BACK, &InkMODSettings::pwrBtnFootnoteBack,
                             "pwrBtnFootnoteBack", StrId::STR_CAT_CONTROLS));

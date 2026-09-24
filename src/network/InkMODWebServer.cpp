@@ -16,6 +16,7 @@
 #include <esp_task_wdt.h>
 
 #include <cstdio>
+#include <cstring>
 #include <algorithm>
 #include <iterator>
 
@@ -43,6 +44,59 @@
 #include "util/StringUtils.h"
 
 namespace {
+// Bounded streaming JSON writer for large SD-font catalogs. Keeping a full
+// ArduinoJson document plus the serialized String at the same time can exhaust
+// the fragmented network heap on X3/X4 (CrossInk #742).
+class FontListJsonWriter {
+ public:
+  explicit FontListJsonWriter(WebServer& server) : server_(server) {}
+  void append(const char* text) { append(text, strlen(text)); }
+  void append(const char* text, size_t len) {
+    while (len) {
+      if (length_ == sizeof(buffer_)) flush();
+      const size_t n = std::min(len, sizeof(buffer_) - length_);
+      memcpy(buffer_ + length_, text, n);
+      length_ += n;
+      text += n;
+      len -= n;
+    }
+  }
+  void appendUnsigned(unsigned long value) {
+    char number[16];
+    const int n = snprintf(number, sizeof(number), "%lu", value);
+    append(number, static_cast<size_t>(n));
+  }
+  void appendJsonString(const char* value) {
+    append("\"");
+    for (const unsigned char* q = reinterpret_cast<const unsigned char*>(value); *q; ++q) {
+      switch (*q) {
+        case '\"': append("\\\""); break;
+        case '\\': append("\\\\"); break;
+        case '\n': append("\\n"); break;
+        case '\r': append("\\r"); break;
+        case '\t': append("\\t"); break;
+        default:
+          if (*q < 0x20) {
+            static constexpr char hex[] = "0123456789ABCDEF";
+            const char esc[] = {'\\','u','0','0',hex[*q >> 4],hex[*q & 0x0F]};
+            append(esc, sizeof(esc));
+          } else append(reinterpret_cast<const char*>(q), 1);
+      }
+    }
+    append("\"");
+  }
+  void flush() {
+    if (!length_) return;
+    server_.sendContent(buffer_, length_);
+    length_ = 0;
+    resetTaskWatchdogIfSubscribed();
+    yield();
+  }
+ private:
+  WebServer& server_;
+  char buffer_[192];
+  size_t length_ = 0;
+};
 // Folders/files to hide from the web interface file browser.
 // Dot-prefixed items are hidden unless showHiddenFiles is enabled.
 constexpr const char* HIDDEN_ITEMS[] = {"System Volume Information", "XTCache"};
@@ -2190,44 +2244,53 @@ void InkMODWebServer::handleFontsPage() const {
 }
 
 void InkMODWebServer::handleFontList() const {
-  // Pick up any uploads/deletes that happened since the last reader load.
   const_cast<SdCardFontSystem&>(sdFontSystem).refreshIfDirty();
   const auto& families = sdFontSystem.registry().getFamilies();
 
-  JsonDocument doc;
-  JsonArray arr = doc["families"].to<JsonArray>();
-  doc["maxFamilies"] = SdCardFontRegistry::MAX_SD_FAMILIES;
-
+  server->setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server->send(200, "application/json", "");
+  FontListJsonWriter out(*server);
+  out.append("{\"families\":[");
+  bool firstFamily = true;
   for (const auto& family : families) {
-    JsonObject fObj = arr.add<JsonObject>();
-    fObj["name"] = family.name;
-
-    JsonArray sizes = fObj["sizes"].to<JsonArray>();
-    for (uint8_t s : family.availableSizes()) {
-      sizes.add(s);
+    if (!firstFamily) out.append(",");
+    firstFamily = false;
+    out.append("{\"name\":");
+    out.appendJsonString(family.name.c_str());
+    out.append(",\"sizes\":[");
+    bool firstSize = true;
+    for (uint8_t size : family.availableSizes()) {
+      if (!firstSize) out.append(",");
+      firstSize = false;
+      out.appendUnsigned(size);
     }
-
-    JsonArray files = fObj["files"].to<JsonArray>();
+    out.append("],\"files\":[");
+    bool firstFile = true;
     for (const auto& file : family.files) {
-      JsonObject fileObj = files.add<JsonObject>();
-      // Extract filename from full path
+      if (!firstFile) out.append(",");
+      firstFile = false;
       const char* name = strrchr(file.path.c_str(), '/');
-      fileObj["name"] = name ? name + 1 : file.path.c_str();
-
-      // Stat the file for size
+      name = name ? name + 1 : file.path.c_str();
+      unsigned long size = 0;
       HalFile f;
       if (Storage.openFileForRead("WEB", file.path.c_str(), f)) {
-        fileObj["size"] = static_cast<unsigned long>(f.size());
+        size = static_cast<unsigned long>(f.size());
         f.close();
-      } else {
-        fileObj["size"] = 0;
       }
+      out.append("{\"name\":");
+      out.appendJsonString(name);
+      out.append(",\"size\":");
+      out.appendUnsigned(size);
+      out.append("}");
     }
+    out.append("]}");
+    out.flush();
   }
-
-  String json;
-  serializeJson(doc, json);
-  server->send(200, "application/json", json);
+  out.append("],\"maxFamilies\":");
+  out.appendUnsigned(SdCardFontRegistry::MAX_SD_FAMILIES);
+  out.append("}");
+  out.flush();
+  server->sendContent("");
 }
 
 void InkMODWebServer::handleFontUploadData() {

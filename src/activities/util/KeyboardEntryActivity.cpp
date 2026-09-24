@@ -41,23 +41,32 @@ size_t nextUtf8Boundary(const std::string& text, size_t position) {
 constexpr const char* kRussianLower[3][10] = {
     {"й", "ц", "у", "к", "е", "н", "г", "ш", "щ", "з"},
     {"ф", "ы", "в", "а", "п", "р", "о", "л", "д", "ж"},
-    {"я", "ч", "с", "м", "и", "т", "ь", "б", "ю", "э"},
+    {"я", "ч", "с", "м", "и", "т", "ь", "б", "ю", "х"},
 };
 constexpr const char* kRussianUpper[3][10] = {
     {"Й", "Ц", "У", "К", "Е", "Н", "Г", "Ш", "Щ", "З"},
     {"Ф", "Ы", "В", "А", "П", "Р", "О", "Л", "Д", "Ж"},
-    {"Я", "Ч", "С", "М", "И", "Т", "Ь", "Б", "Ю", "Э"},
+    {"Я", "Ч", "С", "М", "И", "Т", "Ь", "Б", "Ю", "Х"},
 };
 constexpr const char* kUkrainianLower[3][10] = {
     {"й", "ц", "у", "к", "е", "н", "г", "ш", "щ", "з"},
     {"ф", "і", "в", "а", "п", "р", "о", "л", "д", "ж"},
-    {"я", "ч", "с", "м", "и", "т", "ь", "б", "ю", "є"},
+    {"я", "ч", "с", "м", "и", "т", "ь", "б", "ю", "х"},
 };
 constexpr const char* kUkrainianUpper[3][10] = {
     {"Й", "Ц", "У", "К", "Е", "Н", "Г", "Ш", "Щ", "З"},
     {"Ф", "І", "В", "А", "П", "Р", "О", "Л", "Д", "Ж"},
-    {"Я", "Ч", "С", "М", "И", "Т", "Ь", "Б", "Ю", "Є"},
+    {"Я", "Ч", "С", "М", "И", "Т", "Ь", "Б", "Ю", "Х"},
 };
+// A 4x10 keyboard reserves its first row for digits, leaving 30 letter cells.
+// Russian and Ukrainian each need 33 letters, so the three least frequently
+// used letters live as long-press alternates on 1/2/3 (still visible/usable
+// through the symbol layer for punctuation). This keeps every alphabet letter
+// available without shrinking the X4 Pro touch targets.
+constexpr const char* kRussianExtraLower[3] = {"ё", "ъ", "э"};
+constexpr const char* kRussianExtraUpper[3] = {"Ё", "Ъ", "Э"};
+constexpr const char* kUkrainianExtraLower[3] = {"є", "ї", "ґ"};
+constexpr const char* kUkrainianExtraUpper[3] = {"Є", "Ї", "Ґ"};
 
 }  // namespace
 
@@ -132,6 +141,11 @@ const char* KeyboardEntryActivity::getAlternativeText() {
   if (symMode || urlMode || inputType == InputType::Url || selectedRow < 0 || selectedRow >= getContentRowCount() ||
       selectedCol < 0 || selectedCol >= COLS) {
     return "";
+  }
+  if (selectedRow == 0 && selectedCol >= 0 && selectedCol < 3) {
+    const bool upper = shiftState > 0;
+    if (language == Language::Russian) return (upper ? kRussianExtraUpper : kRussianExtraLower)[selectedCol];
+    if (language == Language::Ukrainian) return (upper ? kUkrainianExtraUpper : kUkrainianExtraLower)[selectedCol];
   }
   return keyLabel(selectedRow, selectedCol, shiftState == 0, selectedAsciiKey);
 }

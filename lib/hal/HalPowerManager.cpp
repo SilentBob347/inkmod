@@ -1,11 +1,13 @@
 #include "HalPowerManager.h"
 
+#include <BoardConfig.h>
 #include <Logging.h>
 #include <PowerManager.h>
 #include <WiFi.h>
 #include <esp_sleep.h>
 #include <esp_timer.h>
 
+#include <algorithm>
 #include <cassert>
 #include <cstdlib>
 #include <ctime>
@@ -39,12 +41,11 @@ void disableWiFiBeforeDeepSleep() {
 }  // namespace
 
 void HalPowerManager::begin() {
-  if (gpio.deviceIsX3()) {
-    Wire.begin(X3_I2C_SDA, X3_I2C_SCL, X3_I2C_FREQ);
-    Wire.setTimeOut(4);
-    _batteryUseI2C = true;
-  } else {
-    pinMode(BAT_GPIO0, INPUT);
+  // BatteryMonitor owns I2C gauge setup (BQ27220/CW2017) and selects the
+  // backend from BoardConfig at runtime. Only configure an ADC pin when the
+  // active board actually has one (plain X4).
+  if (BoardConfig::ACTIVE.batteryAdc >= 0) {
+    pinMode(BoardConfig::ACTIVE.batteryAdc, INPUT);
   }
   normalFreq = getCpuFrequencyMhz();
   modeMutex = xSemaphoreCreateMutex();
@@ -56,15 +57,6 @@ void HalPowerManager::setPowerSaving(bool enabled) {
     return;
   }
 
-#if !FREEINK_MCU_C3
-  // X4 Pro (ESP32-S3): do not downclock the MCU while the UI is idle.
-  // Some X4 Pro hardware revisions lose touch/button/frontlight responsiveness
-  // after the 10 MHz idle transition. Keeping the normal clock avoids the
-  // apparent "instant sleep" on Home while preserving the proven X3/X4 path.
-  if (enabled) {
-    return;
-  }
-#endif
 
   // This function is called on nearly every main-loop pass. Most calls ask to
   // keep normal speed while we are already at normal speed; avoid touching the
@@ -174,41 +166,31 @@ void HalPowerManager::seedLastChargeEpochSeconds(const uint64_t persistedValue) 
 
 uint16_t HalPowerManager::getBatteryPercentage() const {
   trackChargingState();
-  if (_batteryUseI2C) {
-    const unsigned long now = millis();
-    if (_batteryLastPollMs != 0 && (now - _batteryLastPollMs) < BATTERY_POLL_MS) {
-      return _batteryCachedPercent;
-    }
+  const unsigned long now = millis();
 
-    Wire.beginTransmission(I2C_ADDR_BQ27220);
-    Wire.write(BQ27220_SOC_REG);
-    if (Wire.endTransmission(false) != 0) {
-      _batteryLastPollMs = now;
-      return _batteryCachedPercent;
+  // Gauge-backed boards (X3 BQ27220, X4 Pro CW2017): keep the last good value
+  // across transient I2C failures instead of falling through to a nonexistent
+  // ADC. X4 Pro's BoardConfig points BatteryMonitor at the real CW2017 SOC
+  // register and OEM BATINFO profile.
+  if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
+    if (_batteryLastPollMs != 0 && (now - _batteryLastPollMs) < BATTERY_POLL_MS) {
+      return static_cast<uint16_t>(std::clamp(_batteryCachedPercent, 0, 100));
     }
-    Wire.requestFrom(I2C_ADDR_BQ27220, (uint8_t)2);
-    if (Wire.available() < 2) {
-      _batteryLastPollMs = now;
-      return _batteryCachedPercent;
+    static const BatteryMonitor gaugeBattery;
+    uint16_t percent = 0;
+    if (gaugeBattery.readPercentageChecked(percent)) {
+      _batteryCachedPercent = std::min<uint16_t>(100, percent);
     }
-    const uint8_t lo = Wire.read();
-    const uint8_t hi = Wire.read();
-    const uint16_t soc = (hi << 8) | lo;
-    _batteryCachedPercent = soc > 100 ? 100 : soc;
     _batteryLastPollMs = now;
-    return _batteryCachedPercent;
+    return static_cast<uint16_t>(std::clamp(_batteryCachedPercent, 0, 100));
   }
 
-  // X4 has no fuel gauge, so avoid repeating ADC conversions when several UI
-  // components ask for the battery during the same render window. The cache
-  // cadence mirrors the X3 fuel-gauge path above; USB state is tracked
-  // separately and still causes the status UI to repaint immediately.
-  const unsigned long now = millis();
+  // ADC-backed plain X4: retain the existing 0.1%-resolution smoothing.
   if (_batteryLastPollMs != 0 && (now - _batteryLastPollMs) < BATTERY_POLL_MS) {
     return static_cast<uint16_t>(_batteryCachedPercent / 10);
   }
 
-  static const BatteryMonitor battery = BatteryMonitor(BAT_GPIO0);
+  static const BatteryMonitor battery;
   const uint16_t millivolts = battery.readMillivolts();
   const uint16_t rawPercent = BatteryMonitor::percentageFromMillivolts(millivolts);
   LOG_DBG("PWR", "X4 battery: %umV raw=%u%% cached=%d.%d%% usb=%d", millivolts, rawPercent,

@@ -217,7 +217,7 @@ MappedInputManager::SwipeDir MappedInputManager::wasSwipe() const {
   // activities process Left/Right before Back and would otherwise navigate and
   // return early, making Back appear broken.
   if (fui::edgeSwipe(fui::ScreenEdge::Left, sx, sy, ex, ey,
-                     renderer->getScreenWidth(), renderer->getScreenHeight())) {
+                     renderer->getScreenWidth(), renderer->getScreenHeight(), 0.05f)) {
     return SwipeDir::None;
   }
 
@@ -240,7 +240,7 @@ MappedInputManager::SwipeDir MappedInputManager::wasSwipeStartedInRect(const int
   // Keep the global Back edge gesture exclusive even when its start point also
   // lies inside the caller's rectangle (e.g. a full-width Home carousel).
   if (fui::edgeSwipe(fui::ScreenEdge::Left, sx, sy, ex, ey,
-                     renderer->getScreenWidth(), renderer->getScreenHeight())) {
+                     renderer->getScreenWidth(), renderer->getScreenHeight(), 0.05f)) {
     return SwipeDir::None;
   }
 
@@ -257,7 +257,12 @@ MappedInputManager::SwipeDir MappedInputManager::wasSwipeStartedInRect(const int
 
 bool MappedInputManager::wasEdgeSwipe(const freeink::ui::ScreenEdge edge) const {
   if (!renderer) return false; int sx=0,sy=0,ex=0,ey=0; if(!decodeSwipe(sx,sy,ex,ey)) return false;
-  return fui::edgeSwipe(edge,sx,sy,ex,ey,renderer->getScreenWidth(),renderer->getScreenHeight());
+  // Back must begin at the physical edge. The SDK's generic 25% side-edge band
+  // is intentionally generous for thumb gestures, but in the reader it steals
+  // ordinary right-swipes used for the previous page. Keep only the left edge
+  // strict; top/bottom gestures retain the SDK defaults.
+  const float edgeFrac = edge == fui::ScreenEdge::Left ? 0.05f : -1.0f;
+  return fui::edgeSwipe(edge,sx,sy,ex,ey,renderer->getScreenWidth(),renderer->getScreenHeight(),edgeFrac);
 }
 
 bool MappedInputManager::wasBackGesture() const { return wasEdgeSwipe(fui::ScreenEdge::Left); }

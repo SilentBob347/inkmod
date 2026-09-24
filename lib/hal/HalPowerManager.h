@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <BatteryMonitor.h>
+#include <BoardConfig.h>
 #include <InputManager.h>
 #include <Logging.h>
 #include <Wire.h>
@@ -18,10 +19,11 @@ class HalPowerManager {
   int normalFreq = 0;  // MHz
   bool isLowPower = false;
 
-  // I2C fuel gauge configuration for X3 battery monitoring
-  bool _batteryUseI2C = false;            // True if using I2C fuel gauge (X3), false for ADC (X4)
-  mutable int _batteryCachedPercent = 0;  // Last read battery percentage * 10 (0-1000); callers divide by 10 (ADC/X4
-                                          // path only — I2C/X3 path stores 0-100 directly)
+  // Last good battery value. Gauge-backed boards store 0..100; the ADC X4
+  // path stores tenths of a percent (0..1000) for smoothing. Runtime board
+  // selection is fixed for the lifetime of the process, so the representations
+  // never mix.
+  mutable int _batteryCachedPercent = 0;
   mutable unsigned long _batteryLastPollMs = 0;  // Timestamp of last battery read in milliseconds
   mutable unsigned long _chargeCheckLastPollMs = 0;  // Debounce timestamp for charge-state tracking
 
@@ -30,7 +32,9 @@ class HalPowerManager {
   SemaphoreHandle_t modeMutex = nullptr;  // Protect access to currentLockMode
 
  public:
-  static constexpr int LOW_POWER_FREQ = 10;                    // MHz
+  // ESP32-C3 is stable at 10 MHz. X4 Pro's ESP32-S3 uses PSRAM; keep APB/PSRAM
+  // timing in the supported range while still cutting idle CPU power sharply.
+  static constexpr int LOW_POWER_FREQ = FREEINK_MCU_S3 ? 80 : 10;  // MHz
   static constexpr unsigned long IDLE_POWER_SAVING_MS = 500;   // downclock after 0.5 s idle
   static constexpr unsigned long BATTERY_POLL_MS = 1500;       // ms
 

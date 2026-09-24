@@ -112,9 +112,9 @@ void cw2017Reset(uint8_t addr) {
 // isn't running, then uploads+enables the profile only if the resident bytes don't
 // already match (the OEM leaves it resident across warm boots, so this is usually a
 // verify-only no-op). Bounded polling so a cold gauge can't stall boot.
-void cw2017EnsureProfile(uint8_t addr) {
+bool cw2017EnsureProfile(uint8_t addr) {
   uint8_t ver = 0;
-  if (!readReg8(addr, CW2017_REG_VERSION, ver)) return;  // gauge absent; nothing to do
+  if (!readReg8(addr, CW2017_REG_VERSION, ver)) return false;  // gauge absent; retry next poll
   if ((ver & 0xFD) != 0x0D) cw2017Reset(addr);
 
   uint8_t cfg = 0;
@@ -127,7 +127,10 @@ void cw2017EnsureProfile(uint8_t addr) {
         break;
       }
     }
-    if (match) return;  // correct profile already loaded
+    if (match) {
+      uint8_t soc = 0;
+      return readReg8(addr, CW2017_REG_SOC, soc) && soc <= 100;
+    }
   }
 
   for (uint8_t i = 0; i < sizeof(CW2017_BATINFO); ++i) {
@@ -138,9 +141,13 @@ void cw2017EnsureProfile(uint8_t addr) {
   cw2017Reset(addr);
   for (int i = 0; i < 50; ++i) {  // ~1 s cap for the SoC to become valid
     uint8_t soc = 0;
-    if (readReg8(addr, CW2017_REG_SOC, soc) && soc <= 100) break;
+    if (readReg8(addr, CW2017_REG_SOC, soc) && soc <= 100) {
+      uint8_t verifyCfg = 0;
+      if (readReg8(addr, CW2017_REG_CONFIG, verifyCfg) && (verifyCfg & 0x80)) return true;
+    }
     delay(20);
   }
+  return false;
 }
 
 // SoC (0..100) from the active gauge, dispatched by type. false on I2C failure.
@@ -149,12 +156,12 @@ bool readGaugeSoc(uint16_t& out) {
   if (g.gaugeType == BoardConfig::GaugeType::Cw2017) {
     static bool inited = false;
     if (!inited) {
-      cw2017EnsureProfile(g.gaugeAddr);
-      inited = true;
+      inited = cw2017EnsureProfile(g.gaugeAddr);
+      if (!inited) return false;
     }
     uint8_t soc = 0;
-    if (!readReg8(g.gaugeAddr, CW2017_REG_SOC, soc)) return false;
-    out = soc > 100 ? 100 : soc;
+    if (!readReg8(g.gaugeAddr, CW2017_REG_SOC, soc) || soc > 100) return false;
+    out = soc;
     return true;
   }
   uint16_t soc = 0;

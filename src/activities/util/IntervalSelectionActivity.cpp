@@ -108,8 +108,10 @@ void IntervalSelectionActivity::loop() {
     return;
   }
 
-  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left}, [this] { adjustValue(-smallStep); });
-  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Right}, [this] { adjustValue(smallStep); });
+  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left, MappedInputManager::Button::PageBack},
+                                       [this] { adjustValue(-smallStep); });
+  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Right, MappedInputManager::Button::PageForward},
+                                       [this] { adjustValue(smallStep); });
   buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Up}, [this] { adjustValue(largeStep); });
   buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Down}, [this] { adjustValue(-largeStep); });
 }
@@ -153,7 +155,13 @@ void IntervalSelectionActivity::render(RenderLock&&) {
   const int knobX = std::max(barX + 2, barX + 2 + fillWidth - 2);
   renderer.fillRect(knobX, barY - 4, 4, barHeight + 8, true);
 
-  renderer.drawCenteredText(SMALL_FONT_ID, barY + 30, I18N.get(stepHintId), true);
+  // On touch-only X4 Pro the old hint mentioned Left/Right/Up/Down buttons
+  // that do not exist. The side buttons still provide precise +/- smallStep.
+  if (!mappedInput.hasTouch()) {
+    renderer.drawCenteredText(SMALL_FONT_ID, barY + 30, I18N.get(stepHintId), true);
+  } else if (showPercentValue) {
+    renderer.drawCenteredText(SMALL_FONT_ID, barY + 30, I18N.get(StrId::STR_SIDE_BUTTON_PERCENT_HINT), true);
+  }
 
   if (mappedInput.hasTouch()) {
     const int screenHeight = renderer.getScreenHeight();
