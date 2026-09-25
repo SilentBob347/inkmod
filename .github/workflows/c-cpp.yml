@@ -40,3 +40,9 @@ jobs:
 
       - name: Build X4 Pro release firmware
         run: pio run -e x4pro-release
+
+      - name: Build X4 Classic developer firmware
+        run: pio run -e x4classic-developer
+
+      - name: Build X4 Classic release firmware
+        run: pio run -e x4classic-release
