@@ -1495,89 +1495,78 @@ void InkMODWebServer::handleSettingsPage() const {
 }
 
 void InkMODWebServer::handleGetSettings() const {
-  // Pass the SD font registry so the fontFamily setting's enumStringValues
-  // includes SD-resident families вЂ” otherwise the web API only exposes the
-  // three built-in fonts.
-  // SoftAP + DNS + HTTP + WebSocket leave substantially less heap than STA.
-  // Expanding every SD font family into the web settings enum in AP mode can
-  // fragment/exhaust that heap and make the whole reader appear frozen. The
-  // built-in font choices are sufficient for this constrained mode; STA keeps
-  // exposing the full registry as before.
-  // Keep the web settings API independent from the SD font registry.  The
-  // Fonts tab owns SD-font management; copying the full registry here can be
-  // expensive enough on X4 Pro to starve the loop/watchdog before we even
-  // reach the streaming code.  Device-side Reader settings still use the
-  // registry normally.
+  // Keep the web settings API independent from the SD font registry. The Fonts
+  // page owns SD-font management; expanding the registry here needlessly raises
+  // peak heap usage while WiFi/WebSocket are active.
   resetTaskWatchdogIfSubscribed();
   yield();
   const auto settings = getSettingsList(nullptr);
-  resetTaskWatchdogIfSubscribed();
-  yield();
+
+  // Build the response in one pass and send it with a normal Content-Length.
+  // The previous two-pass sendContent() implementation could leave the HTTP
+  // handler blocked if the emitted body differed from the measured length.
+  // That manifested as the whole reader apparently freezing when opening
+  // Settings in the web UI.
+  String body;
+  body.reserve(12288);
+  body += "[";
 
   char output[512];
   constexpr size_t outputSize = sizeof(output);
   JsonDocument doc;
+  bool seenFirst = false;
+  size_t settingsCount = 0;
 
-  // ESP32 WebServer's chunked transfer occasionally produces a truncated
-  // chunk while SoftAP/captive DNS are active (Chrome reports
-  // ERR_INVALID_CHUNKED_ENCODING). Compute the exact JSON length in a cheap
-  // first pass, then stream the same small records with Content-Length. This
-  // keeps peak RAM low without relying on chunked encoding.
-  size_t responseLength = 2;  // '[' + ']'
-  size_t responseItems = 0;
-  size_t settingsPassCount = 0;
-  for (const auto& s : settings) {
-    if ((++settingsPassCount & 0x07u) == 0u) {
-      // Building the settings JSON can be surprisingly expensive when the SD
-      // font registry contains many families. Keep Wi-Fi and the task watchdog
-      // serviced while doing the length pass.
+  for (const auto& setting : settings) {
+    if ((++settingsCount & 0x07u) == 0u) {
       resetTaskWatchdogIfSubscribed();
       yield();
     }
-    if (!s.key) continue;
-    if (std::strcmp(s.key, "fontFamily") == 0 || std::strcmp(s.key, "fontSize") == 0) continue;
+    if (!setting.key) continue;
+    if (std::strcmp(setting.key, "fontFamily") == 0 || std::strcmp(setting.key, "fontSize") == 0) continue;
 
     doc.clear();
-    doc["key"] = s.key;
-    doc["name"] = I18N.get(s.nameId);
-    doc["category"] = I18N.get(s.category);
+    doc["key"] = setting.key;
+    doc["name"] = I18N.get(setting.nameId);
+    doc["category"] = I18N.get(setting.category);
 
-    switch (s.type) {
-      case SettingType::TOGGLE:
+    switch (setting.type) {
+      case SettingType::TOGGLE: {
         doc["type"] = "toggle";
-        if (s.valuePtr) {
-          const bool rawValue = SETTINGS.*(s.valuePtr) != 0;
-          doc["value"] = static_cast<int>(s.invertedToggleDisplay ? !rawValue : rawValue);
+        if (setting.valuePtr) {
+          const bool rawValue = SETTINGS.*(setting.valuePtr) != 0;
+          doc["value"] = static_cast<int>(setting.invertedToggleDisplay ? !rawValue : rawValue);
         }
         break;
+      }
       case SettingType::ENUM: {
         doc["type"] = "enum";
-        if (s.valuePtr) {
-          doc["value"] = static_cast<int>(enumDisplayIndexForRawValue(s, SETTINGS.*(s.valuePtr)));
-        } else if (s.valueGetter) {
-          doc["value"] = static_cast<int>(s.valueGetter());
+        if (setting.valuePtr) {
+          doc["value"] = static_cast<int>(enumDisplayIndexForRawValue(setting, SETTINGS.*(setting.valuePtr)));
+        } else if (setting.valueGetter) {
+          doc["value"] = static_cast<int>(setting.valueGetter());
         }
         JsonArray options = doc["options"].to<JsonArray>();
-        if (!s.enumStringValues.empty()) {
-          for (const auto& opt : s.enumStringValues) options.add(opt);
+        if (!setting.enumStringValues.empty()) {
+          for (const auto& opt : setting.enumStringValues) options.add(opt);
         } else {
-          for (const auto& opt : s.enumValues) options.add(I18N.get(opt));
+          for (const auto& opt : setting.enumValues) options.add(I18N.get(opt));
         }
         break;
       }
       case SettingType::VALUE:
         doc["type"] = "value";
-        if (s.valuePtr) doc["value"] = static_cast<int>(SETTINGS.*(s.valuePtr));
-        doc["min"] = s.valueRange.min;
-        doc["max"] = s.valueRange.max;
-        doc["step"] = s.valueRange.step;
+        if (setting.valuePtr) doc["value"] = static_cast<int>(SETTINGS.*(setting.valuePtr));
+        doc["min"] = setting.valueRange.min;
+        doc["max"] = setting.valueRange.max;
+        doc["step"] = setting.valueRange.step;
         break;
       case SettingType::STRING:
         doc["type"] = "string";
-        if (s.stringGetter) {
-          doc["value"] = s.stringGetter();
-        } else if (s.stringMaxLen > 0) {
-          doc["value"] = reinterpret_cast<const char*>(&SETTINGS) + s.stringOffset;
+        if (setting.stringGetter) {
+          doc["value"] = setting.stringGetter();
+        } else if (setting.stringMaxLen > 0) {
+          doc["value"] = reinterpret_cast<const char*>(&SETTINGS) + setting.stringOffset;
         }
         break;
       default:
@@ -1585,119 +1574,30 @@ void InkMODWebServer::handleGetSettings() const {
     }
 
     const size_t itemLength = measureJson(doc);
-    if (itemLength >= outputSize) continue;
-    responseLength += itemLength + (responseItems > 0 ? 1 : 0);
-    responseItems++;
-  }
-
-  server->setContentLength(responseLength);
-  server->send(200, "application/json", "");
-  server->sendContent("[");
-
-  bool seenFirst = false;
-  settingsPassCount = 0;
-
-  for (const auto& s : settings) {
-    if ((++settingsPassCount & 0x07u) == 0u) {
-      resetTaskWatchdogIfSubscribed();
-      yield();
-    }
-    if (!s.key) continue;  // Skip ACTION-only entries
-    if (std::strcmp(s.key, "fontFamily") == 0 || std::strcmp(s.key, "fontSize") == 0) continue;
-
-    doc.clear();
-    doc["key"] = s.key;
-    doc["name"] = I18N.get(s.nameId);
-    doc["category"] = I18N.get(s.category);
-
-    switch (s.type) {
-      case SettingType::TOGGLE: {
-        doc["type"] = "toggle";
-        if (s.valuePtr) {
-          const bool rawValue = SETTINGS.*(s.valuePtr) != 0;
-          doc["value"] = static_cast<int>(s.invertedToggleDisplay ? !rawValue : rawValue);
-        }
-        break;
-      }
-      case SettingType::ENUM: {
-        doc["type"] = "enum";
-        if (s.valuePtr) {
-          doc["value"] = static_cast<int>(enumDisplayIndexForRawValue(s, SETTINGS.*(s.valuePtr)));
-        } else if (s.valueGetter) {
-          doc["value"] = static_cast<int>(s.valueGetter());
-        }
-        JsonArray options = doc["options"].to<JsonArray>();
-        if (!s.enumStringValues.empty()) {
-          for (const auto& opt : s.enumStringValues) {
-            options.add(opt);
-          }
-        } else {
-          for (const auto& opt : s.enumValues) {
-            options.add(I18N.get(opt));
-          }
-        }
-        break;
-      }
-      case SettingType::VALUE: {
-        doc["type"] = "value";
-        if (s.valuePtr) {
-          doc["value"] = static_cast<int>(SETTINGS.*(s.valuePtr));
-        }
-        doc["min"] = s.valueRange.min;
-        doc["max"] = s.valueRange.max;
-        doc["step"] = s.valueRange.step;
-        break;
-      }
-      case SettingType::STRING: {
-        doc["type"] = "string";
-        if (s.stringGetter) {
-          doc["value"] = s.stringGetter();
-        } else if (s.stringMaxLen > 0) {
-          doc["value"] = reinterpret_cast<const char*>(&SETTINGS) + s.stringOffset;
-        }
-        break;
-      }
-      default:
-        continue;
-    }
-
-    // Use the same size decision as the first pass.  Do not rely on the
-    // return value of serializeJson() to detect truncation: depending on the
-    // writer it can report bytes actually written, which would make the body
-    // differ from the Content-Length calculated above and leave the browser
-    // with invalid JSON.
-    const size_t itemLength = measureJson(doc);
-    if (itemLength >= outputSize) {
-      LOG_DBG("WEB", "Skipping oversized setting JSON for: %s (%u bytes)",
-              s.key, static_cast<unsigned>(itemLength));
+    if (itemLength == 0 || itemLength >= outputSize) {
+      LOG_DBG("WEB", "Skipping oversized setting JSON for: %s (%u bytes)", setting.key,
+              static_cast<unsigned>(itemLength));
       continue;
     }
-
     const size_t written = serializeJson(doc, output, outputSize);
     if (written != itemLength) {
-      LOG_DBG("WEB", "Skipping short setting JSON for: %s (%u/%u bytes)",
-              s.key, static_cast<unsigned>(written), static_cast<unsigned>(itemLength));
+      LOG_DBG("WEB", "Skipping short setting JSON for: %s (%u/%u bytes)", setting.key,
+              static_cast<unsigned>(written), static_cast<unsigned>(itemLength));
       continue;
     }
 
-    if (seenFirst) {
-      server->sendContent(",");
-    } else {
-      seenFirst = true;
-    }
-    resetTaskWatchdogIfSubscribed();
-    yield();
-    server->sendContent(output);
-    // sendContent() may block while the browser/TCP window catches up.
-    resetTaskWatchdogIfSubscribed();
-    yield();
+    if (seenFirst) body += ",";
+    seenFirst = true;
+    body.concat(output, written);
   }
 
+  body += "]";
   resetTaskWatchdogIfSubscribed();
   yield();
-  server->sendContent("]");
+  server->sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  server->send(200, "application/json", body);
   resetTaskWatchdogIfSubscribed();
-  LOG_DBG("WEB", "Served settings API");
+  LOG_DBG("WEB", "Served settings API (%u bytes)", static_cast<unsigned>(body.length()));
 }
 
 void InkMODWebServer::handlePostSettings() {
