@@ -73,6 +73,11 @@ jobs:
           INKMOD_RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: pio run -e x4pro-release
 
+      - name: Build X4 Classic release firmware
+        env:
+          INKMOD_RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: pio run -e x4classic-release
+
       - name: Prepare release assets
         id: artifacts
         shell: bash
@@ -80,7 +85,8 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           X3X4=".pio/build/x3x4-release/firmware-x3x4-v${VERSION}.bin"
           X4PRO=".pio/build/x4pro-release/firmware-x4pro-v${VERSION}.bin"
-          for FILE in "$X3X4" "$X4PRO"; do
+          X4CLASSIC=".pio/build/x4classic-release/firmware-x4classic-v${VERSION}.bin"
+          for FILE in "$X3X4" "$X4PRO" "$X4CLASSIC"; do
             if [ ! -f "$FILE" ]; then
               echo "::error::Expected artifact not found: $FILE"
               exit 1
@@ -95,6 +101,7 @@ jobs:
 
           echo "x3x4=$X3X4" >> "$GITHUB_OUTPUT"
           echo "x4pro=$X4PRO" >> "$GITHUB_OUTPUT"
+          echo "x4classic=$X4CLASSIC" >> "$GITHUB_OUTPUT"
           echo "legacy=$LEGACY" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release and upload firmware
@@ -106,4 +113,5 @@ jobs:
           files: |
             ${{ steps.artifacts.outputs.x3x4 }}
             ${{ steps.artifacts.outputs.x4pro }}
+            ${{ steps.artifacts.outputs.x4classic }}
             ${{ steps.artifacts.outputs.legacy }}
