@@ -137,8 +137,11 @@ void Uc8279X4Driver::initController(EpdBus& bus) {
   bus.cmd(CMD_PFS);
   bus.data(_cfg.pfs);
 
-  bus.cmd(CMD_PLL);
-  bus.data(_cfg.pll);
+  // X4 Classic stock UC8279 init leaves PLL at the panel-programmed value.
+  if (!BoardConfig::isX4Classic()) {
+    bus.cmd(CMD_PLL);
+    bus.data(_cfg.pll);
+  }
 
   bus.cmd(CMD_GATE_SCAN);
   bus.data(_cfg.gateScan);
