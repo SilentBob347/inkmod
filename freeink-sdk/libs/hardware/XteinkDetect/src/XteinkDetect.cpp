@@ -119,6 +119,8 @@ bool matchUc81xx(const uint8_t ver[5], uint8_t flg) {
   return !verIsFloating(ver);
 }
 
+void releaseDisplayPins(const EpdProbePins& p);
+
 bool runDisplayProbePass(const EpdProbePins& p, uint8_t ver[5], uint8_t* flg, uint8_t rstLowMs) {
   pinMode(p.cs, OUTPUT);
   digitalWrite(p.cs, HIGH);
@@ -163,6 +165,64 @@ bool runDisplayProbePass(const EpdProbePins& p, uint8_t ver[5], uint8_t* flg, ui
   BootLog::stepf("EPD", "probe pass done: VER=%02X %02X %02X %02X %02X", ver[0], ver[1], ver[2], ver[3], ver[4]);
   if (flg) *flg = flgByte;
   return matchUc81xx(ver, flgByte);
+}
+
+
+// Stock-style X4 Classic panel probe. Some early X4C units do not have
+// hw_calib/screenType in NVS. Their stock firmware still identifies the panel
+// by sending VER (0x70), releasing MOSI/SDA to input, and clocking back 3 bytes.
+// Byte 2 is the panel id used by the stock driver table.
+uint8_t probeX4ClassicPanelId(const EpdProbePins& p) {
+  pinMode(p.cs, OUTPUT);
+  digitalWrite(p.cs, HIGH);
+  pinMode(p.sclk, OUTPUT);
+  digitalWrite(p.sclk, LOW);
+  pinMode(p.dc, OUTPUT);
+  digitalWrite(p.dc, HIGH);
+  pinMode(p.mosi, OUTPUT);
+  if (p.busy >= 0) pinMode(p.busy, INPUT);
+
+  if (p.rst >= 0) {
+    gpio_hold_dis(static_cast<gpio_num_t>(p.rst));
+    pinMode(p.rst, OUTPUT);
+    digitalWrite(p.rst, HIGH);
+    delay(10);
+    digitalWrite(p.rst, LOW);
+    delay(50);
+    digitalWrite(p.rst, HIGH);
+  }
+  delay(50);
+
+  if (p.busy >= 0) {
+    const unsigned long start = millis();
+    while (digitalRead(p.busy) != HIGH && millis() - start < 300) delay(1);
+  }
+
+  uint8_t ver[3] = {0};
+  digitalWrite(p.cs, LOW);
+  digitalWrite(p.dc, LOW);
+  epdWriteByte(p, UC81XX_CMD_VER);
+  digitalWrite(p.dc, HIGH);
+  epdClockDelay();
+  pinMode(p.mosi, INPUT);
+  delayMicroseconds(2);
+
+  for (uint8_t i = 0; i < 3; ++i) {
+    for (uint8_t bit = 0; bit < 8; ++bit) {
+      digitalWrite(p.sclk, LOW);
+      epdClockDelay();
+      digitalWrite(p.sclk, HIGH);
+      epdClockDelay();
+      ver[i] = static_cast<uint8_t>((ver[i] << 1) | (digitalRead(p.mosi) == HIGH ? 1 : 0));
+    }
+    digitalWrite(p.sclk, LOW);
+    epdClockDelay();
+  }
+
+  digitalWrite(p.cs, HIGH);
+  pinMode(p.mosi, OUTPUT);
+  releaseDisplayPins(p);
+  return ver[2];
 }
 
 void releaseDisplayPins(const EpdProbePins& p) {
@@ -340,26 +400,51 @@ bool applyXteinkDisplayController() {
   }
 
 #if FREEINK_DEVICE_X4CLASSIC
-  // X4 Classic has a write-only display bus. Follow CrossInk/FreeInk: use the
-  // factory hw_calib/screenType value to select the fitted panel controller.
+  // Prefer the factory screenType when it exists. Early X4 Classic units can
+  // lack this NVS key; in that case use the same 3-byte half-duplex VER probe
+  // as stock/CrossInk instead of incorrectly falling back to SSD1677.
   if (BoardConfig::isX4Classic()) {
-    if (screenType == 1 || screenType == 0x0B) {
-      BoardConfig::ACTIVE.displayController = BoardConfig::DisplayController::UC8179;
-      g_probeDiag.promoted = true;
-      if (Serial) Serial.printf("[%lu] [XTDET] X4C screenType=%u -> UC8179\n", millis(), screenType);
-      return true;
+    uint8_t storedScreenType = 0;
+    const bool haveScreenType = readOemScreenType(&storedScreenType);
+    if (haveScreenType) {
+      if (storedScreenType == 1 || storedScreenType == 0x0B) {
+        BoardConfig::ACTIVE.displayController = BoardConfig::DisplayController::UC8179;
+        g_probeDiag.promoted = true;
+        if (Serial) Serial.printf("[%lu] [XTDET] X4C screenType=%u -> UC8179\n", millis(), storedScreenType);
+        return true;
+      }
+      if (storedScreenType == 2 || storedScreenType == 0x0C) {
+        BoardConfig::ACTIVE.displayController = BoardConfig::DisplayController::UC8279;
+        BoardConfig::ACTIVE.displayControllerVariant = 0x68;
+        g_probeDiag.promoted = true;
+        if (Serial) Serial.printf("[%lu] [XTDET] X4C screenType=%u -> UC8279\n", millis(), storedScreenType);
+        return true;
+      }
+      if (Serial) Serial.printf("[%lu] [XTDET] X4C screenType=%u -> SSD1677/default\n", millis(), storedScreenType);
+      return false;
     }
-    if (screenType == 2 || screenType == 0x0C) {
-      BoardConfig::ACTIVE.displayController = BoardConfig::DisplayController::UC8279;
-      BoardConfig::ACTIVE.displayControllerVariant = 0x68;
-      g_probeDiag.promoted = true;
-      if (Serial) Serial.printf("[%lu] [XTDET] X4C screenType=%u -> UC8279\n", millis(), screenType);
-      return true;
-    }
-    if (Serial) Serial.printf("[%lu] [XTDET] X4C screenType=%u -> SSD1677/default\n", millis(), screenType);
-    return false;
+
+    const auto& d = BoardConfig::ACTIVE.display;
+    const EpdProbePins p{d.sclk, d.mosi, d.cs, d.dc, d.rst, d.busy};
+    const uint8_t id = probeX4ClassicPanelId(p);
+    const bool is8179 = id == 0x01;
+    const bool is8279 = id == 0x02 || id == 0x03 || id == 0x67 || id == 0x68 || id == 0x69;
+
+    // Field X4C units without hw_calib seen by current FreeInk/CrossInk carry a
+    // UC-family panel. Unknown/floating reads therefore default to UC8279,
+    // matching upstream behaviour instead of selecting SSD1677 and leaving the
+    // e-paper on the previous firmware's last frame.
+    BoardConfig::ACTIVE.displayController =
+        is8179 ? BoardConfig::DisplayController::UC8179 : BoardConfig::DisplayController::UC8279;
+    if (is8179 || is8279) BoardConfig::ACTIVE.displayControllerVariant = id;
+    g_probeDiag.promoted = true;
+    if (Serial)
+      Serial.printf("[%lu] [XTDET] X4C screenType unset, VER id=%02X -> %s\n", millis(), id,
+                    is8179 ? "UC8179" : "UC8279");
+    return true;
   }
 #endif
+
 
   uint8_t ver[5] = {0};
   const bool ultraChip = probeSaysUltraChip(ver);
