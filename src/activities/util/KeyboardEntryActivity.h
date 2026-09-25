@@ -58,7 +58,7 @@ class KeyboardEntryActivity : public Activity {
     int8_t row = -1;
     int8_t col = -1;
   };
-  static constexpr uint8_t TOUCH_KEY_CAPACITY = 46;
+  static constexpr uint8_t TOUCH_KEY_CAPACITY = 52;
   std::array<TouchKey, TOUCH_KEY_CAPACITY> touchKeys[2]{};
   uint8_t touchKeyCounts[2] = {0, 0};
   std::atomic<uint8_t> activeTouchTable{0};
@@ -100,7 +100,7 @@ class KeyboardEntryActivity : public Activity {
   static constexpr uint16_t LONG_PRESS_MS = 500;
   static constexpr uint16_t DEL_LONG_PRESS_MS = 1500;
 
-  static constexpr int COLS = 10;
+  static constexpr int COLS = 11;
   static constexpr int ABC_ROWS = 4;
   static constexpr int SYM_ROWS = 4;
   static constexpr int BOTTOM_KEY_COUNT = 5;
@@ -115,7 +115,8 @@ class KeyboardEntryActivity : public Activity {
        {'7', '&'},
        {'8', '*'},
        {'9', '('},
-       {'0', ')'}},
+       {'0', ')'},
+       {'-', '_'}},
       {{'q', 'Q'},
        {'w', 'W'},
        {'e', 'E'},
@@ -125,7 +126,8 @@ class KeyboardEntryActivity : public Activity {
        {'u', 'U'},
        {'i', 'I'},
        {'o', 'O'},
-       {'p', 'P'}},
+       {'p', 'P'},
+       {'[', '{'}},
       {{'a', 'A'},
        {'s', 'S'},
        {'d', 'D'},
@@ -135,7 +137,8 @@ class KeyboardEntryActivity : public Activity {
        {'j', 'J'},
        {'k', 'K'},
        {'l', 'L'},
-       {'-', '_'}},
+       {'-', '_'},
+       {';', ':'}},
       {{'z', 'Z'},
        {'x', 'X'},
        {'c', 'C'},
@@ -145,20 +148,123 @@ class KeyboardEntryActivity : public Activity {
        {'m', 'M'},
        {'=', '+'},
        {'.', '>'},
-       {',', '<'}},
+       {',', '<'},
+       {'/', '?'}},
   };
 
   static constexpr KeyDef urlLayout[ABC_ROWS][COLS] = {
       {{'1', '!'},
        {'2', '@'},
        {'3', '#'},
-       {'4', '$'},
+       {'4', '
+      {{'q', 'Q'},
+       {'w', 'W'},
+       {'e', 'E'},
+       {'r', 'R'},
+       {'t', 'T'},
+       {'y', 'Y'},
+       {'u', 'U'},
+       {'i', 'I'},
+       {'o', 'O'},
+       {'p', 'P'},
+       {'[', '{'}},
+      {{'a', 'A'},
+       {'s', 'S'},
+       {'d', 'D'},
+       {'f', 'F'},
+       {'g', 'G'},
+       {'h', 'H'},
+       {'j', 'J'},
+       {'k', 'K'},
+       {'l', 'L'},
+       {'-', '_'},
+       {';', ':'}},
+      {{'z', 'Z'},
+       {'x', 'X'},
+       {'c', 'C'},
+       {'v', 'V'},
+       {'b', 'B'},
+       {'n', 'N'},
+       {'m', 'M'},
+       {':', '+'},
+       {'.', '>'},
+       {'/', '<'},
+       {'?', '\0'}},
+  };
+
+  static constexpr KeyDef symLayout[SYM_ROWS][COLS] = {
+      {{'1', '\0'},
+       {'2', '\0'},
+       {'3', '\0'},
+       {'4', '\0'},
+       {'5', '\0'},
+       {'6', '\0'},
+       {'7', '\0'},
+       {'8', '\0'},
+       {'9', '\0'},
+       {'0', '\0'},
+       {'-', '\0'}},
+      {{'!', '\0'},
+       {'@', '\0'},
+       {'#', '\0'},
+       {'$', '\0'},
+       {'%', '\0'},
+       {'^', '\0'},
+       {'&', '\0'},
+       {'*', '\0'},
+       {'(', '\0'},
+       {')', '\0'},
+       {'+', '\0'}},
+      {{'-', '\0'},
+       {'_', '\0'},
+       {'=', '\0'},
+       {'+', '\0'},
+       {'[', '\0'},
+       {']', '\0'},
+       {'{', '\0'},
+       {'}', '\0'},
+       {';', '\0'},
+       {':', '\0'},
+       {'<', '\0'}},
+      {{'\'', '\0'},
+       {'"', '\0'},
+       {'/', '\0'},
+       {'\\', '\0'},
+       {'|', '\0'},
+       {'?', '\0'},
+       {'.', '\0'},
+       {',', '\0'},
+       {'~', '\0'},
+       {'`', '\0'},
+       {'>', '\0'}},
+  };
+
+  static const char* const shiftString[2];
+
+  int getContentRowCount() const;
+  int getContentColCount() const;
+  int getTotalRowCount() const;
+  bool isBottomRow(int row) const;
+  const char* getSelectedText();
+  const char* getAlternativeText();
+  const char* keyLabel(int row, int col, bool secondary, char (&asciiBuf)[2]) const;
+  const char* languageModeLabel() const;
+  void cycleLanguage();
+  bool handleKeyPress();
+  bool insertChar(char c);
+  void insertString(const std::string& str);
+  void mapColContentBottom(int& col, bool goingUp) const;
+  bool activateTouchKey(int row, int col, bool longPress);
+  bool findTouchKey(int x, int y, int& row, int& col) const;
+};
+},
        {'5', '%'},
        {'6', '^'},
        {'7', '&'},
        {'8', '*'},
        {'9', '('},
-       {'0', ')'}},
+       {'0', ')'},
+       {'-', '_'}},
       {{'q', 'Q'},
        {'w', 'W'},
        {'e', 'E'},
