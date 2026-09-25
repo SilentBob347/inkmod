@@ -38,35 +38,26 @@ size_t nextUtf8Boundary(const std::string& text, size_t position) {
 
 // These UTF-8 labels are static flash data. The keyboard never copies a
 // layout to heap RAM; it inserts only the selected one- or two-byte glyph.
-constexpr const char* kRussianLower[3][10] = {
-    {"й", "ц", "у", "к", "е", "н", "г", "ш", "щ", "з"},
-    {"ф", "ы", "в", "а", "п", "р", "о", "л", "д", "ж"},
-    {"я", "ч", "с", "м", "и", "т", "ь", "б", "ю", "х"},
+constexpr const char* kRussianLower[3][11] = {
+    {"й", "ц", "у", "к", "е", "н", "г", "ш", "щ", "з", "х"},
+    {"ф", "ы", "в", "а", "п", "р", "о", "л", "д", "ж", "э"},
+    {"я", "ч", "с", "м", "и", "т", "ь", "б", "ю", "ё", "ъ"},
 };
-constexpr const char* kRussianUpper[3][10] = {
-    {"Й", "Ц", "У", "К", "Е", "Н", "Г", "Ш", "Щ", "З"},
-    {"Ф", "Ы", "В", "А", "П", "Р", "О", "Л", "Д", "Ж"},
-    {"Я", "Ч", "С", "М", "И", "Т", "Ь", "Б", "Ю", "Х"},
+constexpr const char* kRussianUpper[3][11] = {
+    {"Й", "Ц", "У", "К", "Е", "Н", "Г", "Ш", "Щ", "З", "Х"},
+    {"Ф", "Ы", "В", "А", "П", "Р", "О", "Л", "Д", "Ж", "Э"},
+    {"Я", "Ч", "С", "М", "И", "Т", "Ь", "Б", "Ю", "Ё", "Ъ"},
 };
-constexpr const char* kUkrainianLower[3][10] = {
-    {"й", "ц", "у", "к", "е", "н", "г", "ш", "щ", "з"},
-    {"ф", "і", "в", "а", "п", "р", "о", "л", "д", "ж"},
-    {"я", "ч", "с", "м", "и", "т", "ь", "б", "ю", "х"},
+constexpr const char* kUkrainianLower[3][11] = {
+    {"й", "ц", "у", "к", "е", "н", "г", "ш", "щ", "з", "х"},
+    {"ф", "і", "в", "а", "п", "р", "о", "л", "д", "ж", "є"},
+    {"я", "ч", "с", "м", "и", "т", "ь", "б", "ю", "ґ", "ї"},
 };
-constexpr const char* kUkrainianUpper[3][10] = {
-    {"Й", "Ц", "У", "К", "Е", "Н", "Г", "Ш", "Щ", "З"},
-    {"Ф", "І", "В", "А", "П", "Р", "О", "Л", "Д", "Ж"},
-    {"Я", "Ч", "С", "М", "И", "Т", "Ь", "Б", "Ю", "Х"},
+constexpr const char* kUkrainianUpper[3][11] = {
+    {"Й", "Ц", "У", "К", "Е", "Н", "Г", "Ш", "Щ", "З", "Х"},
+    {"Ф", "І", "В", "А", "П", "Р", "О", "Л", "Д", "Ж", "Є"},
+    {"Я", "Ч", "С", "М", "И", "Т", "Ь", "Б", "Ю", "Ґ", "Ї"},
 };
-// A 4x10 keyboard reserves its first row for digits, leaving 30 letter cells.
-// Russian and Ukrainian each need 33 letters, so the three least frequently
-// used letters live as long-press alternates on 1/2/3 (still visible/usable
-// through the symbol layer for punctuation). This keeps every alphabet letter
-// available without shrinking the X4 Pro touch targets.
-constexpr const char* kRussianExtraLower[3] = {"ё", "ъ", "э"};
-constexpr const char* kRussianExtraUpper[3] = {"Ё", "Ъ", "Э"};
-constexpr const char* kUkrainianExtraLower[3] = {"є", "ї", "ґ"};
-constexpr const char* kUkrainianExtraUpper[3] = {"Є", "Ї", "Ґ"};
 
 }  // namespace
 
@@ -120,21 +111,10 @@ bool KeyboardEntryActivity::isBottomRow(const int row) const { return row == get
 
 const char* KeyboardEntryActivity::keyLabel(const int row, const int col, const bool secondary,
                                             char (&asciiBuf)[2]) const {
-  if (!symMode && inputType != InputType::Url) {
-    // Cyrillic layouts have 33 letters while the three alphabet rows provide
-    // 30 cells. Keep the three extra letters on the digit row, but make them
-    // visible and directly typeable: in normal mode they are shown as the
-    // secondary label on 1/2/3 (and remain available by long press); with
-    // SHIFT enabled they become the primary tap action.
-    if (row == 0 && col >= 0 && col < 3 && secondary) {
-      if (language == Language::Russian) return kRussianExtraUpper[col];
-      if (language == Language::Ukrainian) return kUkrainianExtraUpper[col];
-    }
-    if (row >= 1 && row <= 3 && col >= 0 && col < COLS) {
-      const int languageRow = row - 1;
-      if (language == Language::Russian) return (secondary ? kRussianUpper : kRussianLower)[languageRow][col];
-      if (language == Language::Ukrainian) return (secondary ? kUkrainianUpper : kUkrainianLower)[languageRow][col];
-    }
+  if (!symMode && inputType != InputType::Url && row >= 1 && row <= 3 && col >= 0 && col < COLS) {
+    const int languageRow = row - 1;
+    if (language == Language::Russian) return (secondary ? kRussianUpper : kRussianLower)[languageRow][col];
+    if (language == Language::Ukrainian) return (secondary ? kUkrainianUpper : kUkrainianLower)[languageRow][col];
   }
 
   const KeyDef& key = (symMode ? symLayout : (inputType == InputType::Url ? urlLayout : abcLayout))[row][col];
@@ -152,11 +132,6 @@ const char* KeyboardEntryActivity::getAlternativeText() {
   if (symMode || urlMode || inputType == InputType::Url || selectedRow < 0 || selectedRow >= getContentRowCount() ||
       selectedCol < 0 || selectedCol >= COLS) {
     return "";
-  }
-  if (selectedRow == 0 && selectedCol >= 0 && selectedCol < 3) {
-    const bool upper = shiftState > 0;
-    if (language == Language::Russian) return (upper ? kRussianExtraUpper : kRussianExtraLower)[selectedCol];
-    if (language == Language::Ukrainian) return (upper ? kUkrainianExtraUpper : kUkrainianExtraLower)[selectedCol];
   }
   return keyLabel(selectedRow, selectedCol, shiftState == 0, selectedAsciiKey);
 }
@@ -893,12 +868,8 @@ void KeyboardEntryActivity::render(RenderLock&&) {
         // top half of a key without the two bitmaps touching. The alternate
         // remains available through a long press and is explained above the
         // keyboard; hide only its tiny visual label in this mode.
-        const bool cyrillicExtra =
-            !symMode && row == 0 && col < 3 &&
-            (language == Language::Russian || language == Language::Ukrainian);
         const bool showSecondary =
-            !symMode && row == 0 && secondary[0] != '\0' &&
-            (cyrillicExtra || uiControlFontId() != UI_14_FONT_ID);
+            !symMode && row == 0 && secondary[0] != '\0' && uiControlFontId() != UI_14_FONT_ID;
         GUI.drawKeyboardKey(renderer, Rect{keyX, rowY, keyWidth, keyHeight}, primary, activeKeySelected,
                             showSecondary ? secondary : nullptr);
       }
@@ -961,12 +932,8 @@ void KeyboardEntryActivity::render(RenderLock&&) {
       char selSecondaryBuf[2];
       const char* selPrimary = keyLabel(selectedRow, selectedCol, !symMode && shiftState > 0, selPrimaryBuf);
       const char* selSecondary = keyLabel(selectedRow, selectedCol, !symMode && shiftState == 0, selSecondaryBuf);
-      const bool selCyrillicExtra =
-          !symMode && selectedRow == 0 && selectedCol < 3 &&
-          (language == Language::Russian || language == Language::Ukrainian);
       const bool selShowSecondary =
-          !symMode && selectedRow == 0 && selSecondary[0] != '\0' &&
-          (selCyrillicExtra || uiControlFontId() != UI_14_FONT_ID);
+          !symMode && selectedRow == 0 && selSecondary[0] != '\0' && uiControlFontId() != UI_14_FONT_ID;
       GUI.drawKeyboardKey(renderer, Rect{selKeyX, selKeyY, selKeyW, selKeyH}, selPrimary, true,
                           selShowSecondary ? selSecondary : nullptr, KeyboardKeyType::Normal, true);
     }
