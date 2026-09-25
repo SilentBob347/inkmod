@@ -99,12 +99,12 @@ void HalClock::begin() {
   // X4 Pro has a real BM8563 RTC (PCF8563-compatible) at 0x51 on the same
   // SDA39/SCL38 I2C bus as GT911 touch. Let the FreeInk board profile own the
   // bus/address details instead of hard-coding a second Pro-specific I2C driver.
-  if (BoardConfig::isX4Pro()) {
+  if (BoardConfig::isX4Pro() || BoardConfig::isX4Classic()) {
     _useSdkRtc = true;
     _useHardwareRtc = _sdkRtc.begin();
     if (_useHardwareRtc) {
       _available = true;
-      LOG_INF("CLK", "BM8563 RTC found (X4 Pro)");
+      LOG_INF("CLK", "BM8563 RTC found (X4 Pro/Classic)");
 
       Rtc::DateTime dt{};
       if (_sdkRtc.now(dt) && isValidDate(dt.year, dt.month, dt.day)) {
@@ -137,7 +137,7 @@ void HalClock::begin() {
     _useSdkRtc = false;
     _useHardwareRtc = false;
     _available = true;
-    LOG_ERR("CLK", "BM8563 RTC not found on X4 Pro - using software clock fallback");
+    LOG_ERR("CLK", "BM8563 RTC not found on X4 Pro/Classic - using software clock fallback");
     return;
   }
 
