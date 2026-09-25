@@ -893,8 +893,12 @@ void KeyboardEntryActivity::render(RenderLock&&) {
         // top half of a key without the two bitmaps touching. The alternate
         // remains available through a long press and is explained above the
         // keyboard; hide only its tiny visual label in this mode.
-        const bool showSecondary = !symMode && row == 0 && secondaryBuf[0] != '\0' &&
-                                   uiControlFontId() != UI_14_FONT_ID;
+        const bool cyrillicExtra =
+            !symMode && row == 0 && col < 3 &&
+            (language == Language::Russian || language == Language::Ukrainian);
+        const bool showSecondary =
+            !symMode && row == 0 && secondary[0] != '\0' &&
+            (cyrillicExtra || uiControlFontId() != UI_14_FONT_ID);
         GUI.drawKeyboardKey(renderer, Rect{keyX, rowY, keyWidth, keyHeight}, primary, activeKeySelected,
                             showSecondary ? secondary : nullptr);
       }
@@ -957,8 +961,12 @@ void KeyboardEntryActivity::render(RenderLock&&) {
       char selSecondaryBuf[2];
       const char* selPrimary = keyLabel(selectedRow, selectedCol, !symMode && shiftState > 0, selPrimaryBuf);
       const char* selSecondary = keyLabel(selectedRow, selectedCol, !symMode && shiftState == 0, selSecondaryBuf);
-      const bool selShowSecondary = !symMode && selectedRow == 0 && selSecondaryBuf[0] != '\0' &&
-                                    uiControlFontId() != UI_14_FONT_ID;
+      const bool selCyrillicExtra =
+          !symMode && selectedRow == 0 && selectedCol < 3 &&
+          (language == Language::Russian || language == Language::Ukrainian);
+      const bool selShowSecondary =
+          !symMode && selectedRow == 0 && selSecondary[0] != '\0' &&
+          (selCyrillicExtra || uiControlFontId() != UI_14_FONT_ID);
       GUI.drawKeyboardKey(renderer, Rect{selKeyX, selKeyY, selKeyW, selKeyH}, selPrimary, true,
                           selShowSecondary ? selSecondary : nullptr, KeyboardKeyType::Normal, true);
     }
