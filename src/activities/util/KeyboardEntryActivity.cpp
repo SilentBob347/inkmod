@@ -120,10 +120,21 @@ bool KeyboardEntryActivity::isBottomRow(const int row) const { return row == get
 
 const char* KeyboardEntryActivity::keyLabel(const int row, const int col, const bool secondary,
                                             char (&asciiBuf)[2]) const {
-  if (!symMode && inputType != InputType::Url && row >= 1 && row <= 3 && col >= 0 && col < COLS) {
-    const int languageRow = row - 1;
-    if (language == Language::Russian) return (secondary ? kRussianUpper : kRussianLower)[languageRow][col];
-    if (language == Language::Ukrainian) return (secondary ? kUkrainianUpper : kUkrainianLower)[languageRow][col];
+  if (!symMode && inputType != InputType::Url) {
+    // Cyrillic layouts have 33 letters while the three alphabet rows provide
+    // 30 cells. Keep the three extra letters on the digit row, but make them
+    // visible and directly typeable: in normal mode they are shown as the
+    // secondary label on 1/2/3 (and remain available by long press); with
+    // SHIFT enabled they become the primary tap action.
+    if (row == 0 && col >= 0 && col < 3 && secondary) {
+      if (language == Language::Russian) return kRussianExtraUpper[col];
+      if (language == Language::Ukrainian) return kUkrainianExtraUpper[col];
+    }
+    if (row >= 1 && row <= 3 && col >= 0 && col < COLS) {
+      const int languageRow = row - 1;
+      if (language == Language::Russian) return (secondary ? kRussianUpper : kRussianLower)[languageRow][col];
+      if (language == Language::Ukrainian) return (secondary ? kUkrainianUpper : kUkrainianLower)[languageRow][col];
+    }
   }
 
   const KeyDef& key = (symMode ? symLayout : (inputType == InputType::Url ? urlLayout : abcLayout))[row][col];
@@ -349,13 +360,19 @@ void KeyboardEntryActivity::loop() {
   int touchRow = -1;
   int touchCol = -1;
   if (mappedInput.wasScreenLongPress(touchX, touchY) && findTouchKey(touchX, touchY, touchRow, touchCol)) {
-    // wasScreenLongPress() already suppresses the release, so this cannot
-    // turn into a second tap when the finger is lifted.
-    if (activateTouchKey(touchRow, touchCol, true)) requestUpdate();
+    // Keep the keyboard touch event local. In particular, the Backspace key
+    // sits close to the on-screen navigation hints on X4 Pro; without consuming
+    // the contact, the same release can be observed by the generic button
+    // bridge and move the keyboard selection.
+    const bool handled = activateTouchKey(touchRow, touchCol, true);
+    mappedInput.suppressTouchContact();
+    if (handled) requestUpdate();
     return;
   }
   if (mappedInput.wasScreenTapped(touchX, touchY) && findTouchKey(touchX, touchY, touchRow, touchCol)) {
-    if (activateTouchKey(touchRow, touchCol, false)) requestUpdate();
+    const bool handled = activateTouchKey(touchRow, touchCol, false);
+    mappedInput.suppressTouchContact();
+    if (handled) requestUpdate();
     return;
   }
 
