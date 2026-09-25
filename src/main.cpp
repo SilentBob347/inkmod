@@ -963,6 +963,14 @@ void setup() {
 
   SETTINGS.loadFromFile();
 
+  // clockDisabled is an X4-only preference.  Never let a stale/corrupt value
+  // suppress the DS3231 clock or its settings on X3 after an upgrade.
+  if (gpio.deviceIsX3() && SETTINGS.clockDisabled) {
+    SETTINGS.clockDisabled = 0;
+    SETTINGS.saveToFile();
+    LOG_INF("CLK", "Cleared X4-only clockDisabled flag on X3");
+  }
+
   // Resolve the wake route before restoring the X4 Pro frontlight. A short
   // power tap while the reader is asleep wakes the S3 long enough for
   // verifyPowerButtonWakeup() to reject it and put the device back to sleep.
