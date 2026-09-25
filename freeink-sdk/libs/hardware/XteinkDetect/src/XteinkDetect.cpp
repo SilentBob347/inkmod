@@ -18,7 +18,8 @@
 //     fingerprint. It reads whatever pins the ACTIVE profile carries, so it is
 //     safe on the S3 X4 Pro too.
 #define FREEINK_XTEINK_C3 (FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3)
-#define FREEINK_XTEINK_DISPLAY_PROBE (FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4 || FREEINK_DEVICE_X4PRO)
+#define FREEINK_XTEINK_DISPLAY_PROBE \
+  (FREEINK_DEVICE_X3 || FREEINK_DEVICE_X4 || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC)
 
 namespace freeink {
 
@@ -337,6 +338,28 @@ bool applyXteinkDisplayController() {
   } else if (Serial) {
     Serial.printf("[%lu] [XTDET] NVS hw_calib/screenType: not set [info only]\n", millis());
   }
+
+#if FREEINK_DEVICE_X4CLASSIC
+  // X4 Classic has a write-only display bus. Follow CrossInk/FreeInk: use the
+  // factory hw_calib/screenType value to select the fitted panel controller.
+  if (BoardConfig::isX4Classic()) {
+    if (screenType == 1 || screenType == 0x0B) {
+      BoardConfig::ACTIVE.displayController = BoardConfig::DisplayController::UC8179;
+      g_probeDiag.promoted = true;
+      if (Serial) Serial.printf("[%lu] [XTDET] X4C screenType=%u -> UC8179\n", millis(), screenType);
+      return true;
+    }
+    if (screenType == 2 || screenType == 0x0C) {
+      BoardConfig::ACTIVE.displayController = BoardConfig::DisplayController::UC8279;
+      BoardConfig::ACTIVE.displayControllerVariant = 0x68;
+      g_probeDiag.promoted = true;
+      if (Serial) Serial.printf("[%lu] [XTDET] X4C screenType=%u -> UC8279\n", millis(), screenType);
+      return true;
+    }
+    if (Serial) Serial.printf("[%lu] [XTDET] X4C screenType=%u -> SSD1677/default\n", millis(), screenType);
+    return false;
+  }
+#endif
 
   uint8_t ver[5] = {0};
   const bool ultraChip = probeSaysUltraChip(ver);
