@@ -41,12 +41,24 @@ void disableWiFiBeforeDeepSleep() {
 }  // namespace
 
 void HalPowerManager::begin() {
-  // BatteryMonitor owns I2C gauge setup (BQ27220/CW2017) and selects the
-  // backend from BoardConfig at runtime. Only configure an ADC pin when the
-  // active board actually has one (plain X4).
+#if FREEINK_MCU_C3
+  // The X3 hardware fingerprint temporarily opens and then closes Wire.
+  // X3's BQ27220, DS3231 and QMI8658 all share this I2C bus, and HalClock /
+  // HalTiltSensor expect it to remain initialized after powerManager.begin().
+  // v1.1.9 accidentally dropped this re-initialization, which made the RTC
+  // probe fail and hid the clock and all clock settings on X3.
+  if (gpio.deviceIsX3()) {
+    Wire.begin(X3_I2C_SDA, X3_I2C_SCL, X3_I2C_FREQ);
+    Wire.setTimeOut(4);
+  } else if (BoardConfig::ACTIVE.batteryAdc >= 0) {
+    pinMode(BoardConfig::ACTIVE.batteryAdc, INPUT);
+  }
+#else
+  // S3 boards use the SDK-owned I2C backends.
   if (BoardConfig::ACTIVE.batteryAdc >= 0) {
     pinMode(BoardConfig::ACTIVE.batteryAdc, INPUT);
   }
+#endif
   normalFreq = getCpuFrequencyMhz();
   modeMutex = xSemaphoreCreateMutex();
   assert(modeMutex != nullptr);
