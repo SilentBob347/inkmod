@@ -306,7 +306,13 @@ bool MappedInputManager::softFrontButtonTapMatches(const Button button) const {
   // bottom edge. Make those existing on-screen hints real touch buttons.
   // Use raw touch coordinates and convert to the portrait frame so the hit
   // zones keep working even when the reader itself is rotated.
-  if (!hasTouch() || !renderer) return false;
+  // Reader pages have their own explicit touch contract
+  // (off/swipe/tap/full-tap + center/bottom menu gestures). The legacy virtual
+  // four-button footer mapping must never run there: the reader does not draw
+  // those footer buttons, so the hard-coded portrait hit strip becomes an
+  // invisible set of Back/Menu/Prev/Next zones that also ignores the user's
+  // "touch controls off" setting and screen orientation.
+  if (readerMode || !hasTouch() || !renderer) return false;
 
   const uint8_t expected = mappedFrontHardwareButton(button);
   if (expected == kNoButton || expected > HalGPIO::BTN_RIGHT) return false;
