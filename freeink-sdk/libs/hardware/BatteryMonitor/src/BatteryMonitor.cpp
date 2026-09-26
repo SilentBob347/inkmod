@@ -244,10 +244,16 @@ BatteryMonitor::BatteryMonitor()
     : BatteryMonitor(BoardConfig::ACTIVE.batteryAdc, BoardConfig::ACTIVE.batteryDividerMultiplier,
                      BoardConfig::ACTIVE.batteryChargeStatus) {}
 
+namespace {
+int chargeActiveLevel() {
+  return BoardConfig::ACTIVE.batteryChargeStatusActiveHigh ? HIGH : LOW;
+}
+}  // namespace
+
 BatteryMonitor::BatteryMonitor(int8_t adcPin, float dividerMultiplier, int8_t chargeStatusPin)
     : _adcPin(adcPin), _dividerMultiplier(dividerMultiplier), _chargeStatusPin(chargeStatusPin) {
   if (_chargeStatusPin >= 0) {
-    pinMode(_chargeStatusPin, INPUT_PULLUP);
+    pinMode(_chargeStatusPin, BoardConfig::ACTIVE.batteryChargeStatusActiveHigh ? INPUT : INPUT_PULLUP);
   }
 }
 
@@ -325,7 +331,11 @@ BatteryMonitor::Status BatteryMonitor::readStatus() const {
     // Charging: from a dedicated charger IC when present, else the gauge's own
     // Current() sign — so gauge-only boards (X3) report it too.
     bool chargingKnown = false;
-    const bool charging = readGaugeCharging(chargingKnown);
+    bool charging = readGaugeCharging(chargingKnown);
+    if (!chargingKnown && _chargeStatusPin >= 0) {
+      chargingKnown = true;
+      charging = digitalRead(_chargeStatusPin) == chargeActiveLevel();
+    }
     status.chargingKnown = chargingKnown;
     status.charging = charging;
     return status;
@@ -393,7 +403,9 @@ bool BatteryMonitor::isCharging() const {
   if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
     bool known = false;
     const bool charging = readGaugeCharging(known);
-    return known && charging;
+    if (known) return charging;
+    // CW2017 has no current register; X4 Pro/Classic expose the charger's
+    // active-high STAT on GPIO21 instead.
   }
 #endif
   if (hasM5Pm1Backend()) {
@@ -403,8 +415,7 @@ bool BatteryMonitor::isCharging() const {
   if (_chargeStatusPin < 0) {
     return false;
   }
-  // MCP73832-style /STAT: LOW while charging.
-  return digitalRead(_chargeStatusPin) == LOW;
+  return digitalRead(_chargeStatusPin) == chargeActiveLevel();
 }
 
 bool BatteryMonitor::readM5Pm1Status(Status& status) const {
