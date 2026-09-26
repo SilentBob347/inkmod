@@ -790,8 +790,10 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     // on next WiFi connect, which is useful when crossing time zones.
     add(SettingInfo::Toggle(StrId::STR_CLOCK_SYNCED, &InkMODSettings::clockHasBeenSynced, "clockHasBeenSynced",
                             StrId::STR_CAT_SYSTEM));
-    // Only show tilt page turn setting when the QMI8658 IMU is present (X3).
-    if (halTiltSensor.isAvailable()) {
+    // X3 hardware includes the QMI8658. Keep its tilt controls present even
+    // if the boot-time I2C probe had a transient miss; runtime sensor handling
+    // remains guarded by HalTiltSensor::_available.
+    if (gpio.deviceIsX3()) {
       for (auto& setting : v) {
         if (setting.nameId == StrId::STR_SHORT_PWR_BTN || setting.nameId == StrId::STR_LONG_PRESS_ACTION ||
             setting.nameId == StrId::STR_LONG_PRESS_MENU_ACTION ||
