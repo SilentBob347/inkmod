@@ -70,16 +70,22 @@ void KeyboardEntryActivity::onEnter() {
   togglePos = false;
   passwordVisible = false;
   shiftState = 0;
-  switch (I18N.getLanguage()) {
-    case ::Language::RU:
-      language = Language::Russian;
-      break;
-    case ::Language::UK:
-      language = Language::Ukrainian;
-      break;
-    default:
-      language = Language::English;
-      break;
+  if (inputType == InputType::Url) {
+    // URLs are ASCII-only in this keyboard. Do not inherit the UI language:
+    // that made an English QWERTY URL layout display the misleading "RU #"/"UK #" badge.
+    language = Language::English;
+  } else {
+    switch (I18N.getLanguage()) {
+      case ::Language::RU:
+        language = Language::Russian;
+        break;
+      case ::Language::UK:
+        language = Language::Ukrainian;
+        break;
+      default:
+        language = Language::English;
+        break;
+    }
   }
   selectedRow = 0;
   selectedCol = 0;
