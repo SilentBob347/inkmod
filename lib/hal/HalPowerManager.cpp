@@ -129,21 +129,33 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
   esp_deep_sleep_enable_gpio_wakeup(1ULL << InputManager::POWER_BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
   esp_deep_sleep_start();
 #else
-  // X4 Pro: keep every configured board power latch asserted through deep sleep.
-  // CrossPoint 1.6.0 does this because GPIO isolation otherwise lets the X4 Pro
-  // master rail float/drop after external USB power is removed.
+  // S3 X4 Pro/Classic: preserve the master latch, but never drive a pin that
+  // overlaps the active display/SD bus. This matches the proven CrossInk path.
   for (const int8_t pin : {BoardConfig::ACTIVE.power.latch0, BoardConfig::ACTIVE.power.latch1}) {
-    if (pin < 0) continue;
+    if (pin < 0 || BoardConfig::latchConflictsWithBus(pin)) continue;
     const auto g = static_cast<gpio_num_t>(pin);
     gpio_hold_dis(g);
-    pinMode(pin, OUTPUT);
-    digitalWrite(pin, HIGH);
+    gpio_set_direction(g, GPIO_MODE_OUTPUT);
+    gpio_set_level(g, 1);
     gpio_hold_en(g);
   }
 
-  // X4 Pro: use the SDK's S3-correct rail shutdown + wake-source implementation.
+  // Shut down SD/touch/frontlight and hold the e-paper reset at its sleep-safe
+  // level before isolation. On X4 Pro this is essential to stop peripheral/
+  // panel leakage while the UI appears asleep.
   freeink::PowerManager::powerDownRailsForSleep();
-  freeink::PowerManager::deepSleepUntilPowerButton();
+
+  // Isolate first, then restore the power-button input/wakeup configuration.
+  // Arming before gpio isolation can have the wake pin configuration overwritten.
+  freeink::PowerManager::waitForPowerButtonRelease();
+  esp_sleep_config_gpio_isolate();
+  freeink::PowerManager::armPowerButtonWakeup();
+  gpio_deep_sleep_hold_en();
+  esp_deep_sleep_start();
+
+  // Deep sleep normally never returns. If entry is rejected, restart instead
+  // of spinning at full clock and looking like a catastrophic sleep drain.
+  esp_restart();
 #endif
 }
 
