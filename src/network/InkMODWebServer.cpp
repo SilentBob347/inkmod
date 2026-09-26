@@ -1495,21 +1495,18 @@ void InkMODWebServer::handleSettingsPage() const {
 }
 
 void InkMODWebServer::handleGetSettings() const {
-  // Keep the web settings API independent from the SD font registry. The Fonts
-  // page owns SD-font management; expanding the registry here needlessly raises
-  // peak heap usage while WiFi/WebSocket are active.
+  // Keep this endpoint cheap on X3: constructing the complete settings JSON in
+  // one Arduino String needs a large contiguous heap block while WiFi is active.
+  // On fragmented X3 heaps that allocation could fail, after which the browser
+  // reported "failed to read settings" and the network stack stopped responding.
   resetTaskWatchdogIfSubscribed();
   yield();
   const auto settings = getSettingsList(nullptr);
 
-  // Build the response in one pass and send it with a normal Content-Length.
-  // The previous two-pass sendContent() implementation could leave the HTTP
-  // handler blocked if the emitted body differed from the measured length.
-  // That manifested as the whole reader apparently freezing when opening
-  // Settings in the web UI.
-  String body;
-  body.reserve(12288);
-  body += "[";
+  server->setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server->sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  server->send(200, "application/json", "");
+  server->sendContent("[");
 
   char output[512];
   constexpr size_t outputSize = sizeof(output);
@@ -1518,7 +1515,7 @@ void InkMODWebServer::handleGetSettings() const {
   size_t settingsCount = 0;
 
   for (const auto& setting : settings) {
-    if ((++settingsCount & 0x07u) == 0u) {
+    if ((++settingsCount & 0x03u) == 0u) {
       resetTaskWatchdogIfSubscribed();
       yield();
     }
@@ -1580,24 +1577,19 @@ void InkMODWebServer::handleGetSettings() const {
       continue;
     }
     const size_t written = serializeJson(doc, output, outputSize);
-    if (written != itemLength) {
-      LOG_DBG("WEB", "Skipping short setting JSON for: %s (%u/%u bytes)", setting.key,
-              static_cast<unsigned>(written), static_cast<unsigned>(itemLength));
-      continue;
-    }
+    if (written != itemLength) continue;
 
-    if (seenFirst) body += ",";
+    if (seenFirst) server->sendContent(",");
     seenFirst = true;
-    body.concat(output, written);
+    server->sendContent(output, written);
+    resetTaskWatchdogIfSubscribed();
+    yield();
   }
 
-  body += "]";
+  server->sendContent("]");
+  server->sendContent("");
   resetTaskWatchdogIfSubscribed();
-  yield();
-  server->sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
-  server->send(200, "application/json", body);
-  resetTaskWatchdogIfSubscribed();
-  LOG_DBG("WEB", "Served settings API (%u bytes)", static_cast<unsigned>(body.length()));
+  LOG_DBG("WEB", "Served settings API as chunked response");
 }
 
 void InkMODWebServer::handlePostSettings() {
