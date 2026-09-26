@@ -81,7 +81,7 @@ std::string displayControllerDisplay() {
     case DC::UC8179:
       return "UC8179";
     case DC::UC8279:
-      if (BoardConfig::isX4Pro() && variant != 0) {
+      if ((BoardConfig::isX4Pro() || BoardConfig::isX4Classic()) && variant != 0) {
         snprintf(buf, sizeof(buf), "UC8279 / LUT %02X", static_cast<unsigned>(variant));
         return std::string(buf);
       }
@@ -109,8 +109,14 @@ DiagnosticRows buildDiagnosticRows() {
   DiagnosticRows rows;
   rows.reserve(12);
   rows.push_back({tr(STR_DIAG_FIRMWARE), std::string(INKMOD_VERSION) + " (" + INKMOD_FIRMWARE_VARIANT + ")"});
-  rows.push_back({tr(STR_DIAG_DEVICE), BoardConfig::isX4Pro() ? "X4 Pro" : (gpio.deviceIsX3() ? "X3" : "X4")});
-  if (BoardConfig::isX4Pro()) rows.push_back({tr(STR_CAT_DISPLAY), displayControllerDisplay()});
+  const char* deviceName = BoardConfig::isX4Pro() ? "X4 Pro"
+                           : BoardConfig::isX4Classic() ? "X4 Classic"
+                           : gpio.deviceIsX3() ? "X3"
+                                              : "X4";
+  rows.push_back({tr(STR_DIAG_DEVICE), deviceName});
+  if (BoardConfig::isX4Pro() || BoardConfig::isX4Classic()) {
+    rows.push_back({tr(STR_CAT_DISPLAY), displayControllerDisplay()});
+  }
   rows.push_back({tr(STR_DIAG_FREE_HEAP), bytesHuman(heap.freeHeap)});
   rows.push_back({tr(STR_DIAG_MAX_ALLOC), bytesHuman(heap.maxAllocHeap)});
   rows.push_back({tr(STR_INTERNAL_STORAGE), StorageUsageCalc::display()});
