@@ -604,6 +604,9 @@ struct BoardProfile {
   // matters (UC8279 800x480: VER byte2 LUT_VER, 0x02 vs 0x68 — selects which AA
   // waveform table the driver uploads). 0 = not probed / not applicable.
   uint8_t displayControllerVariant = 0;
+  // Polarity of the optional battery charge-status pin. Existing boards use
+  // active-low /STAT; X4 Pro/Classic use the stock active-high GPIO21 signal.
+  bool batteryChargeStatusActiveHigh = false;
 };
 
 constexpr TouchConfig NO_TOUCH = {TouchController::None,
@@ -1118,7 +1121,7 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     // {back, confirm, left, right, up, down, power, powerActiveHigh}
     {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, 0, 7, 3, false},
     PIN_UNASSIGNED,  // batteryAdc: monitoring exists ("Battery Meter"/"Low battery") but pin not isolated
-    PIN_UNASSIGNED,  // batteryChargeStatus
+    21,  // batteryChargeStatus: stock CW2017 power HAL, active-high
     2.0f,
     PIN_UNASSIGNED,  // usbDetect: USB-MSC/VBUS-detect present; GPIO10 is a candidate (unconfirmed)
     // GT911 touch on the SHARED I2C bus SDA39/SCL38 (with RTC 0x51 + CW2017 gauge 0x63), addr 0x5D
@@ -1170,7 +1173,9 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     // symptom: EPD BUSY never asserts, SD returns 0xFF). GPIO2 is a second board-init output
     // driven LOW (role unknown); not modeled here. NOTE: GPIO1/GPIO2 are therefore NOT the ADC
     // button ladder — that earlier assumption was wrong; the ladder pins remain unconfirmed.
-    {1}};
+    {1},
+    0,
+    true};  // GPIO21 charge status is active-high
 
 // --- Xteink X4 Classic — ESP32-S3, 800x480, buttons only ---------------------
 // Ported from the FreeInk/CrossInk X4C profile. The X4 Classic shares the X4
@@ -1204,7 +1209,8 @@ constexpr BoardProfile XTEINK_X4_CLASSIC = {
     {39, 38, 400000, 0x51, 0, 0x6B, 0, RtcType::Pcf8563, ImuType::Qmi8658},
     1.0f,
     {1, PIN_UNASSIGNED},
-    0};
+    0,
+    true};  // GPIO21 charge status is active-high
 
 // Largest framebuffer (bytes) over the devices compiled into this build, derived
 // from the profiles above. The display facade sizes its static framebuffer to
