@@ -108,12 +108,26 @@ void IntervalSelectionActivity::loop() {
     return;
   }
 
-  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left, MappedInputManager::Button::PageBack},
-                                       [this] { adjustValue(-smallStep); });
-  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Right, MappedInputManager::Button::PageForward},
-                                       [this] { adjustValue(smallStep); });
-  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Up}, [this] { adjustValue(largeStep); });
-  buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Down}, [this] { adjustValue(-largeStep); });
+  if (mappedInput.hasTouch()) {
+    // X4 Pro has two physical side keys. They are exposed both as the raw
+    // Up/Down pair and, through the configured side-button layout, as
+    // PageBack/PageForward. Handling both interpretations in the same picker
+    // made one short press apply a 10% large step and an opposing 1% small
+    // step (net 9%). On touch devices the side keys are precision controls:
+    // consume only their PageBack/PageForward mapping.
+    buttonNavigator.onPressAndContinuous({MappedInputManager::Button::PageBack},
+                                         [this] { adjustValue(-smallStep); });
+    buttonNavigator.onPressAndContinuous({MappedInputManager::Button::PageForward},
+                                         [this] { adjustValue(smallStep); });
+  } else {
+    // Keep the existing X3/X4 four-button behaviour unchanged.
+    buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left, MappedInputManager::Button::PageBack},
+                                         [this] { adjustValue(-smallStep); });
+    buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Right, MappedInputManager::Button::PageForward},
+                                         [this] { adjustValue(smallStep); });
+    buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Up}, [this] { adjustValue(largeStep); });
+    buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Down}, [this] { adjustValue(-largeStep); });
+  }
 }
 
 void IntervalSelectionActivity::render(RenderLock&&) {
