@@ -1495,32 +1495,18 @@ void InkMODWebServer::handleSettingsPage() const {
 }
 
 void InkMODWebServer::handleGetSettings() const {
-  // Keep this endpoint cheap on X3: constructing the complete settings JSON in
-  // one Arduino String needs a large contiguous heap block while WiFi is active.
-  // On fragmented X3 heaps that allocation could fail, after which the browser
-  // reported "failed to read settings" and the network stack stopped responding.
+  // /api/settings is one of the largest dynamic JSON responses in the web UI.
+  // Do not build it as one Arduino String (large contiguous heap allocation),
+  // and do not use dozens of tiny HTTP chunks (can block the ESP32 WebServer
+  // when the browser/TCP receive window briefly stalls).  Measure first, then
+  // send the exact Content-Length using a bounded ~TCP-sized output buffer.
   resetTaskWatchdogIfSubscribed();
   yield();
   const auto settings = getSettingsList(nullptr);
 
-  server->setContentLength(CONTENT_LENGTH_UNKNOWN);
-  server->sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
-  server->send(200, "application/json", "");
-  server->sendContent("[");
-
-  char output[512];
-  constexpr size_t outputSize = sizeof(output);
-  JsonDocument doc;
-  bool seenFirst = false;
-  size_t settingsCount = 0;
-
-  for (const auto& setting : settings) {
-    if ((++settingsCount & 0x03u) == 0u) {
-      resetTaskWatchdogIfSubscribed();
-      yield();
-    }
-    if (!setting.key) continue;
-    if (std::strcmp(setting.key, "fontFamily") == 0 || std::strcmp(setting.key, "fontSize") == 0) continue;
+  auto fillDocument = [](const SettingInfo& setting, JsonDocument& doc) -> bool {
+    if (!setting.key) return false;
+    if (std::strcmp(setting.key, "fontFamily") == 0 || std::strcmp(setting.key, "fontSize") == 0) return false;
 
     doc.clear();
     doc["key"] = setting.key;
@@ -1534,7 +1520,7 @@ void InkMODWebServer::handleGetSettings() const {
           const bool rawValue = SETTINGS.*(setting.valuePtr) != 0;
           doc["value"] = static_cast<int>(setting.invertedToggleDisplay ? !rawValue : rawValue);
         }
-        break;
+        return true;
       }
       case SettingType::ENUM: {
         doc["type"] = "enum";
@@ -1549,7 +1535,7 @@ void InkMODWebServer::handleGetSettings() const {
         } else {
           for (const auto& opt : setting.enumValues) options.add(I18N.get(opt));
         }
-        break;
+        return true;
       }
       case SettingType::VALUE:
         doc["type"] = "value";
@@ -1557,7 +1543,7 @@ void InkMODWebServer::handleGetSettings() const {
         doc["min"] = setting.valueRange.min;
         doc["max"] = setting.valueRange.max;
         doc["step"] = setting.valueRange.step;
-        break;
+        return true;
       case SettingType::STRING:
         doc["type"] = "string";
         if (setting.stringGetter) {
@@ -1565,31 +1551,94 @@ void InkMODWebServer::handleGetSettings() const {
         } else if (setting.stringMaxLen > 0) {
           doc["value"] = reinterpret_cast<const char*>(&SETTINGS) + setting.stringOffset;
         }
-        break;
+        return true;
       default:
-        continue;
+        return false;
     }
+  };
 
-    const size_t itemLength = measureJson(doc);
-    if (itemLength == 0 || itemLength >= outputSize) {
+  // First pass: exact HTTP body length.  The web settings list has no mutable
+  // font getter here (fontFamily/fontSize are intentionally omitted), so values
+  // cannot change underneath this synchronous request.
+  JsonDocument doc;
+  size_t bodyLength = 2;  // '[' + ']'
+  size_t itemCount = 0;
+  for (const auto& setting : settings) {
+    if (!fillDocument(setting, doc)) continue;
+    const size_t n = measureJson(doc);
+    if (n == 0 || n >= 2048) {
       LOG_DBG("WEB", "Skipping oversized setting JSON for: %s (%u bytes)", setting.key,
-              static_cast<unsigned>(itemLength));
+              static_cast<unsigned>(n));
       continue;
     }
-    const size_t written = serializeJson(doc, output, outputSize);
-    if (written != itemLength) continue;
-
-    if (seenFirst) server->sendContent(",");
-    seenFirst = true;
-    server->sendContent(output, written);
-    resetTaskWatchdogIfSubscribed();
-    yield();
+    bodyLength += n + (itemCount ? 1u : 0u);
+    ++itemCount;
+    if ((itemCount & 0x07u) == 0u) {
+      resetTaskWatchdogIfSubscribed();
+      yield();
+    }
   }
 
-  server->sendContent("]");
-  server->sendContent("");
+  server->setContentLength(bodyLength);
+  server->sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  // Settings are requested infrequently; closing this response avoids leaving a
+  // half-open keep-alive socket monopolising the single synchronous WebServer.
+  server->sendHeader("Connection", "close");
+  server->send(200, "application/json", "");
+
+  class SettingsWriter {
+   public:
+    explicit SettingsWriter(WebServer& server) : server_(server) {}
+    void append(const char* data, size_t len) {
+      while (len) {
+        if (used_ == sizeof(buffer_)) flush();
+        const size_t copy = std::min(len, sizeof(buffer_) - used_);
+        memcpy(buffer_ + used_, data, copy);
+        used_ += copy;
+        data += copy;
+        len -= copy;
+      }
+    }
+    void append(char c) { append(&c, 1); }
+    void flush() {
+      if (!used_) return;
+      server_.sendContent(buffer_, used_);
+      used_ = 0;
+      resetTaskWatchdogIfSubscribed();
+      yield();
+    }
+   private:
+    WebServer& server_;
+    // Below one TCP MSS, but large enough that /api/settings normally needs
+    // only a handful of socket writes instead of one write per setting.
+    char buffer_[1024];
+    size_t used_ = 0;
+  } writer(*server);
+
+  writer.append('[');
+  bool first = true;
+  char output[2048];
+
+  for (const auto& setting : settings) {
+    if (!fillDocument(setting, doc)) continue;
+    const size_t expected = measureJson(doc);
+    if (expected == 0 || expected >= sizeof(output)) continue;
+    const size_t written = serializeJson(doc, output, sizeof(output));
+    if (written != expected) {
+      LOG_DBG("WEB", "Skipping short setting JSON for: %s (%u/%u bytes)", setting.key,
+              static_cast<unsigned>(written), static_cast<unsigned>(expected));
+      continue;
+    }
+    if (!first) writer.append(',');
+    first = false;
+    writer.append(output, written);
+  }
+  writer.append(']');
+  writer.flush();
+
   resetTaskWatchdogIfSubscribed();
-  LOG_DBG("WEB", "Served settings API as chunked response");
+  LOG_DBG("WEB", "Served settings API (%u bytes, %u items)", static_cast<unsigned>(bodyLength),
+          static_cast<unsigned>(itemCount));
 }
 
 void InkMODWebServer::handlePostSettings() {
