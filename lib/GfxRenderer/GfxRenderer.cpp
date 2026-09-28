@@ -266,12 +266,6 @@ static void fillRectClipped(const GfxRenderer& renderer, int x, int y, int width
 
   const int screenWidth = renderer.getScreenWidth();
   const int screenHeight = renderer.getScreenHeight();
-  // X4 Pro's UC8179/UC8279 grayscale waveform renders the stock two gray
-  // glyph levels too lightly. Use a darker 3-level text profile there:
-  // black core stays black, source dark-gray becomes black, and source
-  // light-gray becomes dark-gray. This preserves anti-aliased edges without
-  // washing out the whole glyph.
-  const bool x4ProDarkTextAa = BoardConfig::isX4Pro();
   const int x2 = x + width;
   const int y2 = y + height;
   if (x >= screenWidth || y >= screenHeight || x2 <= 0 || y2 <= 0) return;
@@ -576,6 +570,12 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
   const int top = glyph->top;
   const int screenWidth = renderer.getScreenWidth();
   const int screenHeight = renderer.getScreenHeight();
+  // X4 Pro's UC8179/UC8279 grayscale waveform renders the stock two gray
+  // glyph levels too lightly. Use a darker 3-level text profile there:
+  // black core stays black, source dark-gray becomes black, and source
+  // light-gray becomes dark-gray. This preserves anti-aliased edges without
+  // washing out the whole glyph.
+  const bool x4ProDarkTextAa = BoardConfig::isX4Pro();
 
   // Tiled-grayscale band culling: if this glyph's physical y-extent is entirely
   // outside the active strip, skip it before the expensive bitmap decode. This
