@@ -4496,13 +4496,9 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
 
   const bool foregroundBlack = ReaderUtils::readerForegroundBlack();
   bool needsImageGrayscale = pageHasImages;
-  // X4 Pro panels render the 4-level text AA waveform noticeably lighter than
-  // the normal B/W glyph pass (visible as washed-out/thin text on real devices).
-  // TXT already keeps text crisp B/W on touch/X4 Pro for the same reason.
-  // Keep grayscale available for images, but do not repaint text through the
-  // grayscale planes on X4 Pro. X3/X4/X4 Classic retain their existing AA path.
-  bool needsTextGrayscale =
-      SETTINGS.textAntiAliasing && foregroundBlack && !BoardConfig::isX4Pro();
+  // Text AA stays enabled on X4 Pro; GfxRenderer applies a darker Pro-specific
+  // gray mapping so the glyph core remains black while edge pixels are smoothed.
+  bool needsTextGrayscale = SETTINGS.textAntiAliasing && foregroundBlack;
   const bool needsAnyGrayscale = needsTextGrayscale || needsImageGrayscale;
 
   const auto finalizeBufferComposition = [&]() {
