@@ -4496,10 +4496,13 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
 
   const bool foregroundBlack = ReaderUtils::readerForegroundBlack();
   bool needsImageGrayscale = pageHasImages;
-  bool needsTextGrayscale = SETTINGS.textAntiAliasing && foregroundBlack;
-  // X4 Pro UC8279 grayscale/AA support is now provided by the dedicated
-  // UC8279 X4 driver in FreeInkDisplay, so touch-capable X4 Pro devices can use
-  // the same text anti-aliasing pipeline instead of being forced to pure B/W.
+  // X4 Pro panels render the 4-level text AA waveform noticeably lighter than
+  // the normal B/W glyph pass (visible as washed-out/thin text on real devices).
+  // TXT already keeps text crisp B/W on touch/X4 Pro for the same reason.
+  // Keep grayscale available for images, but do not repaint text through the
+  // grayscale planes on X4 Pro. X3/X4/X4 Classic retain their existing AA path.
+  bool needsTextGrayscale =
+      SETTINGS.textAntiAliasing && foregroundBlack && !BoardConfig::isX4Pro();
   const bool needsAnyGrayscale = needsTextGrayscale || needsImageGrayscale;
 
   const auto finalizeBufferComposition = [&]() {
