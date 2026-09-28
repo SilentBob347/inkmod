@@ -1,6 +1,7 @@
 #include "GfxRenderer.h"
 
 #include <BidiUtils.h>
+#include <BoardConfig.h>
 #include <FontDecompressor.h>
 #include <HalGPIO.h>
 #include <Logging.h>
@@ -265,6 +266,12 @@ static void fillRectClipped(const GfxRenderer& renderer, int x, int y, int width
 
   const int screenWidth = renderer.getScreenWidth();
   const int screenHeight = renderer.getScreenHeight();
+  // X4 Pro's UC8179/UC8279 grayscale waveform renders the stock two gray
+  // glyph levels too lightly. Use a darker 3-level text profile there:
+  // black core stays black, source dark-gray becomes black, and source
+  // light-gray becomes dark-gray. This preserves anti-aliased edges without
+  // washing out the whole glyph.
+  const bool x4ProDarkTextAa = BoardConfig::isX4Pro();
   const int x2 = x + width;
   const int y2 = y + height;
   if (x >= screenWidth || y >= screenHeight || x2 <= 0 || y2 <= 0) return;
@@ -627,13 +634,17 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
           if (renderMode == GfxRenderer::BW && bmpVal < 3) {
             // Black (also paints over the grays in BW mode)
             renderer.drawPixel(screenX, screenY, pixelState);
-          } else if (renderMode == GfxRenderer::GRAYSCALE_MSB && (bmpVal == 1 || bmpVal == 2)) {
-            // Light gray (also mark the MSB if it's going to be a dark gray too)
-            // Dedicated X3 gray LUTs now provide proper 4-level gray on both devices
-            // We have to flag pixels in reverse for the gray buffers, as 0 leave alone, 1 update
+          } else if (renderMode == GfxRenderer::GRAYSCALE_MSB &&
+                     (x4ProDarkTextAa ? (bmpVal == 2) : (bmpVal == 1 || bmpVal == 2))) {
+            // Normal profile: source light+dark gray both participate in MSB.
+            // X4 Pro dark profile: only the source light-gray edge participates,
+            // and it is encoded as dark gray together with LSB below.
             renderer.drawPixel(screenX, screenY, false);
-          } else if (renderMode == GfxRenderer::GRAYSCALE_LSB && bmpVal == 1) {
-            // Dark gray
+          } else if (renderMode == GfxRenderer::GRAYSCALE_LSB &&
+                     (x4ProDarkTextAa ? (bmpVal == 2) : (bmpVal == 1))) {
+            // Normal profile: source dark gray -> dark gray.
+            // X4 Pro: source light gray -> dark gray; source dark gray remains
+            // at the already-rendered B/W black baseline.
             renderer.drawPixel(screenX, screenY, false);
           }
         }
