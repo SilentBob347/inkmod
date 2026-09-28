@@ -630,11 +630,10 @@ void TxtReaderActivity::renderPage() {
 
   ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
 
-  // X4 Pro / UC8279: the extra grayscale AA pass leaves residual gray charge
-  // behind the B/W baseline and causes visible ghosting on subsequent TXT
-  // pages. EPUB/FB2 already use the same crisp-BW path on touch/X4 Pro. Keep
-  // the legacy AA pass for X3/X4, where it is known-good.
-  if (!mappedInput.hasTouch() && SETTINGS.textAntiAliasing && ReaderUtils::readerForegroundBlack()) {
+  // Text AA uses the same renderer profile as EPUB/FB2. On X4 Pro
+  // the glyph gray levels are darkened and the helper re-seeds the B/W panel
+  // baseline afterward, preserving smoothing without the old pale/ghosted text.
+  if (SETTINGS.textAntiAliasing && ReaderUtils::readerForegroundBlack()) {
     ReaderUtils::renderAntiAliased(renderer, [&renderLines]() { renderLines(); });
   }
   // scope destructor clears font cache via FontCacheManager
