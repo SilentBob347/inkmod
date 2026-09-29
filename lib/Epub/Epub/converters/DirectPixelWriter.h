@@ -1,5 +1,6 @@
 #pragma once
 
+#include <BoardConfig.h>
 #include <GfxRenderer.h>
 #include <HalDisplay.h>
 #include <stdint.h>
@@ -16,6 +17,7 @@ struct DirectPixelWriter {
   uint8_t* fb;
   GfxRenderer::RenderMode mode;
   bool absoluteGrayPlanes = false;
+  bool x4ProBwDither = false;
   uint16_t displayWidthBytes;  // Runtime framebuffer stride (X4: 100, X3: 99)
   // Active write target: for tiled grayscale, fb is the band scratch, originY is
   // the band's top physical row, and clipRows is the band height. Off-band
@@ -40,6 +42,7 @@ struct DirectPixelWriter {
     clipRows = renderer.getWriteRows();
     mode = renderer.getRenderMode();
     absoluteGrayPlanes = renderer.usesAbsoluteGrayscalePlanes();
+    x4ProBwDither = BoardConfig::isX4Pro();
     displayWidthBytes = renderer.getDisplayWidthBytes();
 
     const int phyW = renderer.getDisplayWidth();
@@ -105,13 +108,28 @@ struct DirectPixelWriter {
   // Must be called after beginRow() for the current row.
   // No bounds checking — caller guarantees coordinates are valid.
   inline void writePixel(int logicalX, uint8_t pixelValue) const {
-    // Determine whether to draw based on render mode
+    const int phyX = rowPhyXBase + logicalX * phyXStepX;
+    const int phyY = rowPhyYBase + logicalX * phyYStepX;
+
+    // Determine whether to draw based on render mode.
     bool draw;
     bool state;
     switch (mode) {
       case GfxRenderer::BW:
-        draw = (pixelValue < 3);
-        state = true;
+        if (x4ProBwDither) {
+          // X4 Pro: keep image pages entirely in the stable B/W pipeline but
+          // preserve visible midtones with ordered dithering. This avoids the
+          // UC81xx direct-grayscale ghosting/flash sequence while no longer
+          // collapsing every gray source pixel to solid black.
+          static constexpr uint8_t kBayer4[4][4] = {
+              {0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}};
+          static constexpr uint8_t kCoverage[4] = {16, 11, 5, 0};
+          draw = kBayer4[phyY & 3][phyX & 3] < kCoverage[pixelValue & 0x3];
+          state = true;
+        } else {
+          draw = (pixelValue < 3);
+          state = true;
+        }
         break;
       case GfxRenderer::GRAYSCALE_MSB:
         if (absoluteGrayPlanes) {
@@ -136,9 +154,6 @@ struct DirectPixelWriter {
     }
 
     if (!draw) return;
-
-    const int phyX = rowPhyXBase + logicalX * phyXStepX;
-    const int phyY = rowPhyYBase + logicalX * phyYStepX;
 
     // Image layout is allowed to place an image partially beyond the logical
     // viewport.  The old writer only checked the physical row: a transformed
