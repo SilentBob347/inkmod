@@ -52,7 +52,7 @@ class HalDisplay {
   void copyGrayscaleMsbBuffers(const uint8_t* msbBuffer);
   void cleanupGrayscaleBuffers(const uint8_t* bwBuffer);
 
-  void displayGrayBuffer(bool turnOffScreen = false);
+  void displayGrayBuffer(bool turnOffScreen = false, bool factoryMode = false);
 
   // Global output polarity (CrossPoint X4 Pro control-center night mode).
   void setInverted(bool inverted);
