@@ -67,6 +67,15 @@ void Uc8279Driver::loadXtfAa(EpdBus& bus) {
   }
 }
 
+void Uc8279Driver::loadXth4(EpdBus& bus) {
+  // Strong absolute 4-gray waveform captured from stock. Unlike XTF_AA this
+  // resolves complete host bitplanes, so it is suitable for book images.
+  for (int t = 0; t < 5; t++) {
+    bus.cmd(static_cast<uint8_t>(CMD_LUT_VCOM + t));
+    bus.data(kUc8279X3_Xth4[t], 49);
+  }
+}
+
 void Uc8279Driver::grayWindowIn(EpdBus& bus) {
   // PTIN + the full-panel PTL (same 792x528 window the init sets): X 0..791,
   // Y 0..527 in gate space, PT_SCAN=1. Keeps plane writes/refresh at 99-byte
@@ -284,23 +293,26 @@ void Uc8279Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   (void)fb;
   (void)lut;  // waveform is the built-in XTF_AA bank
   if (!_lsbValid) return;
-  // Differential grayscale leaves the gray bank/planes loaded, so the next B/W
-  // turn must revert first; factory absolute mode self-cleans.
+  // Overlay AA uses the weak differential XTF_AA waveform. Book-image
+  // direct mode uses the stronger XTH4 absolute 4-gray waveform. The latter is
+  // only requested by the X4 Pro reader path.
   _inGrayscaleMode = !factoryMode;
-  // PSR REG=1 (external LUT) is already set from init and untouched by the B/W
-  // path, so just load the AA bank + CDI and refresh (FUN_42015108/42013be0).
-  // The refresh MUST run in the partial window (like the plane writes); also
-  // resets PTL to full after any per-strip writeGrayscalePlaneStrip windows.
   grayWindowIn(bus);
-  loadXtfAa(bus);
+  if (factoryMode) {
+    loadXth4(bus);
+  } else {
+    loadXtfAa(bus);
+  }
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
   bus.data(_firstRefresh ? kUc8279X3_CdiFirst : kUc8279X3_CdiLater);
   triggerGrayRefresh(bus, turnOff);
   bus.cmd(CMD_PARTIAL_OUT);
 
   _firstRefresh = false;
-  _oldPlaneValid = false;  // gray planes overwrote DTM1/DTM2 — next B/W needs a rebase/clear
-  _forceFullSyncNext = false;
+  _oldPlaneValid = false;  // gray planes overwrote DTM1/DTM2
+  // Absolute gray on the glass is not the same as the B/W software baseline;
+  // force the next monochrome paint through GC instead of diffing against it.
+  _forceFullSyncNext = factoryMode;
   _lsbValid = false;
 }
 
