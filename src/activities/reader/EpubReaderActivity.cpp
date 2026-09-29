@@ -24,7 +24,6 @@
 #include <limits>
 #include <memory>
 #include <new>
-#include <esp_heap_caps.h>
 
 #include "../settings/KOReaderSettingsActivity.h"
 #include "BookStatsActivity.h"
@@ -4497,7 +4496,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
       largestBlockPercent(heapBefore), largestBlockPercent(heapAfter));
 
   const bool foregroundBlack = ReaderUtils::readerForegroundBlack();
-  bool needsImageGrayscale = pageHasImages;
+  bool needsImageGrayscale = pageHasImages && !BoardConfig::isX4Pro();
   // Text AA stays enabled on X4 Pro; GfxRenderer applies a darker Pro-specific
   // gray mapping so the glyph core remains black while edge pixels are smoothed.
   bool needsTextGrayscale = SETTINGS.textAntiAliasing && foregroundBlack;
@@ -4520,7 +4519,13 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
 
   const auto composeGrayscaleBuffer = [&]() {
     if (needsTextGrayscale) {
-      page->render(renderer, fontId, orientedMarginLeft, pageRenderY, foregroundBlack);
+      // X4 Pro image pixels stay in the B/W+dither pipeline. Only text takes
+      // the normal AA overlay on mixed pages; other devices keep the old path.
+      if (BoardConfig::isX4Pro() && pageHasImages && !needsImageGrayscale) {
+        page->renderText(renderer, fontId, orientedMarginLeft, pageRenderY, foregroundBlack);
+      } else {
+        page->render(renderer, fontId, orientedMarginLeft, pageRenderY, foregroundBlack);
+      }
     } else {
       page->renderImages(renderer, fontId, orientedMarginLeft, pageRenderY);
     }
@@ -4596,66 +4601,6 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
     ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
   }
   const auto tDisplay = millis();
-
-  // X4 Pro only: book images need a true absolute 4-gray pass. The normal
-  // text-AA pipeline is a weak differential overlay; using that for photos
-  // collapses midtones to the already-displayed B/W black pixels. Build two
-  // complete planes from the current B/W page baseline, replace only image
-  // pixels with 2-bit grayscale, then run the controller's strong direct-gray
-  // waveform. X3/X4/X4 Classic never enter this path.
-  if (BoardConfig::isX4Pro() && pageHasImages) {
-    const size_t planeBytes = renderer.getBufferSize();
-    uint8_t* baseFrame =
-        static_cast<uint8_t*>(heap_caps_malloc(planeBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!baseFrame) {
-      baseFrame = static_cast<uint8_t*>(malloc(planeBytes));
-    }
-
-    if (baseFrame) {
-      // Keep the fully composed page in RAM, but do NOT show its 1-bit image first.
-      // Driving a B/W image and then applying XTH4 on top leaves the previous
-      // particle state visible as heavy ghosting. Start direct grayscale from a
-      // clean white physical sheet instead.
-      memcpy(baseFrame, renderer.getFrameBuffer(), planeBytes);
-      renderer.clearScreen(0xFF);
-      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-      memcpy(renderer.getFrameBuffer(), baseFrame, planeBytes);
-
-      const auto renderDirectImagePlane = [&](const GfxRenderer::RenderMode mode, const bool lsbPlane) {
-        // Start each absolute plane from the exact B/W page: text/status remain
-        // 00 black or 11 white, while only the book image gets 2-bit gray.
-        memcpy(renderer.getFrameBuffer(), baseFrame, planeBytes);
-        renderer.setAbsoluteGrayscalePlanes(true);
-        renderer.setRenderMode(mode);
-        page->renderImages(renderer, fontId, orientedMarginLeft, pageRenderY);
-        renderer.setAbsoluteGrayscalePlanes(false);
-        if (lsbPlane) {
-          renderer.copyGrayscaleLsbBuffers();
-        } else {
-          renderer.copyGrayscaleMsbBuffers();
-        }
-      };
-
-      renderDirectImagePlane(GfxRenderer::GRAYSCALE_LSB, true);
-      renderDirectImagePlane(GfxRenderer::GRAYSCALE_MSB, false);
-      renderer.setRenderMode(GfxRenderer::BW);
-      // Restore the software B/W page before the driver sees frameBuffer; the
-      // gray planes are already staged in controller RAM.
-      memcpy(renderer.getFrameBuffer(), baseFrame, planeBytes);
-      renderer.displayGrayBuffer(false, true);
-      free(baseFrame);
-
-      // Direct gray leaves physical midtones on the glass. Force the next B/W
-      // page/menu refresh through the controller's clean/full path.
-      pagesUntilFullRefresh = 1;
-      LOG_DBG("ERS", "X4 Pro direct 4-gray image pass from clean white base (%u bytes)",
-              static_cast<unsigned>(planeBytes));
-      return;
-    }
-
-    LOG_ERR("ERS", "X4 Pro direct image grayscale allocation failed (%u bytes); using legacy fallback",
-            static_cast<unsigned>(planeBytes));
-  }
 
   TiledGrayscaleTimings tiledTimings;
   if (runTiledGrayscalePass(renderer, *page, fontId, orientedMarginLeft, pageRenderY, foregroundBlack,
