@@ -701,8 +701,14 @@ void enterDeepSleep(bool fromTimeout) {
 
   putTiltSensorToSleepForDeepSleep();
   display.deepSleep();
-  LOG_DBG("MAIN", "Entering deep sleep");
 
+  // Fully shut down SD/SDMMC before the board rails are cut. On X4 Pro the
+  // card is on a switched rail, but leaving the SDMMC peripheral and its pins
+  // active can back-power the card through IO during deep sleep. CrossPoint's
+  // current sleep path performs the same teardown before entering S3 sleep.
+  Storage.prepareForDeepSleep();
+
+  LOG_DBG("MAIN", "Entering deep sleep");
   powerManager.startDeepSleep(gpio);
 }
 
