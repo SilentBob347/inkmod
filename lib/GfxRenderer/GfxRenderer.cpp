@@ -1594,6 +1594,13 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
         } else if (val < 3) {
           drawPixel(screenX, screenY);
         }
+      } else if (absoluteGrayscalePlanes_ &&
+                 (renderMode == GRAYSCALE_MSB || renderMode == GRAYSCALE_LSB)) {
+        // X4 Pro direct 4-gray pass: encode the image as complete absolute
+        // bitplanes (00 black, 01 dark, 10 light, 11 white). This flag is only
+        // enabled by the X4 Pro image-page path; normal AA keeps sparse masks.
+        const bool msb = renderMode == GRAYSCALE_MSB;
+        drawPixel(screenX, screenY, !(val == 3 || val == (msb ? 2 : 1)));
       } else if (renderMode == GRAYSCALE_MSB && (val == 1 || val == 2)) {
         drawPixel(screenX, screenY, false);
       } else if (renderMode == GRAYSCALE_LSB && val == 1) {
@@ -2355,8 +2362,12 @@ void GfxRenderer::copyGrayscaleLsbBuffers() const { display.copyGrayscaleLsbBuff
 
 void GfxRenderer::copyGrayscaleMsbBuffers() const { display.copyGrayscaleMsbBuffers(frameBuffer); }
 
-void GfxRenderer::displayGrayBuffer(const bool turnOffScreen) const {
-  display.displayGrayBuffer(fadingFix || turnOffScreen);
+void GfxRenderer::copyGrayscaleLsbBuffer(const uint8_t* buffer) const { display.copyGrayscaleLsbBuffers(buffer); }
+
+void GfxRenderer::copyGrayscaleMsbBuffer(const uint8_t* buffer) const { display.copyGrayscaleMsbBuffers(buffer); }
+
+void GfxRenderer::displayGrayBuffer(const bool turnOffScreen, const bool factoryMode) const {
+  display.displayGrayBuffer(fadingFix || turnOffScreen, factoryMode);
 }
 
 void GfxRenderer::writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* scratch, int yStart, int numRows) const {
