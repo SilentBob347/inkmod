@@ -4560,7 +4560,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
             imageBlankDisplayMs, imageRestoreRenderMs, imageFinalDisplayMs);
   };
 
-  if (pageHasImages) {
+  if (pageHasImages && !BoardConfig::isX4Pro()) {
     // Double FAST_REFRESH with selective image blanking (pablohc's technique):
     // HALF_REFRESH sets particles too firmly for the grayscale LUT to adjust.
     // Instead, blank only the image area and do two fast refreshes.
@@ -4605,40 +4605,50 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
   // waveform. X3/X4/X4 Classic never enter this path.
   if (BoardConfig::isX4Pro() && pageHasImages) {
     const size_t planeBytes = renderer.getBufferSize();
-    uint8_t* directPlane =
+    uint8_t* baseFrame =
         static_cast<uint8_t*>(heap_caps_malloc(planeBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!directPlane) {
-      directPlane = static_cast<uint8_t*>(malloc(planeBytes));
+    if (!baseFrame) {
+      baseFrame = static_cast<uint8_t*>(malloc(planeBytes));
     }
 
-    if (directPlane) {
+    if (baseFrame) {
+      // Keep the fully composed page in RAM, but do NOT show its 1-bit image first.
+      // Driving a B/W image and then applying XTH4 on top leaves the previous
+      // particle state visible as heavy ghosting. Start direct grayscale from a
+      // clean white physical sheet instead.
+      memcpy(baseFrame, renderer.getFrameBuffer(), planeBytes);
+      renderer.clearScreen(0xFF);
+      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+      memcpy(renderer.getFrameBuffer(), baseFrame, planeBytes);
+
       const auto renderDirectImagePlane = [&](const GfxRenderer::RenderMode mode, const bool lsbPlane) {
-        // Preserve text/status/overlays as solid B/W and replace only the book
-        // image pixels with their absolute 2-bit grayscale values.
-        memcpy(directPlane, renderer.getFrameBuffer(), planeBytes);
-        renderer.beginStripTarget(directPlane, 0, renderer.getDisplayHeight());
+        // Start each absolute plane from the exact B/W page: text/status remain
+        // 00 black or 11 white, while only the book image gets 2-bit gray.
+        memcpy(renderer.getFrameBuffer(), baseFrame, planeBytes);
         renderer.setAbsoluteGrayscalePlanes(true);
         renderer.setRenderMode(mode);
         page->renderImages(renderer, fontId, orientedMarginLeft, pageRenderY);
-        renderer.endStripTarget();
         renderer.setAbsoluteGrayscalePlanes(false);
         if (lsbPlane) {
-          renderer.copyGrayscaleLsbBuffer(directPlane);
+          renderer.copyGrayscaleLsbBuffers();
         } else {
-          renderer.copyGrayscaleMsbBuffer(directPlane);
+          renderer.copyGrayscaleMsbBuffers();
         }
       };
 
       renderDirectImagePlane(GfxRenderer::GRAYSCALE_LSB, true);
       renderDirectImagePlane(GfxRenderer::GRAYSCALE_MSB, false);
       renderer.setRenderMode(GfxRenderer::BW);
+      // Restore the software B/W page before the driver sees frameBuffer; the
+      // gray planes are already staged in controller RAM.
+      memcpy(renderer.getFrameBuffer(), baseFrame, planeBytes);
       renderer.displayGrayBuffer(false, true);
-      free(directPlane);
+      free(baseFrame);
 
       // Direct gray leaves physical midtones on the glass. Force the next B/W
       // page/menu refresh through the controller's clean/full path.
       pagesUntilFullRefresh = 1;
-      LOG_DBG("ERS", "X4 Pro direct 4-gray image pass complete (%u bytes)",
+      LOG_DBG("ERS", "X4 Pro direct 4-gray image pass from clean white base (%u bytes)",
               static_cast<unsigned>(planeBytes));
       return;
     }
