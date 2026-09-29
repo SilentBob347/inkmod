@@ -65,6 +65,16 @@ class HalClock {
     return getDate(year, month, day, hour, minute);
   }
 
+  // True only when the current clock source contains a usable calendar value.
+  // This is deliberately separate from needsPeriodicNTPSync(): X4 Pro/Classic
+  // have a hardware BM8563, but after a complete battery discharge that RTC can
+  // still be present while its date/time is invalid and needs one NTP repair.
+  bool hasValidDateTime() const {
+    uint16_t year = 0;
+    uint8_t month = 0, day = 0, hour = 0, minute = 0;
+    return getDate(year, month, day, hour, minute);
+  }
+
   // Format date into a caller-provided buffer as "Mon D, YYYY".
   // utcOffsetQuarterHoursBiased matches formatTime so the date rolls over at local midnight.
   // Returns false if no clock source is available or the date is invalid/unsynced.
