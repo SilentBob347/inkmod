@@ -69,8 +69,9 @@ class Uc8279Driver : public PanelDriver {
   // Load a 5-table command-prefixed waveform bank (BW_GC/BW_DU/XTF_PRE_BW_MID)
   // into LUT registers 0x20-0x24: byte 0 of each table is the register id.
   void loadBank(EpdBus& bus, const uint8_t (*bank)[43]);
-  // Load the raw (non-prefixed) 49-byte XTF_AA grayscale bank: 0x20+i then table.
+  // Load raw (non-prefixed) 49-byte grayscale banks: 0x20+i then table.
   void loadXtfAa(EpdBus& bus);
+  void loadXth4(EpdBus& bus);
   // Blocking PON -> DRF -> wait (-> POF) used by the grayscale paths.
   void triggerGrayRefresh(EpdBus& bus, bool turnOff);
   // Enter the full 792x528 PTL partial window (PTIN + PTL). ALL RAM plane writes
