@@ -1,5 +1,6 @@
 #pragma once
 
+#include <BoardConfig.h>
 #include <GfxRenderer.h>
 #include <HalDisplay.h>
 #include <stdint.h>
@@ -15,6 +16,7 @@
 struct DirectPixelWriter {
   uint8_t* fb;
   GfxRenderer::RenderMode mode;
+  bool absoluteGrayPlanes = false;
   uint16_t displayWidthBytes;  // Runtime framebuffer stride (X4: 100, X3: 99)
   // Active write target: for tiled grayscale, fb is the band scratch, originY is
   // the band's top physical row, and clipRows is the band height. Off-band
@@ -38,6 +40,11 @@ struct DirectPixelWriter {
     originY = renderer.getWriteOriginY();
     clipRows = renderer.getWriteRows();
     mode = renderer.getRenderMode();
+    const auto controller = BoardConfig::ACTIVE.displayController;
+    absoluteGrayPlanes =
+        BoardConfig::isX4Pro() &&
+        (controller == BoardConfig::DisplayController::UC8279 ||
+         controller == BoardConfig::DisplayController::UC8179);
     displayWidthBytes = renderer.getDisplayWidthBytes();
 
     const int phyW = renderer.getDisplayWidth();
@@ -112,12 +119,24 @@ struct DirectPixelWriter {
         state = true;
         break;
       case GfxRenderer::GRAYSCALE_MSB:
-        draw = (pixelValue == 1 || pixelValue == 2);
-        state = false;
+        if (absoluteGrayPlanes) {
+          // UC8179/UC8279 X4 Pro grayscale is encoded by two absolute planes:
+          // 0=black(00), 1=dark(01), 2=light(10), 3=white(11).
+          draw = true;
+          state = !(pixelValue == 2 || pixelValue == 3);
+        } else {
+          draw = (pixelValue == 1 || pixelValue == 2);
+          state = false;
+        }
         break;
       case GfxRenderer::GRAYSCALE_LSB:
-        draw = (pixelValue == 1);
-        state = false;
+        if (absoluteGrayPlanes) {
+          draw = true;
+          state = !(pixelValue == 1 || pixelValue == 3);
+        } else {
+          draw = (pixelValue == 1);
+          state = false;
+        }
         break;
       default:
         return;
