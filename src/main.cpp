@@ -795,13 +795,13 @@ BootTimeSyncCandidate checkSilentBootTimeSyncCandidate() {
     return candidate;  // User turned the clock off (X4) - don't join WiFi just to sync it.
   }
 
-  if (!halClock.needsPeriodicNTPSync()) {
-    return candidate;  // X3 has a battery-backed RTC; nothing to do here.
-  }
-
-  uint8_t hour, minute;
-  if (halClock.getTime(hour, minute)) {
-    return candidate;  // Already have a valid time (e.g. woke from deep sleep) - nothing to do.
+  // Decide from the clock value, not merely from the presence of a hardware
+  // RTC. X4 Pro/Classic BM8563 can still answer on I2C after a complete battery
+  // discharge while containing an invalid/reset date. In that state the old
+  // needsPeriodicNTPSync() gate skipped boot-time NTP forever, so Calendar sleep
+  // fell back to the standard screen until the user manually connected WiFi.
+  if (!halClock.isAvailable() || halClock.hasValidDateTime()) {
+    return candidate;
   }
 
   WIFI_STORE.loadFromFile();
