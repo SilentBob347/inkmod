@@ -296,7 +296,10 @@ void Uc8279Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   // Overlay AA uses the weak differential XTF_AA waveform. Book-image
   // direct mode uses the stronger XTH4 absolute 4-gray waveform. The latter is
   // only requested by the X4 Pro reader path.
-  _inGrayscaleMode = !factoryMode;
+  // Keep direct gray marked as grayscale too, so the next B/W paint
+  // performs the driver's strong white scrub before drawing a menu/text page.
+  // This avoids a gray cover/image lingering underneath the following screen.
+  _inGrayscaleMode = true;
   grayWindowIn(bus);
   if (factoryMode) {
     loadXth4(bus);
