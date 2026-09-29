@@ -570,12 +570,13 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
   const int top = glyph->top;
   const int screenWidth = renderer.getScreenWidth();
   const int screenHeight = renderer.getScreenHeight();
-  // X4 Pro's UC8179/UC8279 grayscale waveform renders the stock two gray
-  // glyph levels too lightly. Use a darker 3-level text profile there:
-  // black core stays black, source dark-gray becomes black, and source
-  // light-gray becomes dark-gray. This preserves anti-aliased edges without
-  // washing out the whole glyph.
-  const bool x4ProDarkTextAa = BoardConfig::isX4Pro();
+  // X4 Pro UC8179/UC8279 gray waveforms consume two absolute bitplanes.
+  // The older X3/X4 path instead uses sparse/differential gray masks.
+  const auto controller = BoardConfig::ACTIVE.displayController;
+  const bool x4ProAbsoluteGray =
+      BoardConfig::isX4Pro() &&
+      (controller == BoardConfig::DisplayController::UC8279 ||
+       controller == BoardConfig::DisplayController::UC8179);
 
   // Tiled-grayscale band culling: if this glyph's physical y-extent is entirely
   // outside the active strip, skip it before the expensive bitmap decode. This
@@ -634,18 +635,20 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
           if (renderMode == GfxRenderer::BW && bmpVal < 3) {
             // Black (also paints over the grays in BW mode)
             renderer.drawPixel(screenX, screenY, pixelState);
-          } else if (renderMode == GfxRenderer::GRAYSCALE_MSB &&
-                     (x4ProDarkTextAa ? (bmpVal == 2) : (bmpVal == 1 || bmpVal == 2))) {
-            // Normal profile: source light+dark gray both participate in MSB.
-            // X4 Pro dark profile: only the source light-gray edge participates,
-            // and it is encoded as dark gray together with LSB below.
-            renderer.drawPixel(screenX, screenY, false);
-          } else if (renderMode == GfxRenderer::GRAYSCALE_LSB &&
-                     (x4ProDarkTextAa ? (bmpVal == 2) : (bmpVal == 1))) {
-            // Normal profile: source dark gray -> dark gray.
-            // X4 Pro: source light gray -> dark gray; source dark gray remains
-            // at the already-rendered B/W black baseline.
-            renderer.drawPixel(screenX, screenY, false);
+          } else if (renderMode == GfxRenderer::GRAYSCALE_MSB) {
+            if (x4ProAbsoluteGray) {
+              // Absolute plane encoding: black/dark -> 0, light/white -> 1.
+              renderer.drawPixel(screenX, screenY, !(bmpVal == 2 || bmpVal == 3));
+            } else if (bmpVal == 1 || bmpVal == 2) {
+              renderer.drawPixel(screenX, screenY, false);
+            }
+          } else if (renderMode == GfxRenderer::GRAYSCALE_LSB) {
+            if (x4ProAbsoluteGray) {
+              // Absolute plane encoding: black/light -> 0, dark/white -> 1.
+              renderer.drawPixel(screenX, screenY, !(bmpVal == 1 || bmpVal == 3));
+            } else if (bmpVal == 1) {
+              renderer.drawPixel(screenX, screenY, false);
+            }
           }
         }
       }
@@ -1589,12 +1592,36 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
 
       const uint8_t val = outputRow[bmpX / 4] >> (6 - ((bmpX * 2) % 8)) & 0x3;
 
-      if (renderMode == BW && val < 3) {
-        drawPixel(screenX, screenY);
-      } else if (renderMode == GRAYSCALE_MSB && (val == 1 || val == 2)) {
-        drawPixel(screenX, screenY, false);
-      } else if (renderMode == GRAYSCALE_LSB && val == 1) {
-        drawPixel(screenX, screenY, false);
+      if (renderMode == BW) {
+        if (BoardConfig::isX4Pro() && bitmap.hasGreyscale()) {
+          // Home/library covers are shown through the 1-bit UI framebuffer.
+          // Flattening every native gray (0/1/2) to solid black makes Pro
+          // covers much darker than the source. Preserve the four-level tone
+          // with a tiny ordered 1-bit dither: black=100%, dark~=69%,
+          // light~=31%, white=0% coverage.
+          static constexpr uint8_t kBayer4[4][4] = {
+              {0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}};
+          static constexpr uint8_t kCoverage[4] = {16, 11, 5, 0};
+          if (kBayer4[screenY & 3][screenX & 3] < kCoverage[val]) {
+            drawPixel(screenX, screenY);
+          }
+        } else if (val < 3) {
+          drawPixel(screenX, screenY);
+        }
+      } else {
+        const auto controller = BoardConfig::ACTIVE.displayController;
+        const bool absolute =
+            BoardConfig::isX4Pro() &&
+            (controller == BoardConfig::DisplayController::UC8279 ||
+             controller == BoardConfig::DisplayController::UC8179);
+        if (absolute && (renderMode == GRAYSCALE_MSB || renderMode == GRAYSCALE_LSB)) {
+          const bool msb = renderMode == GRAYSCALE_MSB;
+          drawPixel(screenX, screenY, !(val == 3 || val == (msb ? 2 : 1)));
+        } else if (renderMode == GRAYSCALE_MSB && (val == 1 || val == 2)) {
+          drawPixel(screenX, screenY, false);
+        } else if (renderMode == GRAYSCALE_LSB && val == 1) {
+          drawPixel(screenX, screenY, false);
+        }
       }
     }
   }
