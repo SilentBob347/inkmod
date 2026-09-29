@@ -445,7 +445,11 @@ bool runTiledGrayscalePass(GfxRenderer& renderer, const Page& page, const int fo
       renderer.beginStripTarget(scratch.get(), y, rows);
       renderer.clearScreen(0x00);
       if (needsTextGrayscale) {
-        page.render(renderer, fontId, marginLeft, marginTop, foregroundBlack);
+        if (BoardConfig::isX4Pro() && page.hasImages() && !needsImageGrayscale) {
+          page.renderText(renderer, fontId, marginLeft, marginTop, foregroundBlack);
+        } else {
+          page.render(renderer, fontId, marginLeft, marginTop, foregroundBlack);
+        }
       } else {
         page.renderImages(renderer, fontId, marginLeft, marginTop);
       }
