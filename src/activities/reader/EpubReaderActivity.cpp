@@ -2,6 +2,7 @@
 
 #include "BootLog.h"
 #include <Arduino.h>
+#include <BoardConfig.h>
 #include <Epub/Page.h>
 #include <Epub/blocks/TextBlock.h>
 #include <Fb2.h>
@@ -23,6 +24,7 @@
 #include <limits>
 #include <memory>
 #include <new>
+#include <esp_heap_caps.h>
 
 #include "../settings/KOReaderSettingsActivity.h"
 #include "BookStatsActivity.h"
@@ -4594,6 +4596,56 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
     ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
   }
   const auto tDisplay = millis();
+
+  // X4 Pro only: book images need a true absolute 4-gray pass. The normal
+  // text-AA pipeline is a weak differential overlay; using that for photos
+  // collapses midtones to the already-displayed B/W black pixels. Build two
+  // complete planes from the current B/W page baseline, replace only image
+  // pixels with 2-bit grayscale, then run the controller's strong direct-gray
+  // waveform. X3/X4/X4 Classic never enter this path.
+  if (BoardConfig::isX4Pro() && pageHasImages) {
+    const size_t planeBytes = renderer.getBufferSize();
+    uint8_t* directPlane =
+        static_cast<uint8_t*>(heap_caps_malloc(planeBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!directPlane) {
+      directPlane = static_cast<uint8_t*>(malloc(planeBytes));
+    }
+
+    if (directPlane) {
+      const auto renderDirectImagePlane = [&](const GfxRenderer::RenderMode mode, const bool lsbPlane) {
+        // Preserve text/status/overlays as solid B/W and replace only the book
+        // image pixels with their absolute 2-bit grayscale values.
+        memcpy(directPlane, renderer.getFrameBuffer(), planeBytes);
+        renderer.beginStripTarget(directPlane, 0, renderer.getDisplayHeight());
+        renderer.setAbsoluteGrayscalePlanes(true);
+        renderer.setRenderMode(mode);
+        page->renderImages(renderer, fontId, orientedMarginLeft, pageRenderY);
+        renderer.endStripTarget();
+        renderer.setAbsoluteGrayscalePlanes(false);
+        if (lsbPlane) {
+          renderer.copyGrayscaleLsbBuffer(directPlane);
+        } else {
+          renderer.copyGrayscaleMsbBuffer(directPlane);
+        }
+      };
+
+      renderDirectImagePlane(GfxRenderer::GRAYSCALE_LSB, true);
+      renderDirectImagePlane(GfxRenderer::GRAYSCALE_MSB, false);
+      renderer.setRenderMode(GfxRenderer::BW);
+      renderer.displayGrayBuffer(false, true);
+      free(directPlane);
+
+      // Direct gray leaves physical midtones on the glass. Force the next B/W
+      // page/menu refresh through the controller's clean/full path.
+      pagesUntilFullRefresh = 1;
+      LOG_DBG("ERS", "X4 Pro direct 4-gray image pass complete (%u bytes)",
+              static_cast<unsigned>(planeBytes));
+      return;
+    }
+
+    LOG_ERR("ERS", "X4 Pro direct image grayscale allocation failed (%u bytes); using legacy fallback",
+            static_cast<unsigned>(planeBytes));
+  }
 
   TiledGrayscaleTimings tiledTimings;
   if (runTiledGrayscalePass(renderer, *page, fontId, orientedMarginLeft, pageRenderY, foregroundBlack,
