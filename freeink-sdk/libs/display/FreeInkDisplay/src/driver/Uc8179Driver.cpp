@@ -284,7 +284,6 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
                                bool factoryMode) {
   // fb = the reader's current frame; used to re-seed the B/W baseline below.
   (void)lut;          // waveform comes from the built-in gray LUT set (kGrayLuts)
-  (void)factoryMode;  // 4-level is absolute (defined by the planes)
   (void)turnOff;      // gray_aa always powers off at the end (stock cleanup)
 
   // Custom-LUT 4-level grayscale — the EXACT stock gray_aa stream (FUN_4214ec2c),
@@ -322,13 +321,13 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   bus.waitBusy(" 8179_gray_POF");
   _isScreenOn = false;
 
-  // Re-seed the OLD plane (0x10) with this frame so the NEXT B/W page turn runs a
-  // fast differential instead of a forced full flash — otherwise the gray LSB
-  // plane left in 0x10 makes every AA page turn black-clear. (The reader's
-  // non-tiled path never calls cleanupGrayscaleBuffers(), so we seed here; the
-  // tiled path refines it later with the exact B/W baseline.) RAM write only —
-  // the panel is powered off, which is fine.
-  if (fb) {
+  // Overlay AA can re-seed the B/W baseline for a fast next turn. A direct
+  // image pass leaves real gray pixels on the glass, so a B/W differential
+  // baseline would be physically wrong; force a clean refresh next time.
+  if (factoryMode) {
+    _needFullClear = true;
+    _oldPlaneValid = false;
+  } else if (fb) {
     streamPlane(bus, CMD_DTM1, fb);
     _oldPlaneValid = true;
     _needFullClear = false;
