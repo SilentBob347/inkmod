@@ -45,6 +45,7 @@ class GfxRenderer {
 
   HalDisplay& display;
   RenderMode renderMode;
+  bool absoluteGrayscalePlanes_ = false;
   Orientation orientation;
   bool fadingFix;
   uint8_t* frameBuffer = nullptr;
@@ -270,9 +271,13 @@ class GfxRenderer {
   // Grayscale functions
   void setRenderMode(const RenderMode mode) { this->renderMode = mode; }
   RenderMode getRenderMode() const { return renderMode; }
+  void setAbsoluteGrayscalePlanes(bool enabled) { absoluteGrayscalePlanes_ = enabled; }
+  bool usesAbsoluteGrayscalePlanes() const { return absoluteGrayscalePlanes_; }
   void copyGrayscaleLsbBuffers() const;
   void copyGrayscaleMsbBuffers() const;
-  void displayGrayBuffer(bool turnOffScreen = false) const;
+  void copyGrayscaleLsbBuffer(const uint8_t* buffer) const;
+  void copyGrayscaleMsbBuffer(const uint8_t* buffer) const;
+  void displayGrayBuffer(bool turnOffScreen = false, bool factoryMode = false) const;
   void writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* scratch, int yStart, int numRows) const;
   bool supportsStripGrayscale() const;
   bool storeBwBuffer();    // Returns true if buffer was stored successfully
