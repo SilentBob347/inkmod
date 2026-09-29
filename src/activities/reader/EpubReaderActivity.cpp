@@ -425,11 +425,6 @@ bool runTiledGrayscalePass(GfxRenderer& renderer, const Page& page, const int fo
   }
 
   constexpr int STRIP_ROWS = 80;
-  const auto controller = BoardConfig::ACTIVE.displayController;
-  const bool absoluteGrayPlanes =
-      BoardConfig::isX4Pro() &&
-      (controller == BoardConfig::DisplayController::UC8279 ||
-       controller == BoardConfig::DisplayController::UC8179);
   const int displayHeight = renderer.getDisplayHeight();
   const int displayWidthBytes = renderer.getDisplayWidthBytes();
   auto scratch =
@@ -447,9 +442,7 @@ bool runTiledGrayscalePass(GfxRenderer& renderer, const Page& page, const int fo
     for (int y = 0; y < displayHeight; y += STRIP_ROWS) {
       const int rows = std::min(STRIP_ROWS, displayHeight - y);
       renderer.beginStripTarget(scratch.get(), y, rows);
-      // Pro UC8179/UC8279 gray planes are absolute; untouched page background
-      // must therefore start white in both planes. X3/X4 keep sparse masks.
-      renderer.clearScreen(absoluteGrayPlanes ? 0xFF : 0x00);
+      renderer.clearScreen(0x00);
       if (needsTextGrayscale) {
         page.render(renderer, fontId, marginLeft, marginTop, foregroundBlack);
       } else {
@@ -4627,20 +4620,14 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
 
   // grayscale rendering
   if (canApplyGrayscale) {
-    const auto grayController = BoardConfig::ACTIVE.displayController;
-    const bool absoluteGrayPlanes =
-        BoardConfig::isX4Pro() &&
-        (grayController == BoardConfig::DisplayController::UC8279 ||
-         grayController == BoardConfig::DisplayController::UC8179);
-
-    renderer.clearScreen(absoluteGrayPlanes ? 0xFF : 0x00);
+    renderer.clearScreen(0x00);
     renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
     composeGrayscaleBuffer();
     renderer.copyGrayscaleLsbBuffers();
     const auto tGrayLsb = millis();
 
     // Render and copy to MSB buffer
-    renderer.clearScreen(absoluteGrayPlanes ? 0xFF : 0x00);
+    renderer.clearScreen(0x00);
     renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
     composeGrayscaleBuffer();
     renderer.copyGrayscaleMsbBuffers();
