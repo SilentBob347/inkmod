@@ -198,10 +198,6 @@ void renderAntiAliased(GfxRenderer& renderer, RenderFn&& renderFn) {
   renderer.setRenderMode(GfxRenderer::BW);
 
   renderer.restoreBwBuffer();
-  // Grayscale display leaves the panel controller RAM holding gray planes.
-  // Re-seed it from the restored B/W framebuffer so the next fast page turn
-  // does not diff against stale gray state (especially visible on X4 Pro).
-  renderer.cleanupGrayscaleWithFrameBuffer();
 }
 
 }  // namespace ReaderUtils
