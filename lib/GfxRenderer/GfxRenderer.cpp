@@ -570,14 +570,6 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
   const int top = glyph->top;
   const int screenWidth = renderer.getScreenWidth();
   const int screenHeight = renderer.getScreenHeight();
-  // X4 Pro UC8179/UC8279 gray waveforms consume two absolute bitplanes.
-  // The older X3/X4 path instead uses sparse/differential gray masks.
-  const auto controller = BoardConfig::ACTIVE.displayController;
-  const bool x4ProAbsoluteGray =
-      BoardConfig::isX4Pro() &&
-      (controller == BoardConfig::DisplayController::UC8279 ||
-       controller == BoardConfig::DisplayController::UC8179);
-
   // Tiled-grayscale band culling: if this glyph's physical y-extent is entirely
   // outside the active strip, skip it before the expensive bitmap decode. This
   // is what makes per-band re-rendering cheap. No-op outside strip mode.
@@ -635,20 +627,14 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
           if (renderMode == GfxRenderer::BW && bmpVal < 3) {
             // Black (also paints over the grays in BW mode)
             renderer.drawPixel(screenX, screenY, pixelState);
-          } else if (renderMode == GfxRenderer::GRAYSCALE_MSB) {
-            if (x4ProAbsoluteGray) {
-              // Absolute plane encoding: black/dark -> 0, light/white -> 1.
-              renderer.drawPixel(screenX, screenY, !(bmpVal == 2 || bmpVal == 3));
-            } else if (bmpVal == 1 || bmpVal == 2) {
-              renderer.drawPixel(screenX, screenY, false);
-            }
-          } else if (renderMode == GfxRenderer::GRAYSCALE_LSB) {
-            if (x4ProAbsoluteGray) {
-              // Absolute plane encoding: black/light -> 0, dark/white -> 1.
-              renderer.drawPixel(screenX, screenY, !(bmpVal == 1 || bmpVal == 3));
-            } else if (bmpVal == 1) {
-              renderer.drawPixel(screenX, screenY, false);
-            }
+          } else if (renderMode == GfxRenderer::GRAYSCALE_MSB && (bmpVal == 1 || bmpVal == 2)) {
+            // Light gray (also mark the MSB if it's going to be a dark gray too).
+            // Gray planes are sparse/differential masks on the reader controllers:
+            // untouched pixels remain 0, only pixels to be nudged are marked.
+            renderer.drawPixel(screenX, screenY, false);
+          } else if (renderMode == GfxRenderer::GRAYSCALE_LSB && bmpVal == 1) {
+            // Dark gray
+            renderer.drawPixel(screenX, screenY, false);
           }
         }
       }
@@ -1608,20 +1594,10 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
         } else if (val < 3) {
           drawPixel(screenX, screenY);
         }
-      } else {
-        const auto controller = BoardConfig::ACTIVE.displayController;
-        const bool absolute =
-            BoardConfig::isX4Pro() &&
-            (controller == BoardConfig::DisplayController::UC8279 ||
-             controller == BoardConfig::DisplayController::UC8179);
-        if (absolute && (renderMode == GRAYSCALE_MSB || renderMode == GRAYSCALE_LSB)) {
-          const bool msb = renderMode == GRAYSCALE_MSB;
-          drawPixel(screenX, screenY, !(val == 3 || val == (msb ? 2 : 1)));
-        } else if (renderMode == GRAYSCALE_MSB && (val == 1 || val == 2)) {
-          drawPixel(screenX, screenY, false);
-        } else if (renderMode == GRAYSCALE_LSB && val == 1) {
-          drawPixel(screenX, screenY, false);
-        }
+      } else if (renderMode == GRAYSCALE_MSB && (val == 1 || val == 2)) {
+        drawPixel(screenX, screenY, false);
+      } else if (renderMode == GRAYSCALE_LSB && val == 1) {
+        drawPixel(screenX, screenY, false);
       }
     }
   }
