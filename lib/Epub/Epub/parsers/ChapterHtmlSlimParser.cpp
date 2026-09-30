@@ -1665,9 +1665,10 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                   // Build the screen-sized pixel cache only after text pressure has
                   // been relieved. Later page draws stream .pxc rows from SD.
                   const size_t imageDot = cachedImagePath.rfind('.');
+                  const char* cacheSuffix = BoardConfig::isX4Pro() ? ".x4pro-level2.pxc" : ".pxc";
                   const std::string pixelCachePath =
-                      imageDot == std::string::npos ? cachedImagePath + ".pxc"
-                                                     : cachedImagePath.substr(0, imageDot) + ".pxc";
+                      imageDot == std::string::npos ? cachedImagePath + cacheSuffix
+                                                     : cachedImagePath.substr(0, imageDot) + cacheSuffix;
                   if (!Storage.exists(pixelCachePath.c_str())) {
                     // The glyph cache is rebuildable and often accounts for the
                     // last few KiB that make an otherwise valid JPEG miss the
