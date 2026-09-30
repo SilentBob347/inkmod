@@ -64,7 +64,9 @@ bool HalStorage::beginUsbDrive() {
   }
   if (!usbMassStorage.begin(blockDevice)) {
     LOG_ERR("USB", "USB Drive MSC initialization failed");
-    SDCard.begin();
+    if (!SDCard.reattachFilesystemAfterRawAccess()) {
+      LOG_ERR("USB", "Unable to restore SD filesystem after failed MSC start");
+    }
     return false;
   }
   return true;
@@ -86,6 +88,13 @@ void HalStorage::endUsbDrive() {
 #if FREEINK_CAP_USB_MSC
   StorageLock lock;
   usbMassStorage.end();
+
+  // USB Drive detaches only the filesystem; the SDMMC block device stays live
+  // for raw MSC access. Restore SdFat on that existing device immediately so
+  // the card is usable again even before/without the UI's cleanup reboot.
+  if (!SDCard.reattachFilesystemAfterRawAccess()) {
+    LOG_ERR("USB", "Unable to remount SD filesystem after USB Drive");
+  }
 #endif
 }
 
