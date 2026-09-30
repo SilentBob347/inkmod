@@ -109,6 +109,35 @@ FsBlockDeviceInterface* SDCardManager::detachFilesystemForRawAccess() {
   return _dev;
 }
 
+bool SDCardManager::reattachFilesystemAfterRawAccess() {
+  if (initialized) return true;
+  if (!_dev || _dev->sectorCount() == 0) {
+    SD_LOGLN("[SD] Cannot reattach filesystem: SDMMC block device is unavailable");
+    return false;
+  }
+
+  // USB-MSC owns the same live SDMMC block device while the filesystem is
+  // detached. Once MSC is stopped, remount only the filesystem layer. Calling
+  // begin() here would incorrectly re-run sdmmc_host_init()/card_init on an
+  // already initialized host and is the reason the card stayed unavailable
+  // until a full reboot.
+  if (!_vol.begin(_dev)) {
+    SD_LOGF("[%lu] [SD] SDMMC filesystem reattach after USB failed\n", millis());
+    initialized = false;
+    cachedTotalBytes = 0;
+    cachedUsedBytes = 0;
+    cachedUsedBytesValid = false;
+    return false;
+  }
+
+  initialized = true;
+  cachedTotalBytes = static_cast<uint64_t>(vol().clusterCount()) * vol().bytesPerCluster();
+  cachedUsedBytes = 0;
+  cachedUsedBytesValid = false;
+  SD_LOGF("[%lu] [SD] SDMMC filesystem reattached after USB\n", millis());
+  return true;
+}
+
 void SDCardManager::shutdown() {
   if (!_dev) return;
   if (initialized) _vol.end();
