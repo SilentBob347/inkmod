@@ -46,3 +46,12 @@ jobs:
 
       - name: Build X4 Classic release firmware
         run: pio run -e x4classic-release
+
+
+      - name: Upload X4 Pro test firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: x4pro-test-firmware
+          path: .pio/build/x4pro-release/*.bin
+          if-no-files-found: error
+          retention-days: 7
