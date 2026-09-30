@@ -24,6 +24,12 @@ class EpubReaderPercentSelectionActivity final : public Activity {
 
   ButtonNavigator buttonNavigator;
 
+  // X4 Pro has only the physical Left/Right navigation buttons. A short press
+  // changes the target by 1%, while holding the same button changes it by 10%
+  // exactly once when the long-press threshold is reached.
+  bool x4ProLeftLongHandled = false;
+  bool x4ProRightLongHandled = false;
+
   // Change the current percent by a delta and clamp within bounds.
   void adjustPercent(int delta);
 };
