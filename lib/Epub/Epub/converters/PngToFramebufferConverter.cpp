@@ -1,5 +1,6 @@
 #include "PngToFramebufferConverter.h"
 
+#include <BoardConfig.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
@@ -226,13 +227,10 @@ int pngDrawCallback(PNGDRAW* pDraw) {
     if (outX >= 0 && outX < screenWidth) {
       const uint8_t gray = ctx->grayLineBuffer[srcX];
       uint8_t ditheredGray;
-      if (ctx->ditherer) {
+      if (ctx->ditherer && !BoardConfig::isX4Pro()) {
         ditheredGray = ctx->ditherer->processPixel(gray, dstX);
-      } else if (useDithering) {
-        ditheredGray = applyBayerDither4Level(gray, outX, outY);
       } else {
-        ditheredGray = gray / 85;
-        if (ditheredGray > 3) ditheredGray = 3;
+        ditheredGray = quantizeImagePixel(gray, outX, outY, useDithering, BoardConfig::isX4Pro());
       }
       pw.writePixel(outX, ditheredGray);
       if (caching) cw.writePixel(outX, ditheredGray);
@@ -305,7 +303,7 @@ bool decodeToFramebufferWithPngDec(const std::string& imagePath, GfxRenderer& re
   // Error-diffusion dithering needs one row of error state per output column.
   // Allocation failure is not fatal: the draw callback falls back to ordered
   // (Bayer) dithering whenever ctx.ditherer is null.
-  if (config.useDithering) {
+  if (config.useDithering && !BoardConfig::isX4Pro()) {
     ctx.ditherer = new (std::nothrow) AtkinsonDitherer(ctx.dstWidth);
   }
 
@@ -697,13 +695,10 @@ bool emitRenderedRow(GfxRenderer& renderer, const RenderConfig& config, const in
   for (int outX = 0; outX < outWidth; ++outX) {
     const int screenX = config.x + outX;
     uint8_t level;
-    if (ditherer) {
+    if (ditherer && !BoardConfig::isX4Pro()) {
       level = ditherer->processPixel(grayRow[outX], outX);
-    } else if (config.useDithering) {
-      level = applyBayerDither4Level(grayRow[outX], screenX, screenY);
     } else {
-      level = grayRow[outX] / 85;
-      if (level > 3) level = 3;
+      level = quantizeImagePixel(grayRow[outX], screenX, screenY, config.useDithering, BoardConfig::isX4Pro());
     }
 
     if (screenX >= 0 && screenX < screenWidth) {
@@ -944,7 +939,9 @@ bool decodeToFramebufferStreaming(const std::string& imagePath, GfxRenderer& ren
   // Allocation failure is not fatal: emitRenderedRow falls back to ordered
   // (Bayer) dithering whenever ditherer is null.
   AtkinsonDitherer* ditherer =
-      config.useDithering ? new (std::nothrow) AtkinsonDitherer(geometry.outWidth) : nullptr;
+      (config.useDithering && !BoardConfig::isX4Pro())
+          ? new (std::nothrow) AtkinsonDitherer(geometry.outWidth)
+          : nullptr;
 
   bool success = true;
   int currentOutY = 0;
