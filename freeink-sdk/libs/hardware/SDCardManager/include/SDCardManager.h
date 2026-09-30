@@ -66,6 +66,10 @@ class SDCardManager {
   // Hand the mounted SDMMC card to a raw owner such as USB-MSC. The
   // filesystem is unmounted, but the native block device stays alive.
   FsBlockDeviceInterface* detachFilesystemForRawAccess();
+  // Remount SdFat on the already-initialized SDMMC block device after a raw
+  // owner such as USB-MSC releases it. This must NOT call begin(), because
+  // begin() would try to initialize the SDMMC host/device a second time.
+  bool reattachFilesystemAfterRawAccess();
   void shutdown();
 #else
   void shutdown() {}
