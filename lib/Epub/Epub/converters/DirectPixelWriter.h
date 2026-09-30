@@ -117,27 +117,29 @@ struct DirectPixelWriter {
     switch (mode) {
       case GfxRenderer::BW:
         if (x4ProBwDither) {
-          // X4 Pro cache contains clean 2-bit levels. The previous 4x4 Bayer
-          // pass was technically correct but its tiny repeating lattice is
-          // clearly visible on this high-DPI panel as cross-hatching.
+          // X4 Pro cache contains clean 2-bit levels. Do the single 2-bit -> 1-bit
+          // conversion here, but avoid any repeating threshold matrix: even 8x8
+          // remains visible on this panel as a regular cross-hatch.
           //
-          // Use a dispersed 8x8 threshold mask instead. It is still stable and
-          // deterministic (important for e-ink refreshes), but breaks the
-          // obvious diagonal/checker pattern while keeping smooth midtones.
-          static constexpr uint8_t kDispersed8[8][8] = {
-              {53, 21, 39, 29, 52, 26, 45, 17},
-              { 9, 43,  3, 59, 10, 32,  0, 50},
-              {56, 22, 37, 20, 58, 25, 54, 27},
-              { 5, 33, 11, 35,  4, 63, 13, 55},
-              {47, 18, 49, 30, 44, 24, 41, 19},
-              {12, 61,  1, 48, 14, 36,  2, 62},
-              {42, 23, 60, 16, 51, 28, 57, 31},
-              { 6, 46,  8, 34,  7, 40, 15, 38},
-          };
-          // Ink coverage for levels 0..3: 100%, ~66%, ~28%, 0%.
-          // Slightly lighter than the old 4x4 pass to recover highlight detail.
-          static constexpr uint8_t kCoverage[4] = {64, 42, 18, 0};
-          draw = kDispersed8[phyY & 7][phyX & 7] < kCoverage[pixelValue & 0x3];
+          // A deterministic coordinate hash gives each pixel a stable threshold
+          // without a spatial lattice. Unlike the earlier full-grayscale random
+          // pass, this is applied ONLY to the two intermediate cached levels;
+          // source black stays solid black and source white stays clean white.
+          const uint8_t level = pixelValue & 0x3;
+          if (level == 0) {
+            draw = true;
+          } else if (level == 3) {
+            draw = false;
+          } else {
+            uint32_t hash = static_cast<uint32_t>(phyX) * 374761393u +
+                            static_cast<uint32_t>(phyY) * 668265263u + 0x9E3779B9u;
+            hash = (hash ^ (hash >> 13)) * 1274126177u;
+            hash ^= hash >> 16;
+            const uint8_t threshold = static_cast<uint8_t>(hash >> 24);
+            // Mid-dark ~62% ink; mid-light ~25% ink.
+            const uint8_t coverage = (level == 1) ? 158 : 64;
+            draw = threshold < coverage;
+          }
           state = true;
         } else {
           draw = (pixelValue < 3);
