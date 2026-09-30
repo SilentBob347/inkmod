@@ -1,3 +1,4 @@
+#include <BoardConfig.h>
 #include "ChapterHtmlSlimParser.h"
 
 #include <Arduino.h>
