@@ -1,5 +1,6 @@
 #include "EpubReaderPercentSelectionActivity.h"
 
+#include <BoardConfig.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
 
@@ -13,6 +14,7 @@ namespace {
 // Fine/coarse slider step sizes for percent adjustments.
 constexpr int kSmallStep = 1;
 constexpr int kLargeStep = 10;
+constexpr uint32_t kX4ProLongPressMs = 500;
 }  // namespace
 
 void EpubReaderPercentSelectionActivity::onEnter() {
@@ -83,6 +85,41 @@ void EpubReaderPercentSelectionActivity::loop() {
     return;
   }
 
+  if (BoardConfig::isX4Pro()) {
+    // X4 Pro: the two physical navigation buttons act as -/+.
+    // Short press = 1%; hold for 500 ms = 10% exactly once. We deliberately
+    // do not auto-repeat while held, otherwise one long press can overshoot
+    // the requested position very quickly.
+    if (mappedInput.wasPressed(MappedInputManager::Button::Left)) {
+      x4ProLeftLongHandled = false;
+    }
+    if (mappedInput.wasPressed(MappedInputManager::Button::Right)) {
+      x4ProRightLongHandled = false;
+    }
+
+    if (mappedInput.isPressed(MappedInputManager::Button::Left) && !x4ProLeftLongHandled &&
+        mappedInput.getHeldTime() >= kX4ProLongPressMs) {
+      adjustPercent(-kLargeStep);
+      x4ProLeftLongHandled = true;
+    }
+    if (mappedInput.isPressed(MappedInputManager::Button::Right) && !x4ProRightLongHandled &&
+        mappedInput.getHeldTime() >= kX4ProLongPressMs) {
+      adjustPercent(kLargeStep);
+      x4ProRightLongHandled = true;
+    }
+
+    if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
+      if (!x4ProLeftLongHandled) adjustPercent(-kSmallStep);
+      x4ProLeftLongHandled = false;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
+      if (!x4ProRightLongHandled) adjustPercent(kSmallStep);
+      x4ProRightLongHandled = false;
+    }
+    return;
+  }
+
+  // Existing controls on X3/X4/X4 Classic remain unchanged.
   buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Left}, [this] { adjustPercent(-kSmallStep); });
   buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Right}, [this] { adjustPercent(kSmallStep); });
 
