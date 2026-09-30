@@ -117,29 +117,17 @@ struct DirectPixelWriter {
     switch (mode) {
       case GfxRenderer::BW:
         if (x4ProBwDither) {
-          // X4 Pro cache contains clean 2-bit levels. Do the single 2-bit -> 1-bit
-          // conversion here, but avoid any repeating threshold matrix: even 8x8
-          // remains visible on this panel as a regular cross-hatch.
-          //
-          // A deterministic coordinate hash gives each pixel a stable threshold
-          // without a spatial lattice. Unlike the earlier full-grayscale random
-          // pass, this is applied ONLY to the two intermediate cached levels;
-          // source black stays solid black and source white stays clean white.
-          const uint8_t level = pixelValue & 0x3;
-          if (level == 0) {
-            draw = true;
-          } else if (level == 3) {
-            draw = false;
-          } else {
-            uint32_t hash = static_cast<uint32_t>(phyX) * 374761393u +
-                            static_cast<uint32_t>(phyY) * 668265263u + 0x9E3779B9u;
-            hash = (hash ^ (hash >> 13)) * 1274126177u;
-            hash ^= hash >> 16;
-            const uint8_t threshold = static_cast<uint8_t>(hash >> 24);
-            // Mid-dark ~62% ink; mid-light ~25% ink.
-            const uint8_t coverage = (level == 1) ? 158 : 64;
-            draw = threshold < coverage;
-          }
+          // X4 Pro image caches are converted to final 1-bit pixels by
+          // ImageBlock's row-wise error diffusion. Values reaching this writer
+          // are therefore expected to be 0 (black) or 3 (white). For uncached
+          // first-pass/fallback decodes, use a neutral threshold only; no
+          // coordinate-based pattern is generated here.
+          draw = ((pixelValue & 0x3) < 2);
+          state = true;
+        } else {
+          draw = (pixelValue < 3);
+          state = true;
+        }
           state = true;
         } else {
           draw = (pixelValue < 3);
