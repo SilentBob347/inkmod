@@ -86,33 +86,32 @@ void EpubReaderPercentSelectionActivity::loop() {
   }
 
   if (BoardConfig::isX4Pro()) {
-    // X4 Pro: the two physical navigation buttons act as -/+.
-    // Short press = 1%; hold for 500 ms = 10% exactly once. We deliberately
-    // do not auto-repeat while held, otherwise one long press can overshoot
-    // the requested position very quickly.
-    if (mappedInput.wasPressed(MappedInputManager::Button::Left)) {
+    // X4 Pro's two real side keys are exposed through the configured
+    // PageBack/PageForward mapping (not logical Left/Right front buttons).
+    // Short press = 1%; hold for 500 ms = 10% exactly once.
+    if (mappedInput.wasPressed(MappedInputManager::Button::PageBack)) {
       x4ProLeftLongHandled = false;
     }
-    if (mappedInput.wasPressed(MappedInputManager::Button::Right)) {
+    if (mappedInput.wasPressed(MappedInputManager::Button::PageForward)) {
       x4ProRightLongHandled = false;
     }
 
-    if (mappedInput.isPressed(MappedInputManager::Button::Left) && !x4ProLeftLongHandled &&
+    if (mappedInput.isPressed(MappedInputManager::Button::PageBack) && !x4ProLeftLongHandled &&
         mappedInput.getHeldTime() >= kX4ProLongPressMs) {
       adjustPercent(-kLargeStep);
       x4ProLeftLongHandled = true;
     }
-    if (mappedInput.isPressed(MappedInputManager::Button::Right) && !x4ProRightLongHandled &&
+    if (mappedInput.isPressed(MappedInputManager::Button::PageForward) && !x4ProRightLongHandled &&
         mappedInput.getHeldTime() >= kX4ProLongPressMs) {
       adjustPercent(kLargeStep);
       x4ProRightLongHandled = true;
     }
 
-    if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::PageBack)) {
       if (!x4ProLeftLongHandled) adjustPercent(-kSmallStep);
       x4ProLeftLongHandled = false;
     }
-    if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::PageForward)) {
       if (!x4ProRightLongHandled) adjustPercent(kSmallStep);
       x4ProRightLongHandled = false;
     }
