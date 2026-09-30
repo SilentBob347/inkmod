@@ -175,7 +175,7 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
         const int bitShift = 6 - (srcX & 3) * 2;
         const uint8_t level = (srcRow[byteIdx] >> bitShift) & 0x03;
         if (useProDither) {
-          static constexpr uint8_t kGray[4] = {0, 85, 170, 255};
+          static constexpr uint8_t kGray[4] = {0, 78, 158, 255};
           const bool black = proDither.process(kGray[level], dstX);
           pw.writePixel(x + dstX, black ? 0 : 3);
         } else {
@@ -279,7 +279,7 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
       const uint8_t pixelValue = (rowBuffer[byteIdx] >> bitShift) & 0x03;
 
       if (proDither) {
-        static constexpr uint8_t kGray[4] = {0, 85, 170, 255};
+        static constexpr uint8_t kGray[4] = {0, 78, 158, 255};
         const bool black = proDither->process(kGray[pixelValue], col);
         pw.writePixel(x + col, black ? 0 : 3);
       } else {
