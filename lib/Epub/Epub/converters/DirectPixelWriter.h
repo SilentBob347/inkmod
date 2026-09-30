@@ -117,10 +117,20 @@ struct DirectPixelWriter {
     switch (mode) {
       case GfxRenderer::BW:
         if (x4ProBwDither) {
-          // X4 Pro images are already reduced to their final 1-bit dither in
-          // the JPEG/PNG decoder/cache (values 0 or 3). Do not dither them a
-          // second time here: that was the source of the visible grid/moire.
-          draw = ((pixelValue & 0x3) < 2);
+          // X4 Pro cache contains clean 2-bit levels. Convert them to the
+          // controller's stable B/W path exactly once using a compact ordered
+          // pattern. Because the source levels themselves are not dithered,
+          // there is no phase interaction/moire here.
+          static constexpr uint8_t kBayer4[4][4] = {
+              {0, 8, 2, 10},
+              {12, 4, 14, 6},
+              {3, 11, 1, 9},
+              {15, 7, 13, 5},
+          };
+          // Ink coverage for levels 0..3: 100%, 75%, 37.5%, 0%.
+          // Keeps highlights visible without turning photos into dark blocks.
+          static constexpr uint8_t kCoverage[4] = {16, 12, 6, 0};
+          draw = kBayer4[phyY & 3][phyX & 3] < kCoverage[pixelValue & 0x3];
           state = true;
         } else {
           draw = (pixelValue < 3);
