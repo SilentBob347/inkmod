@@ -1,5 +1,6 @@
 #include "ImageBlock.h"
 
+#include <BoardConfig.h>
 #include <Fb2.h>
 #include <FontCacheManager.h>
 #include <FsHelpers.h>
@@ -26,12 +27,14 @@ bool ImageBlock::imageExists() const { return Storage.exists(imagePath.c_str());
 namespace {
 
 std::string getCachePath(const std::string& imagePath) {
-  // Replace extension with .pxc (pixel cache)
+  // X4 Pro uses a separate cache generation because its stable image pipeline
+  // stores the final 1-bit dither (0/3) instead of the normal 2-bit cache.
+  const char* suffix = BoardConfig::isX4Pro() ? ".x4pro-bw1.pxc" : ".pxc";
   size_t dotPos = imagePath.rfind('.');
   if (dotPos != std::string::npos) {
-    return imagePath.substr(0, dotPos) + ".pxc";
+    return imagePath.substr(0, dotPos) + suffix;
   }
-  return imagePath + ".pxc";
+  return imagePath + suffix;
 }
 
 bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x, int y, int expectedWidth,
