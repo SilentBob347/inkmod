@@ -128,11 +128,6 @@ struct DirectPixelWriter {
           draw = (pixelValue < 3);
           state = true;
         }
-          state = true;
-        } else {
-          draw = (pixelValue < 3);
-          state = true;
-        }
         break;
       case GfxRenderer::GRAYSCALE_MSB:
         if (absoluteGrayPlanes) {
