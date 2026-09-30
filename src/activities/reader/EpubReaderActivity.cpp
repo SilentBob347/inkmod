@@ -146,7 +146,7 @@ bool saveBookWidePagesTotal(const std::shared_ptr<Epub>& epub, const uint32_t la
 
 std::string readerImagePixelCachePath(const std::string& imagePath) {
   const size_t dot = imagePath.rfind('.');
-  const char* suffix = BoardConfig::isX4Pro() ? ".x4pro-bw1.pxc" : ".pxc";
+  const char* suffix = BoardConfig::isX4Pro() ? ".x4pro-level2.pxc" : ".pxc";
   return dot == std::string::npos ? imagePath + suffix : imagePath.substr(0, dot) + suffix;
 }
 
