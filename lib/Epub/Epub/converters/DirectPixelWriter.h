@@ -117,31 +117,10 @@ struct DirectPixelWriter {
     switch (mode) {
       case GfxRenderer::BW:
         if (x4ProBwDither) {
-          // X4 Pro stays in the stable B/W waveform, but its cached 2-bit image
-          // values have already passed through a 4x4 Bayer quantizer. Reusing the
-          // same 4x4 matrix here phase-locks both dithering stages and produces
-          // the visible grid/moire artifacts seen on photos and cover art.
-          //
-          // Use an intentionally decorrelated 8x8 threshold map for the final
-          // 2-bit -> 1-bit conversion. The block-dependent phase shift prevents
-          // the 8x8 tile from lining up with the source 4x4 pattern. Slightly
-          // heavier ink coverage in levels 1/2 also restores highlight detail
-          // that the X4 Pro panel otherwise renders too pale. Pure white (3)
-          // remains untouched and pure black (0) remains solid.
-          static constexpr uint8_t kThreshold8[8][8] = {
-              {0, 37, 10, 47, 2, 39, 12, 49},
-              {52, 18, 58, 24, 54, 20, 60, 26},
-              {13, 42, 5, 34, 15, 44, 7, 36},
-              {61, 29, 51, 21, 63, 31, 53, 23},
-              {3, 40, 11, 48, 1, 38, 9, 46},
-              {55, 19, 59, 25, 57, 17, 62, 27},
-              {14, 45, 6, 35, 8, 41, 4, 33},
-              {56, 28, 50, 22, 60, 30, 52, 16},
-          };
-          static constexpr uint8_t kCoverage[4] = {64, 48, 26, 0};
-          const uint8_t tx = static_cast<uint8_t>((phyX + ((phyY >> 3) * 3)) & 7);
-          const uint8_t ty = static_cast<uint8_t>((phyY + ((phyX >> 3) * 5)) & 7);
-          draw = kThreshold8[ty][tx] < kCoverage[pixelValue & 0x3];
+          // X4 Pro images are already reduced to their final 1-bit dither in
+          // the JPEG/PNG decoder/cache (values 0 or 3). Do not dither them a
+          // second time here: that was the source of the visible grid/moire.
+          draw = ((pixelValue & 0x3) < 2);
           state = true;
         } else {
           draw = (pixelValue < 3);
