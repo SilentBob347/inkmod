@@ -26,6 +26,66 @@ bool ImageBlock::imageExists() const { return Storage.exists(imagePath.c_str());
 
 namespace {
 
+struct X4ProFsDither {
+  int width{0};
+  int16_t* current{nullptr};
+  int16_t* next{nullptr};
+  bool reverse{false};
+
+  bool init(const int w) {
+    width = w;
+    current = static_cast<int16_t*>(calloc(static_cast<size_t>(w + 2), sizeof(int16_t)));
+    next = static_cast<int16_t*>(calloc(static_cast<size_t>(w + 2), sizeof(int16_t)));
+    if (!current || !next) {
+      free(current);
+      free(next);
+      current = nullptr;
+      next = nullptr;
+      return false;
+    }
+    return true;
+  }
+
+  ~X4ProFsDither() {
+    free(current);
+    free(next);
+  }
+
+  bool valid() const { return current && next; }
+
+  // Returns true for black, false for white.
+  bool process(const uint8_t gray, const int x) {
+    int adjusted = static_cast<int>(gray) + current[x + 1];
+    if (adjusted < 0) adjusted = 0;
+    if (adjusted > 255) adjusted = 255;
+
+    const bool black = adjusted < 128;
+    const int quantized = black ? 0 : 255;
+    const int error = adjusted - quantized;
+
+    if (!reverse) {
+      current[x + 2] += static_cast<int16_t>((error * 7) >> 4);
+      next[x] += static_cast<int16_t>((error * 3) >> 4);
+      next[x + 1] += static_cast<int16_t>((error * 5) >> 4);
+      next[x + 2] += static_cast<int16_t>(error >> 4);
+    } else {
+      current[x] += static_cast<int16_t>((error * 7) >> 4);
+      next[x + 2] += static_cast<int16_t>((error * 3) >> 4);
+      next[x + 1] += static_cast<int16_t>((error * 5) >> 4);
+      next[x] += static_cast<int16_t>(error >> 4);
+    }
+    return black;
+  }
+
+  void nextRow() {
+    int16_t* tmp = current;
+    current = next;
+    next = tmp;
+    memset(next, 0, static_cast<size_t>(width + 2) * sizeof(int16_t));
+    reverse = !reverse;
+  }
+};
+
 std::string getCachePath(const std::string& imagePath) {
   // X4 Pro uses a separate cache generation because its stable image pipeline
   // stores the clean 2-bit grayscale levels instead of the normal 2-bit cache.
@@ -88,6 +148,8 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
 
     DirectPixelWriter pw;
     pw.init(renderer);
+    X4ProFsDither proDither;
+    const bool useProDither = BoardConfig::isX4Pro() && proDither.init(expectedWidth);
     int loadedSrcY = -1;
     for (int dstY = clipYStart; dstY < clipYEnd; ++dstY) {
       const int srcY = static_cast<int>((static_cast<int64_t>(dstY) * cachedHeight) / expectedHeight);
@@ -103,12 +165,24 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
       }
 
       pw.beginRow(y + dstY);
-      for (int dstX = clipXStart; dstX < clipXEnd; ++dstX) {
+      const bool reverse = useProDither && proDither.reverse;
+      const int beginX = reverse ? clipXEnd - 1 : clipXStart;
+      const int endX = reverse ? clipXStart - 1 : clipXEnd;
+      const int stepX = reverse ? -1 : 1;
+      for (int dstX = beginX; dstX != endX; dstX += stepX) {
         const int srcX = static_cast<int>((static_cast<int64_t>(dstX) * cachedWidth) / expectedWidth);
         const int byteIdx = srcX >> 2;
         const int bitShift = 6 - (srcX & 3) * 2;
-        pw.writePixel(x + dstX, (srcRow[byteIdx] >> bitShift) & 0x03);
+        const uint8_t level = (srcRow[byteIdx] >> bitShift) & 0x03;
+        if (useProDither) {
+          static constexpr uint8_t kGray[4] = {0, 85, 170, 255};
+          const bool black = proDither.process(kGray[level], dstX);
+          pw.writePixel(x + dstX, black ? 0 : 3);
+        } else {
+          pw.writePixel(x + dstX, level);
+        }
       }
+      if (useProDither) proDither.nextRow();
     }
     free(srcRow);
     cacheFile.close();
@@ -159,6 +233,14 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
 
   DirectPixelWriter pw;
   pw.init(renderer);
+  std::unique_ptr<X4ProFsDither> proDither;
+  if (BoardConfig::isX4Pro()) {
+    proDither.reset(new (std::nothrow) X4ProFsDither());
+    if (!proDither || !proDither->init(cachedWidth)) {
+      proDither.reset();
+      LOG_ERR("IMG", "X4 Pro FS dither allocation failed; using threshold fallback");
+    }
+  }
 
   int rowsInBuffer = 0;
   int bufferRow = 0;
@@ -184,16 +266,27 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
 
     const int destY = y + row;
     pw.beginRow(destY);
-    // Walk only the on-screen columns: writePixel drops off-band rows but does
-    // not clip X, so this range is what keeps a partially off-screen image
-    // inside the framebuffer.
-    for (int col = clipXStart; col < clipXEnd; col++) {
-      const int byteIdx = col >> 2;            // col / 4
-      const int bitShift = 6 - (col & 3) * 2;  // MSB first within byte
-      uint8_t pixelValue = (rowBuffer[byteIdx] >> bitShift) & 0x03;
+    // Walk only the on-screen columns. X4 Pro uses row-wise serpentine
+    // Floyd-Steinberg error diffusion from the clean 2-bit cache; other boards
+    // keep the existing direct 2-bit path unchanged.
+    const bool reverse = proDither && proDither->reverse;
+    const int beginCol = reverse ? clipXEnd - 1 : clipXStart;
+    const int endCol = reverse ? clipXStart - 1 : clipXEnd;
+    const int stepCol = reverse ? -1 : 1;
+    for (int col = beginCol; col != endCol; col += stepCol) {
+      const int byteIdx = col >> 2;
+      const int bitShift = 6 - (col & 3) * 2;
+      const uint8_t pixelValue = (rowBuffer[byteIdx] >> bitShift) & 0x03;
 
-      pw.writePixel(x + col, pixelValue);
+      if (proDither) {
+        static constexpr uint8_t kGray[4] = {0, 85, 170, 255};
+        const bool black = proDither->process(kGray[pixelValue], col);
+        pw.writePixel(x + col, black ? 0 : 3);
+      } else {
+        pw.writePixel(x + col, pixelValue);
+      }
     }
+    if (proDither) proDither->nextRow();
   }
 
   free(readBuffer);
@@ -335,6 +428,18 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   deferredByLowHeap = false;
   retryWhenFreeAtLeast = 0;
   retryWhenMaxAllocAtLeast = 0;
+
+  // On X4 Pro the decoder writes clean 2-bit levels while creating the cache.
+  // That first pass is only a temporary threshold preview. Replace it
+  // immediately with the final row-wise error-diffused 1-bit image so the
+  // first view and all cached views are identical.
+  if (BoardConfig::isX4Pro() && fullyOnScreen && Storage.exists(cachePath.c_str())) {
+    renderer.fillRect(x, y, width, height, false);
+    if (!renderFromCache(renderer, cachePath, x, y, width, height)) {
+      LOG_ERR("IMG", "X4 Pro final cache redraw failed: %s", cachePath.c_str());
+    }
+  }
+
   LOG_DBG("IMG", "Decode successful");
 }
 
