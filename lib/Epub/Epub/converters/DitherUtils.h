@@ -25,3 +25,26 @@ inline uint8_t applyBayerDither4Level(uint8_t gray, int x, int y) {
   if (adjusted < 192) return 2;
   return 3;
 }
+
+
+// Final image quantizer used by JPEG/PNG decoders.
+// X4 Pro intentionally uses a *single* 1-bit stochastic pass: its stable
+// display path is monochrome, so keeping 2-bit ordered dither in the cache and
+// dithering that again during framebuffer output creates visible grids/moire.
+// Returning only 0/3 lets DirectPixelWriter copy the already-final B/W result.
+inline uint8_t quantizeImagePixel(uint8_t gray, int x, int y, bool useDithering, bool x4Pro) {
+  if (x4Pro) {
+    // Full-range deterministic noise threshold. Unlike an ordered Bayer tile
+    // there is no repeating spatial lattice to become visible on e-ink.
+    uint32_t hash = static_cast<uint32_t>(x) * 374761393u +
+                    static_cast<uint32_t>(y) * 668265263u + 0x9E3779B9u;
+    hash = (hash ^ (hash >> 13)) * 1274126177u;
+    hash ^= hash >> 16;
+    const uint8_t threshold = static_cast<uint8_t>(hash >> 24);
+    return (gray < threshold) ? 0 : 3;
+  }
+
+  if (useDithering) return applyBayerDither4Level(gray, x, y);
+  uint8_t level = gray / 85;
+  return level > 3 ? 3 : level;
+}
