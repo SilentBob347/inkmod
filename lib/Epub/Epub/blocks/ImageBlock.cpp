@@ -28,8 +28,8 @@ namespace {
 
 std::string getCachePath(const std::string& imagePath) {
   // X4 Pro uses a separate cache generation because its stable image pipeline
-  // stores the final 1-bit dither (0/3) instead of the normal 2-bit cache.
-  const char* suffix = BoardConfig::isX4Pro() ? ".x4pro-bw1.pxc" : ".pxc";
+  // stores the clean 2-bit grayscale levels instead of the normal 2-bit cache.
+  const char* suffix = BoardConfig::isX4Pro() ? ".x4pro-level2.pxc" : ".pxc";
   size_t dotPos = imagePath.rfind('.');
   if (dotPos != std::string::npos) {
     return imagePath.substr(0, dotPos) + suffix;
