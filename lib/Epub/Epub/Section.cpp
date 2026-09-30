@@ -2,6 +2,7 @@
 #include "../../../src/SdCardFontSystem.h"
 
 #include <Arduino.h>
+#include <BoardConfig.h>
 #include <FontCacheManager.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
@@ -169,9 +170,10 @@ void precacheSectionImages(Epub* epub, const std::string& htmlPath, const std::s
     const std::string ext = dot == std::string::npos ? std::string() : resolvedPath.substr(dot);
     const std::string cachedImagePath = imageBasePath + std::to_string(imageCounter++) + ext;
     const size_t cacheDot = cachedImagePath.rfind('.');
+    const char* cacheSuffix = BoardConfig::isX4Pro() ? ".x4pro-bw1.pxc" : ".pxc";
     const std::string pixelCachePath = cacheDot == std::string::npos
-                                           ? cachedImagePath + ".pxc"
-                                           : cachedImagePath.substr(0, cacheDot) + ".pxc";
+                                           ? cachedImagePath + cacheSuffix
+                                           : cachedImagePath.substr(0, cacheDot) + cacheSuffix;
     if (Storage.exists(pixelCachePath.c_str())) continue;
 
     // Materialize only this one source image from the EPUB/FB2 package. The
