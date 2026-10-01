@@ -134,7 +134,8 @@ class NearbyStatsSyncActivity final : public Activity {
   void startSync();
   void processEvents();
   void handleEvent(const SyncEvent& event);
-  bool sendPacket(PacketType type, const uint8_t* peerMac);
+  bool sendPacket(PacketType type, const uint8_t* peerMac, const uint8_t* payload = nullptr,
+                  uint8_t payloadSize = 0);
   bool sendHello();
   bool sendDeviceName(const uint8_t* peerMac);
   bool sendLocalStats();
