@@ -35,6 +35,7 @@ class NearbyStatsSyncActivity final : public Activity {
     NAME = 4,
     BOOK_PROGRESS = 5,
     BOOK_ACK = 6,
+    BOOK_MISSING = 7,
     INVALID_STATS = 0xFF
   };
 
@@ -78,6 +79,7 @@ class NearbyStatsSyncActivity final : public Activity {
   uint8_t localBookProgressSize_ = 0;
   bool localBookReady_ = false;
   bool localBookProgressAcked_ = false;
+  uint32_t lastBookProgressSendMs_ = 0;
   std::string bookStatus_;
 
   uint32_t syncStartedMs_ = 0;
