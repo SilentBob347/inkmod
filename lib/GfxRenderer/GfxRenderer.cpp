@@ -1601,7 +1601,7 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
       if (renderMode == BW) {
         if (BoardConfig::isX4Pro() && bitmap.hasGreyscale()) {
           if (fsCurrent) {
-            static constexpr uint8_t kGray[4] = {0, 78, 158, 255};
+            static constexpr uint8_t kGray[4] = {0, 68, 145, 255};
             int adjusted = static_cast<int>(kGray[val]) + fsCurrent[bmpX + 1];
             adjusted = std::clamp(adjusted, 0, 255);
             const bool black = adjusted < 128;
