@@ -244,6 +244,72 @@ void BookStatsActivity::exitStatsActivity(const bool viaBack) {
 }
 
 void BookStatsActivity::loop() {
+  // X4 Pro edit screen: the four footer hints are real touch controls too.
+  // Keep their hitboxes aligned with the visible four-slot footer:
+  // Back | Next field | - | +. Tapping a date field also selects it directly.
+  if (BoardConfig::isX4Pro() && page == Page::EditDates) {
+    int tx = 0;
+    int ty = 0;
+    if (mappedInput.wasScreenTapped(tx, ty)) {
+      const int screenW = mappedInput.getRendererWidth();
+      const int screenH = mappedInput.getRendererHeight();
+
+      if (screenW > 0 && screenH > 0 && ty >= screenH - 64) {
+        const int slot = std::clamp((tx * 4) / screenW, 0, 3);
+        if (slot == 0) {
+          saveStats();
+          page = Page::PerBook;
+          requestUpdate();
+        } else if (slot == 1) {
+          cycleEditField();
+          requestUpdate();
+        } else if (slot == 2) {
+          adjustSelectedDateField(-1);
+        } else {
+          adjustSelectedDateField(1);
+        }
+        return;
+      }
+
+      // Match renderEditBookDatesPage(): two rows, three date fields each.
+      const int cardW = screenW - 120;
+      const int cardX = (screenW - cardW) / 2;
+      const int cardY = 138;
+      const int row1Y = cardY + 66;
+      const int row2Y = row1Y + 104;
+      const int monthW = 52;
+      const int dayW = 46;
+      const int yearW = 68;
+      const int gap = 14;
+      const int totalFieldW = monthW + gap + dayW + gap + yearW;
+      const int fieldStartX = cardX + (cardW - totalFieldW) / 2;
+      constexpr int fieldTouchPad = 12;
+      constexpr int fieldTouchHeight = 48;
+
+      auto hitField = [&](const int x, const int y, const int w, const int rowY) {
+        return tx >= x - fieldTouchPad && tx < x + w + fieldTouchPad &&
+               ty >= rowY - fieldTouchPad && ty < rowY + fieldTouchHeight;
+      };
+
+      const int x0 = fieldStartX;
+      const int x1 = fieldStartX + monthW + gap;
+      const int x2 = fieldStartX + monthW + gap + dayW + gap;
+      int nextField = -1;
+      if (hitField(x0, row1Y, monthW, row1Y)) nextField = 0;
+      else if (hitField(x1, row1Y, dayW, row1Y)) nextField = 1;
+      else if (hitField(x2, row1Y, yearW, row1Y)) nextField = 2;
+      else if (hitField(x0, row2Y, monthW, row2Y)) nextField = 3;
+      else if (hitField(x1, row2Y, dayW, row2Y)) nextField = 4;
+      else if (hitField(x2, row2Y, yearW, row2Y)) nextField = 5;
+
+      if (nextField >= 0) {
+        selectedEditField = nextField;
+        requestUpdate();
+        return;
+      }
+    }
+  }
+
   // X4 Pro statistics footer is a real touch control row. Handle it directly
   // instead of depending on front-button remapping; some Pro configurations
   // intentionally have no front-button mapping, which made the labels/actions
