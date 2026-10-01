@@ -517,12 +517,14 @@ void NearbyStatsSyncActivity::enqueueEspNowPacket(const uint8_t* sourceMac, cons
   std::copy(data + 8, data + 14, event.deviceMac.begin());
 
   const int payloadLength = length - PACKET_HEADER_BYTES;
-  const int expectedLength = PACKET_HEADER_BYTES + (event.type == PacketType::STATS ? event.statsSize : 0);
   if (packetType != PacketType::HELLO && packetType != PacketType::STATS && packetType != PacketType::ACK &&
-      packetType != PacketType::NAME)
+      packetType != PacketType::NAME && packetType != PacketType::BOOK_PROGRESS &&
+      packetType != PacketType::BOOK_ACK)
     return;
   if (event.deviceMac == localDeviceMac_) return;
+
   if (packetType == PacketType::STATS) {
+    const int expectedLength = PACKET_HEADER_BYTES + event.statsSize;
     if (length != expectedLength || event.statsSize > event.stats.size() ||
         !isValidStatsPayload(data + PACKET_HEADER_BYTES, event.statsSize)) {
       event.type = PacketType::INVALID_STATS;
@@ -537,10 +539,24 @@ void NearbyStatsSyncActivity::enqueueEspNowPacket(const uint8_t* sourceMac, cons
     }
     memcpy(event.deviceName.data(), data + PACKET_HEADER_BYTES, event.statsSize);
     event.deviceName[event.statsSize] = '\0';
-  } else if (length != expectedLength) {
-    return;
-  } else if (packetType == PacketType::HELLO || packetType == PacketType::ACK) {
-    if (event.statsSize != 0) return;
+  } else if (packetType == PacketType::BOOK_PROGRESS) {
+    if (payloadLength != event.statsSize || event.statsSize < 6) return;
+    const uint8_t* payload = data + PACKET_HEADER_BYTES;
+    event.bookSize = static_cast<uint32_t>(payload[0]) | (static_cast<uint32_t>(payload[1]) << 8) |
+                     (static_cast<uint32_t>(payload[2]) << 16) | (static_cast<uint32_t>(payload[3]) << 24);
+    event.bookProgressSize = payload[4];
+    if (event.bookProgressSize != 0 && event.bookProgressSize != 4 && event.bookProgressSize != 6) return;
+    const size_t nameLenOffset = 5 + event.bookProgressSize;
+    if (nameLenOffset >= static_cast<size_t>(payloadLength)) return;
+    if (event.bookProgressSize > 0) {
+      memcpy(event.bookProgress.data(), payload + 5, event.bookProgressSize);
+    }
+    const uint8_t nameLen = payload[nameLenOffset];
+    if (nameLen == 0 || nameLen > 96 || nameLenOffset + 1 + nameLen != static_cast<size_t>(payloadLength)) return;
+    memcpy(event.bookName.data(), payload + nameLenOffset + 1, nameLen);
+    event.bookName[nameLen] = '\0';
+  } else {
+    if (event.statsSize != 0 || payloadLength != 0) return;
   }
 
   if (xSemaphoreTake(eventMutex_, 0) != pdTRUE) return;
@@ -633,6 +649,7 @@ void NearbyStatsSyncActivity::handleEvent(const SyncEvent& event) {
   if (event.type == PacketType::HELLO) {
     sendDeviceName(peerSourceMac_.data());
     sendLocalStats();
+    sendLocalBookProgress();
     return;
   }
 
@@ -644,6 +661,18 @@ void NearbyStatsSyncActivity::handleEvent(const SyncEvent& event) {
     peerStatsSaved_ = true;
     sendAck(peerSourceMac_.data());
     if (!localStatsSent_ || !localStatsAcked_) sendLocalStats();
+    if (localBookReady_ && !localBookProgressAcked_) sendLocalBookProgress();
+    return;
+  }
+
+  if (event.type == PacketType::BOOK_PROGRESS) {
+    applyPeerBookProgress(event);
+    sendPacket(PacketType::BOOK_ACK, peerSourceMac_.data());
+    return;
+  }
+
+  if (event.type == PacketType::BOOK_ACK) {
+    localBookProgressAcked_ = true;
     return;
   }
 
@@ -785,7 +814,9 @@ void NearbyStatsSyncActivity::render(RenderLock&&) {
       primary = tr(STR_NEARBY_STATS_SYNCING);
       detailPrimary = std::string(I18N.get(peerName_.empty() ? StrId::STR_SYSTEM_DEVICE : StrId::STR_DEVICE_NAME)) +
                       ": " + (peerName_.empty() ? peerId_ : peerName_);
-      if (!isZeroMac(peerDeviceMac_)) {
+      if (!bookStatus_.empty()) {
+        detailSecondary = bookStatus_;
+      } else if (!isZeroMac(peerDeviceMac_)) {
         detailSecondary = std::string(tr(STR_FILENAME)) + ": " + statsFileNameForDeviceMac(peerDeviceMac_);
       }
       break;
