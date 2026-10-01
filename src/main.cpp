@@ -1033,7 +1033,7 @@ void setup() {
   // have to hold the power button across all of the SD reads below.
   LOG_INF("BOOT", "Wake route: %s", wakeupRouteName(wakeupReason));
   switch (wakeupReason) {
-    case HalGPIO::WakeupReason::PowerButton:
+    case HalGPIO::WakeupReason::PowerButton: {
       const bool shortPowerWakeAllowed =
           (BoardConfig::isX4Pro() && SETTINGS.shortPwrBtn != InkMODSettings::SHORT_PWRBTN::IGNORE) ||
           SETTINGS.shortPwrBtn == InkMODSettings::SHORT_PWRBTN::SLEEP;
@@ -1041,6 +1041,7 @@ void setup() {
               SETTINGS.getPowerButtonWakeDuration(), shortPowerWakeAllowed);
       gpio.verifyPowerButtonWakeup(SETTINGS.getPowerButtonWakeDuration(), shortPowerWakeAllowed);
       break;
+    }
     case HalGPIO::WakeupReason::AfterUSBPower:
       // A cold boot caused only by external USB power should not leave the
       // reader fully awake. Render the configured sleep screen and return to
