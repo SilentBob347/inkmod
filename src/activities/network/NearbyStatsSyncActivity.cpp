@@ -2,8 +2,12 @@
 
 #ifdef SIMULATOR
 
+#include <Epub.h>
+#include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <Txt.h>
+#include <Xtc.h>
 
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
@@ -64,7 +68,9 @@ void NearbyStatsSyncActivity::setState(const State state) {
 #include <string>
 
 #include "InkMODSettings.h"
+#include "InkMODState.h"
 #include "MappedInputManager.h"
+#include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
 #include "activities/reader/GlobalReadingStats.h"
 #include "components/UITheme.h"
@@ -84,7 +90,11 @@ constexpr uint8_t PACKET_HEADER_BYTES = 14;
 constexpr uint8_t MAX_DEVICE_NAME_BYTES = static_cast<uint8_t>(InkMODSettings::MAX_DEVICE_NAME_LENGTH);
 constexpr uint32_t HELLO_INTERVAL_MS = 750;
 constexpr uint32_t STATS_RETRY_INTERVAL_MS = 750;
+constexpr uint32_t BOOK_RETRY_INTERVAL_MS = 500;
 constexpr uint32_t SYNC_TIMEOUT_MS = 12000;
+constexpr uint32_t BOOK_TRANSFER_IDLE_TIMEOUT_MS = 15000;
+constexpr uint8_t MAX_BOOK_NAME_BYTES = 96;
+constexpr uint8_t MAX_BOOK_CHUNK_BYTES = 220;
 constexpr uint8_t BROADCAST_MAC[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
 NearbyStatsSyncActivity* activeActivity = nullptr;
@@ -173,6 +183,130 @@ bool writeSyncedStatsFile(const std::string& path, const uint8_t* data, const ui
     return false;
   }
   return true;
+}
+
+
+std::string fileNameFromPath(const std::string& path) {
+  const size_t slash = path.find_last_of("/\\");
+  return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+uint32_t crc32Update(uint32_t crc, const uint8_t* data, const size_t length) {
+  for (size_t i = 0; i < length; ++i) {
+    crc ^= data[i];
+    for (uint8_t bit = 0; bit < 8; ++bit) {
+      crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+    }
+  }
+  return crc;
+}
+
+bool fileSizeAndCrc(const std::string& path, uint64_t& size, uint32_t& crc) {
+  FsFile file;
+  if (!Storage.openFileForRead(LOG_TAG, path, file)) return false;
+  size = file.fileSize64();
+  crc = 0xFFFFFFFFu;
+  std::array<uint8_t, 1024> buffer{};
+  while (true) {
+    const int n = file.read(buffer.data(), buffer.size());
+    if (n < 0) {
+      file.close();
+      return false;
+    }
+    if (n == 0) break;
+    crc = crc32Update(crc, buffer.data(), static_cast<size_t>(n));
+  }
+  file.close();
+  crc ^= 0xFFFFFFFFu;
+  return true;
+}
+
+void writeU32(uint8_t* out, const uint32_t value) {
+  out[0] = static_cast<uint8_t>(value);
+  out[1] = static_cast<uint8_t>(value >> 8);
+  out[2] = static_cast<uint8_t>(value >> 16);
+  out[3] = static_cast<uint8_t>(value >> 24);
+}
+
+uint32_t readU32(const uint8_t* in) {
+  return static_cast<uint32_t>(in[0]) | (static_cast<uint32_t>(in[1]) << 8) |
+         (static_cast<uint32_t>(in[2]) << 16) | (static_cast<uint32_t>(in[3]) << 24);
+}
+
+void writeU64(uint8_t* out, const uint64_t value) {
+  writeU32(out, static_cast<uint32_t>(value));
+  writeU32(out + 4, static_cast<uint32_t>(value >> 32));
+}
+
+uint64_t readU64(const uint8_t* in) {
+  return static_cast<uint64_t>(readU32(in)) | (static_cast<uint64_t>(readU32(in + 4)) << 32);
+}
+
+std::string cachePathForBook(const std::string& path) {
+  if (FsHelpers::hasXtcExtension(path)) return Xtc(path, "/.inkmod").getCachePath();
+  if (FsHelpers::hasTxtExtension(path) || FsHelpers::hasMarkdownExtension(path)) {
+    return Txt(path, "/.inkmod").getCachePath();
+  }
+  return Epub(path, "/.inkmod").getCachePath();
+}
+
+bool readBookProgress(const std::string& path, std::array<uint8_t, 6>& out, uint8_t& outSize) {
+  outSize = 0;
+  const std::string progressPath = cachePathForBook(path) + "/progress.bin";
+  FsFile file;
+  if (!Storage.openFileForRead(LOG_TAG, progressPath, file)) return false;
+  const size_t size = file.fileSize();
+  if (size != 4 && size != 6) {
+    file.close();
+    return false;
+  }
+  const int n = file.read(out.data(), size);
+  file.close();
+  if (n != static_cast<int>(size)) return false;
+  outSize = static_cast<uint8_t>(size);
+  return true;
+}
+
+uint64_t progressScore(const std::string& path, const uint8_t* data, const uint8_t size) {
+  if (!data || (size != 4 && size != 6)) return 0;
+  if (FsHelpers::hasXtcExtension(path)) {
+    return static_cast<uint64_t>(readU32(data));
+  }
+  if (FsHelpers::hasTxtExtension(path) || FsHelpers::hasMarkdownExtension(path)) {
+    return static_cast<uint64_t>(data[0] | (static_cast<uint16_t>(data[1]) << 8));
+  }
+
+  const uint16_t spine = static_cast<uint16_t>(data[0] | (static_cast<uint16_t>(data[1]) << 8));
+  const uint16_t page = static_cast<uint16_t>(data[2] | (static_cast<uint16_t>(data[3]) << 8));
+  const uint16_t pageCount = size == 6
+                                 ? static_cast<uint16_t>(data[4] | (static_cast<uint16_t>(data[5]) << 8))
+                                 : 0;
+  const uint64_t within = pageCount > 0 ? (static_cast<uint64_t>(page) * 1000000ULL) / pageCount : page;
+  return (static_cast<uint64_t>(spine) << 32) | std::min<uint64_t>(within, 1000000ULL);
+}
+
+bool writeBookProgressIfNewer(const std::string& path, const uint8_t* incoming, const uint8_t incomingSize) {
+  if (!incoming || (incomingSize != 4 && incomingSize != 6)) return true;
+  std::array<uint8_t, 6> local{};
+  uint8_t localSize = 0;
+  if (readBookProgress(path, local, localSize) &&
+      progressScore(path, incoming, incomingSize) <= progressScore(path, local.data(), localSize)) {
+    return true;
+  }
+
+  const std::string cachePath = cachePathForBook(path);
+  if (!Storage.mkdir(cachePath.c_str(), true) && !Storage.exists(cachePath.c_str())) return false;
+  const std::string progressPath = cachePath + "/progress.bin";
+  const std::string backupPath = progressPath + ".bak";
+  if (Storage.exists(progressPath.c_str())) {
+    Storage.remove(backupPath.c_str());
+    Storage.rename(progressPath.c_str(), backupPath.c_str());
+  }
+
+  FsFile file;
+  if (!Storage.openFileForWrite(LOG_TAG, progressPath, file)) return false;
+  const size_t written = file.write(incoming, incomingSize);
+  return written == incomingSize && file.close();
 }
 
 void onEspNowReceive(const esp_now_recv_info_t* info, const uint8_t* data, int length) {
