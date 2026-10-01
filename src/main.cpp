@@ -1247,11 +1247,9 @@ void loop() {
   // loss and returns to TI's 3000 mAh default. Correct it to the real 650 mAh
   // asynchronously, one short I2C step per loop, while holding the render lock
   // so battery/status-bar reads cannot interleave on the shared bus.
-  if (gpio.deviceIsX3() && powerManager.isGaugeCapacityLoadPending()) {
-    RenderLock lock(RenderLock::Mode::Try);
-    if (lock.ownsLock()) {
-      powerManager.loadGaugeCapacity();
-    }
+  if (gpio.deviceIsX3() && powerManager.isGaugeCapacityLoadPending() && !RenderLock::peek()) {
+    RenderLock lock;
+    powerManager.loadGaugeCapacity();
   }
 
   renderer.setFadingFix(SETTINGS.fadingFix);
