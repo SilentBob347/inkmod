@@ -1447,25 +1447,14 @@ void HomeActivity::loop() {
     // so these visible controls need their own explicit touch hit testing.
     // Keep this geometry identical to MinimalTheme::drawButtonHints().
     if (BoardConfig::isX4Pro() && mappedInput.hasTouch()) {
-      constexpr int kMinimalBottomButtonWidth = 84;
-      constexpr int kMinimalBottomButtonX[4] = {54, 142, 254, 342};
-      const int buttonHeight = UITheme::getInstance().getMetrics().buttonHintsHeight;
-      const int buttonTop = renderer.getScreenHeight() - buttonHeight;
-
-      int tx = 0;
-      int ty = 0;
-      if (mappedInput.wasScreenTapped(tx, ty) && ty >= buttonTop && ty < renderer.getScreenHeight()) {
-        for (int slot = 0; slot < 4; ++slot) {
-          if (tx >= kMinimalBottomButtonX[slot] &&
-              tx < kMinimalBottomButtonX[slot] + kMinimalBottomButtonWidth) {
-            // "Read" is intentionally absent when there are no recent books.
-            if (slot == 3 && recentBooks.empty()) return;
-            mappedInput.suppressTouchContact();
-            minimalHomeNavIndex = slot;
-            activateMinimalHomeNav(slot);
-            return;
-          }
-        }
+      int slot = -1;
+      if (mappedInput.wasPortraitBottomButtonTapped(slot)) {
+        // "Read" is intentionally absent when there are no recent books.
+        if (slot == 3 && recentBooks.empty()) return;
+        mappedInput.suppressTouchContact();
+        minimalHomeNavIndex = slot;
+        activateMinimalHomeNav(slot);
+        return;
       }
     }
 
