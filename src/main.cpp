@@ -607,6 +607,12 @@ bool handleGlobalShortcutAction(const InkMODSettings::SHORT_PWRBTN action) {
       }
       activityManager.goToHotspotFileTransfer();
       return true;
+    case InkMODSettings::SHORT_PWRBTN::FILE_BROWSER:
+      if (activityManager.canSnapshotForSleepOverlay()) {
+        return false;
+      }
+      activityManager.goToFileBrowser();
+      return true;
     case InkMODSettings::SHORT_PWRBTN::TOGGLE_FRONTLIGHT:
       // Global action so a short Power press can light the device even from
       // Home/menus, before the user can see the on-screen frontlight control.
@@ -1028,12 +1034,12 @@ void setup() {
   LOG_INF("BOOT", "Wake route: %s", wakeupRouteName(wakeupReason));
   switch (wakeupReason) {
     case HalGPIO::WakeupReason::PowerButton:
+      const bool shortPowerWakeAllowed =
+          (BoardConfig::isX4Pro() && SETTINGS.shortPwrBtn != InkMODSettings::SHORT_PWRBTN::IGNORE) ||
+          SETTINGS.shortPwrBtn == InkMODSettings::SHORT_PWRBTN::SLEEP;
       LOG_INF("BOOT", "Power-button wake: verifying duration required=%u shortAllowed=%d",
-              SETTINGS.getPowerButtonWakeDuration(),
-              BoardConfig::isX4Pro() || SETTINGS.shortPwrBtn == InkMODSettings::SHORT_PWRBTN::SLEEP);
-      gpio.verifyPowerButtonWakeup(SETTINGS.getPowerButtonWakeDuration(),
-                                   BoardConfig::isX4Pro() ||
-                                       SETTINGS.shortPwrBtn == InkMODSettings::SHORT_PWRBTN::SLEEP);
+              SETTINGS.getPowerButtonWakeDuration(), shortPowerWakeAllowed);
+      gpio.verifyPowerButtonWakeup(SETTINGS.getPowerButtonWakeDuration(), shortPowerWakeAllowed);
       break;
     case HalGPIO::WakeupReason::AfterUSBPower:
       // A cold boot caused only by external USB power should not leave the
