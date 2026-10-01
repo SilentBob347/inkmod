@@ -670,7 +670,7 @@ const std::string& Epub::getLanguage() const {
 }
 
 std::string Epub::getCoverBmpPath(bool cropped) const {
-  const auto coverFileName = std::string("cover_q2_v6") + (cropped ? "_crop" : "");
+  const auto coverFileName = std::string("cover_q2_v7") + (cropped ? "_crop" : "");
   return cachePath + "/" + coverFileName + ".bmp";
 }
 
