@@ -156,7 +156,13 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
     DirectPixelWriter pw;
     pw.init(renderer);
     X4ProFsDither proDither;
-    const bool useProDither = BoardConfig::isX4Pro() && proDither.init(expectedWidth);
+    // The Pro cache already stores clean 2-bit grayscale. Floyd-Steinberg is
+    // only needed for the ordinary BW base frame. During GRAYSCALE_LSB/MSB the
+    // exact cached level must reach DirectPixelWriter so the controller receives
+    // the same real 4-level image path used by X4.
+    const bool useProDither = BoardConfig::isX4Pro() &&
+                              renderer.getRenderMode() == GfxRenderer::BW &&
+                              proDither.init(expectedWidth);
     int loadedSrcY = -1;
     for (int dstY = clipYStart; dstY < clipYEnd; ++dstY) {
       const int srcY = static_cast<int>((static_cast<int64_t>(dstY) * cachedHeight) / expectedHeight);
@@ -240,7 +246,7 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
   DirectPixelWriter pw;
   pw.init(renderer);
   std::unique_ptr<X4ProFsDither> proDither;
-  if (BoardConfig::isX4Pro()) {
+  if (BoardConfig::isX4Pro() && renderer.getRenderMode() == GfxRenderer::BW) {
     proDither.reset(new (std::nothrow) X4ProFsDither());
     if (!proDither || !proDither->init(cachedWidth)) {
       proDither.reset();
