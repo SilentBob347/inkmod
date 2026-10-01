@@ -111,4 +111,5 @@ class WifiSelectionActivity final : public Activity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
+  bool handleHomeGesture() override;
 };
