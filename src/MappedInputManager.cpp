@@ -166,6 +166,43 @@ bool MappedInputManager::wasTapInRect(int x, int y, int width, int height) const
   int tx=0, ty=0; return wasScreenTapped(tx,ty) && tx>=x && tx<x+width && ty>=y && ty<y+height;
 }
 
+bool MappedInputManager::wasPortraitBottomButtonTapped(int& slot) const {
+  slot = -1;
+  if (!BoardConfig::isX4Pro() || !hasTouch()) return false;
+
+  float nx = 0.0f;
+  float ny = 0.0f;
+  if (!gpio.wasTouchTap(nx, ny)) return false;
+
+  // X4 Pro touch coordinates are normalized in the native 800x480 panel
+  // frame. MinimalTheme::drawButtonHints() temporarily renders in Portrait,
+  // so convert raw touch to that same fixed 480x800 frame instead of using
+  // renderer->tapToLogical(), whose orientation may already have changed.
+  constexpr int kPanelWidth = 800;
+  constexpr int kPanelHeight = 480;
+  constexpr int kPortraitHeight = 800;
+  constexpr int kButtonHeight = 40;
+  constexpr int kButtonWidth = 84;
+  constexpr int kButtonX[4] = {54, 142, 254, 342};
+
+  int phyX = static_cast<int>(nx * kPanelWidth);
+  int phyY = static_cast<int>(ny * kPanelHeight);
+  phyX = std::clamp(phyX, 0, kPanelWidth - 1);
+  phyY = std::clamp(phyY, 0, kPanelHeight - 1);
+
+  const int x = kPanelHeight - 1 - phyY;
+  const int y = phyX;
+  if (y < kPortraitHeight - kButtonHeight || y >= kPortraitHeight) return false;
+
+  for (int i = 0; i < 4; ++i) {
+    if (x >= kButtonX[i] && x < kButtonX[i] + kButtonWidth) {
+      slot = i;
+      return true;
+    }
+  }
+  return false;
+}
+
 MappedInputManager::RowTouch MappedInputManager::rowTouch(int& row, const int top, const int rowStep,
                                                           const int rowCount, const int xStart, const int xEnd,
                                                           const int rowHeight) const {
