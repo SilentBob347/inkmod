@@ -446,7 +446,11 @@ bool runTiledGrayscalePass(GfxRenderer& renderer, const Page& page, const int fo
       renderer.beginStripTarget(scratch.get(), y, rows);
       renderer.clearScreen(0x00);
       if (needsTextGrayscale) {
-        page.render(renderer, fontId, marginLeft, marginTop, foregroundBlack);
+        if (BoardConfig::isX4Pro() && page.hasImages()) {
+          page.renderText(renderer, fontId, marginLeft, marginTop, foregroundBlack);
+        } else {
+          page.render(renderer, fontId, marginLeft, marginTop, foregroundBlack);
+        }
       } else {
         page.renderImages(renderer, fontId, marginLeft, marginTop);
       }
@@ -4497,11 +4501,13 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
       largestBlockPercent(heapBefore), largestBlockPercent(heapAfter));
 
   const bool foregroundBlack = ReaderUtils::readerForegroundBlack();
-  // X4 Pro now uses the same native 4-level image path as X4. Its image cache
-  // already contains clean 2-bit source levels; ImageBlock only applies
-  // Floyd-Steinberg to the temporary BW base and writes the original levels
-  // during the two grayscale plane passes.
-  bool needsImageGrayscale = pageHasImages;
+  // X4 Pro book images use the same final path as sleep/cover images:
+  // clean 2-bit cache -> serpentine Floyd-Steinberg -> one monochrome panel
+  // refresh. Do NOT follow that with the native AA/grayscale waveform: on the
+  // Pro it visibly changes a good image into the muddy/grid-like second frame.
+  // Text antialiasing remains independent and may still use grayscale planes.
+  const bool x4ProImageBwOnly = BoardConfig::isX4Pro() && pageHasImages;
+  bool needsImageGrayscale = pageHasImages && !x4ProImageBwOnly;
   bool needsTextGrayscale = SETTINGS.textAntiAliasing && foregroundBlack;
   const bool needsAnyGrayscale = needsTextGrayscale || needsImageGrayscale;
 
@@ -4522,8 +4528,15 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
 
   const auto composeGrayscaleBuffer = [&]() {
     if (needsTextGrayscale) {
-      page->render(renderer, fontId, orientedMarginLeft, pageRenderY, foregroundBlack);
-    } else {
+      // On X4 Pro keep images out of the AA planes; their final visible form is
+      // already the Floyd-Steinberg BW base. Other boards retain the historical
+      // all-content grayscale pass.
+      if (x4ProImageBwOnly) {
+        page->renderText(renderer, fontId, orientedMarginLeft, pageRenderY, foregroundBlack);
+      } else {
+        page->render(renderer, fontId, orientedMarginLeft, pageRenderY, foregroundBlack);
+      }
+    } else if (needsImageGrayscale) {
       page->renderImages(renderer, fontId, orientedMarginLeft, pageRenderY);
     }
     finalizeBufferComposition();
