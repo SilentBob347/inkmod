@@ -26,6 +26,13 @@ bool ImageBlock::imageExists() const { return Storage.exists(imagePath.c_str());
 
 namespace {
 
+// X4 Pro ultimately shows book images through a 1-bit Floyd-Steinberg pass.
+// Using the nominal 2-bit values (or the previous 78/158 tuning) makes the
+// two middle levels carry too much black ink compared with X4's native gray
+// waveform. Bias those representatives toward white so the same cover has
+// comparable visual brightness on X4 and X4 Pro.
+constexpr uint8_t X4PRO_FS_GRAY[4] = {0, 108, 190, 255};
+
 struct X4ProFsDither {
   int width{0};
   int16_t* current{nullptr};
@@ -175,8 +182,7 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
         const int bitShift = 6 - (srcX & 3) * 2;
         const uint8_t level = (srcRow[byteIdx] >> bitShift) & 0x03;
         if (useProDither) {
-          static constexpr uint8_t kGray[4] = {0, 78, 158, 255};
-          const bool black = proDither.process(kGray[level], dstX);
+          const bool black = proDither.process(X4PRO_FS_GRAY[level], dstX);
           pw.writePixel(x + dstX, black ? 0 : 3);
         } else {
           pw.writePixel(x + dstX, level);
@@ -279,8 +285,7 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
       const uint8_t pixelValue = (rowBuffer[byteIdx] >> bitShift) & 0x03;
 
       if (proDither) {
-        static constexpr uint8_t kGray[4] = {0, 78, 158, 255};
-        const bool black = proDither->process(kGray[pixelValue], col);
+        const bool black = proDither->process(X4PRO_FS_GRAY[pixelValue], col);
         pw.writePixel(x + col, black ? 0 : 3);
       } else {
         pw.writePixel(x + col, pixelValue);
