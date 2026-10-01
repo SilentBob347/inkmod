@@ -172,18 +172,21 @@ bool MappedInputManager::wasPortraitBottomButtonTapped(int& slot) const {
 
   float nx = 0.0f;
   float ny = 0.0f;
-  if (!gpio.wasTouchTap(nx, ny)) return false;
+
+  // Fire on the initial contact instead of waiting for the controller to
+  // classify the whole contact as a Tap. On X4 Pro even a tiny finger move can
+  // turn the contact into a gesture and the old code then never delivered the
+  // Minimalism button press.
+  if (!gpio.wasTouchDown(nx, ny)) return false;
 
   // X4 Pro touch coordinates are normalized in the native 800x480 panel
-  // frame. MinimalTheme::drawButtonHints() temporarily renders in Portrait,
-  // so convert raw touch to that same fixed 480x800 frame instead of using
-  // renderer->tapToLogical(), whose orientation may already have changed.
+  // frame. MinimalTheme::drawButtonHints() always draws these actions in the
+  // fixed Portrait 480x800 frame, regardless of the renderer orientation.
   constexpr int kPanelWidth = 800;
   constexpr int kPanelHeight = 480;
+  constexpr int kPortraitWidth = 480;
   constexpr int kPortraitHeight = 800;
   constexpr int kButtonHeight = 40;
-  constexpr int kButtonWidth = 84;
-  constexpr int kButtonX[4] = {54, 142, 254, 342};
 
   int phyX = static_cast<int>(nx * kPanelWidth);
   int phyY = static_cast<int>(ny * kPanelHeight);
@@ -194,13 +197,11 @@ bool MappedInputManager::wasPortraitBottomButtonTapped(int& slot) const {
   const int y = phyX;
   if (y < kPortraitHeight - kButtonHeight || y >= kPortraitHeight) return false;
 
-  for (int i = 0; i < 4; ++i) {
-    if (x >= kButtonX[i] && x < kButtonX[i] + kButtonWidth) {
-      slot = i;
-      return true;
-    }
-  }
-  return false;
+  // The visible labels sit inside this strip, but each action owns a full
+  // quarter of it. This removes the tiny dead gaps between rounded buttons and
+  // makes the four controls finger-friendly.
+  slot = std::clamp((x * 4) / kPortraitWidth, 0, 3);
+  return true;
 }
 
 MappedInputManager::RowTouch MappedInputManager::rowTouch(int& row, const int top, const int rowStep,
