@@ -49,6 +49,7 @@ void NearbyStatsSyncActivity::setState(const State state) {
 #else
 
 #include <Epub.h>
+#include <Fb2.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
@@ -186,6 +187,13 @@ bool writeSyncedStatsFile(const std::string& path, const uint8_t* data, const ui
 std::string bookNameFromPath(const std::string& path) {
   const size_t slash = path.find_last_of("/\\");
   return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+std::string bookIdentityPath(const std::string& readerPath) {
+  // FB2/FB2.ZIP is opened through /.inkmod/fb2_.../package.epub.  Nearby
+  // sync must identify the book by the user's original source file, otherwise
+  // two devices will compare different cache-package paths and never match.
+  return Fb2::resolveOriginalPath(readerPath);
 }
 
 std::string progressPathForBook(const std::string& path) {
@@ -395,11 +403,15 @@ void NearbyStatsSyncActivity::prepareLocalBookProgress() {
   }
   if (path.empty() || !Storage.exists(path.c_str())) return;
 
-  const uint32_t size = fileSize32(path);
+  const std::string identityPath = bookIdentityPath(path);
+  const uint32_t size = fileSize32(identityPath);
   if (size == 0) return;
 
+  // Keep the reader/cache path separately: progress.bin belongs to the
+  // generated FB2 package, while the identity advertised to the other reader
+  // is the original .fb2/.fb2.zip file.
   localBookPath_ = path;
-  localBookName_ = bookNameFromPath(path);
+  localBookName_ = bookNameFromPath(identityPath);
   if (localBookName_.empty() || localBookName_.size() > 96) return;
 
   localBookSize_ = size;
@@ -451,9 +463,12 @@ bool NearbyStatsSyncActivity::sendLocalBookProgress() {
 bool NearbyStatsSyncActivity::applyPeerBookProgress(const SyncEvent& event) {
   if (event.bookName[0] == '\0' || event.bookSize == 0) return false;
 
-  auto matches = [&](const std::string& path) {
-    return !path.empty() && Storage.exists(path.c_str()) && bookNameFromPath(path) == event.bookName.data() &&
-           fileSize32(path) == event.bookSize;
+  auto matches = [&](const std::string& readerPath) {
+    if (readerPath.empty() || !Storage.exists(readerPath.c_str())) return false;
+    const std::string identityPath = bookIdentityPath(readerPath);
+    return Storage.exists(identityPath.c_str()) &&
+           bookNameFromPath(identityPath) == event.bookName.data() &&
+           fileSize32(identityPath) == event.bookSize;
   };
 
   std::string localPath;
