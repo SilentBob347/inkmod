@@ -706,6 +706,14 @@ void enterDeepSleep(bool fromTimeout) {
   }
 
   putTiltSensorToSleepForDeepSleep();
+
+  // X3: if a BQ27220 Data Memory update is in progress, leave CONFIG UPDATE
+  // cleanly and reseal the gauge before power is removed.
+  if (gpio.deviceIsX3() && powerManager.isGaugeCapacityLoadPending()) {
+    RenderLock lock;
+    powerManager.abandonGaugeCapacityLoad();
+  }
+
   display.deepSleep();
 
   // Fully shut down SD/SDMMC before the board rails are cut. On X4 Pro the
@@ -1234,6 +1242,17 @@ void loop() {
   gpio.update();
   halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.tiltPageTurnDirection, SETTINGS.orientation,
                        activityManager.isReaderActivity());
+
+  // X3 only: the BQ27220 loses its RAM-backed DesignCapacity after gauge power
+  // loss and returns to TI's 3000 mAh default. Correct it to the real 650 mAh
+  // asynchronously, one short I2C step per loop, while holding the render lock
+  // so battery/status-bar reads cannot interleave on the shared bus.
+  if (gpio.deviceIsX3() && powerManager.isGaugeCapacityLoadPending()) {
+    RenderLock lock(RenderLock::Mode::Try);
+    if (lock.ownsLock()) {
+      powerManager.loadGaugeCapacity();
+    }
+  }
 
   renderer.setFadingFix(SETTINGS.fadingFix);
 
