@@ -73,6 +73,7 @@ void NearbyStatsSyncActivity::setState(const State state) {
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
+#include "activities/reader/BookReadingStats.h"
 #include "activities/reader/GlobalReadingStats.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -84,7 +85,7 @@ constexpr const char* INKMOD_ROOT = "/.inkmod";
 constexpr const char* GLOBAL_STATS_PATH = "/.inkmod/global_stats.bin";
 constexpr const char* SYNCED_STATS_DIR = "/.inkmod/synced_stats";
 constexpr uint8_t ESPNOW_CHANNEL = 1;
-constexpr uint8_t PROTOCOL_VERSION = 2;
+constexpr uint8_t PROTOCOL_VERSION = 3;
 constexpr uint8_t MIN_STATS_BYTES = static_cast<uint8_t>(GlobalReadingStats::MIN_SUPPORTED_FILE_SIZE);
 constexpr uint8_t MAX_STATS_BYTES = static_cast<uint8_t>(GlobalReadingStats::CURRENT_FILE_SIZE);
 constexpr uint8_t PACKET_HEADER_BYTES = 14;
@@ -202,6 +203,106 @@ std::string progressPathForBook(const std::string& path) {
     return Txt(path, "/.inkmod").getCachePath() + "/progress.bin";
   }
   return Epub(path, "/.inkmod").getCachePath() + "/progress.bin";
+}
+
+std::string statsPathForBook(const std::string& path) {
+  if (FsHelpers::hasXtcExtension(path)) return Xtc(path, "/.inkmod").getCachePath() + "/stats.bin";
+  if (FsHelpers::hasTxtExtension(path) || FsHelpers::hasMarkdownExtension(path)) {
+    return Txt(path, "/.inkmod").getCachePath() + "/stats.bin";
+  }
+  return Epub(path, "/.inkmod").getCachePath() + "/stats.bin";
+}
+
+bool isValidBookStatsPayload(const uint8_t* data, const uint8_t size) {
+  if (!data) return false;
+  return (size == 11 && data[0] == 1) || (size == 12 && data[0] == 2) ||
+         (size == 16 && data[0] == 3) || (size == 69 && data[0] == 4);
+}
+
+bool readBookStatsBytes(const std::string& path, std::array<uint8_t, 69>& out, uint8_t& outSize) {
+  out.fill(0);
+  outSize = 0;
+  FsFile f;
+  if (!Storage.openFileForRead(LOG_TAG, statsPathForBook(path), f)) return false;
+  const size_t size = f.fileSize();
+  if (size > out.size()) {
+    f.close();
+    return false;
+  }
+  const int n = f.read(out.data(), size);
+  f.close();
+  if (n != static_cast<int>(size) || !isValidBookStatsPayload(out.data(), static_cast<uint8_t>(size))) return false;
+  outSize = static_cast<uint8_t>(size);
+  return true;
+}
+
+uint16_t readBookStatsLe16(const uint8_t* data, const int offset) {
+  return static_cast<uint16_t>(data[offset]) | (static_cast<uint16_t>(data[offset + 1]) << 8);
+}
+
+uint32_t readBookStatsLe32(const uint8_t* data, const int offset) {
+  return static_cast<uint32_t>(data[offset]) | (static_cast<uint32_t>(data[offset + 1]) << 8) |
+         (static_cast<uint32_t>(data[offset + 2]) << 16) | (static_cast<uint32_t>(data[offset + 3]) << 24);
+}
+
+int compareBookStatsSnapshots(const uint8_t* a, const uint8_t aSize, const uint8_t* b, const uint8_t bSize) {
+  if (!isValidBookStatsPayload(a, aSize)) return -1;
+  if (!isValidBookStatsPayload(b, bSize)) return 1;
+
+  const uint32_t aSeconds = readBookStatsLe32(a, 3);
+  const uint32_t bSeconds = readBookStatsLe32(b, 3);
+  if (aSeconds != bSeconds) return aSeconds > bSeconds ? 1 : -1;
+
+  const uint32_t aPages = readBookStatsLe32(a, 7);
+  const uint32_t bPages = readBookStatsLe32(b, 7);
+  if (aPages != bPages) return aPages > bPages ? 1 : -1;
+
+  const uint16_t aSessions = readBookStatsLe16(a, 1);
+  const uint16_t bSessions = readBookStatsLe16(b, 1);
+  if (aSessions != bSessions) return aSessions > bSessions ? 1 : -1;
+
+  // Deterministic tie-break makes two readers converge to one identical
+  // snapshot even if equal headline totals have different dates/buckets.
+  const size_t common = std::min<size_t>(aSize, bSize);
+  const int rawCmp = memcmp(a, b, common);
+  if (rawCmp != 0) return rawCmp > 0 ? 1 : -1;
+  if (aSize == bSize) return 0;
+  return aSize > bSize ? 1 : -1;
+}
+
+bool writeBookStatsIfPreferred(const std::string& path, const uint8_t* incoming, const uint8_t incomingSize) {
+  if (!isValidBookStatsPayload(incoming, incomingSize)) return false;
+
+  std::array<uint8_t, 69> local{};
+  uint8_t localSize = 0;
+  if (readBookStatsBytes(path, local, localSize) &&
+      compareBookStatsSnapshots(incoming, incomingSize, local.data(), localSize) <= 0) {
+    return true;
+  }
+
+  const std::string statsPath = statsPathForBook(path);
+  const size_t slash = statsPath.find_last_of('/');
+  if (slash != std::string::npos) Storage.mkdir(statsPath.substr(0, slash).c_str(), true);
+
+  const std::string tmpPath = statsPath + ".part";
+  if (Storage.exists(tmpPath.c_str())) Storage.remove(tmpPath.c_str());
+
+  FsFile f;
+  if (!Storage.openFileForWrite(LOG_TAG, tmpPath, f)) return false;
+  const size_t written = f.write(incoming, incomingSize);
+  if (written != incomingSize || !f.close()) {
+    Storage.remove(tmpPath.c_str());
+    return false;
+  }
+  if (Storage.exists(statsPath.c_str()) && !Storage.remove(statsPath.c_str())) {
+    Storage.remove(tmpPath.c_str());
+    return false;
+  }
+  if (!Storage.rename(tmpPath.c_str(), statsPath.c_str())) {
+    Storage.remove(tmpPath.c_str());
+    return false;
+  }
+  return true;
 }
 
 bool readProgressBytes(const std::string& path, std::array<uint8_t, 6>& out, uint8_t& outSize) {
@@ -385,7 +486,9 @@ void NearbyStatsSyncActivity::prepareLocalBookProgress() {
   localBookPath_.clear();
   localBookName_.clear();
   localBookProgress_.fill(0);
+  localBookStats_.fill(0);
   localBookProgressSize_ = 0;
+  localBookStatsSize_ = 0;
   localBookSize_ = 0;
   localBookReady_ = false;
   localBookProgressAcked_ = false;
@@ -416,13 +519,14 @@ void NearbyStatsSyncActivity::prepareLocalBookProgress() {
 
   localBookSize_ = size;
   readProgressBytes(path, localBookProgress_, localBookProgressSize_);
+  readBookStatsBytes(path, localBookStats_, localBookStatsSize_);
   localBookReady_ = true;
 }
 
 bool NearbyStatsSyncActivity::sendLocalBookProgress() {
   if (!peerSeen_ || !localBookReady_) return false;
 
-  std::array<uint8_t, 128> payload{};
+  std::array<uint8_t, 192> payload{};
   size_t off = 0;
   payload[off++] = static_cast<uint8_t>(localBookSize_);
   payload[off++] = static_cast<uint8_t>(localBookSize_ >> 8);
@@ -433,13 +537,18 @@ bool NearbyStatsSyncActivity::sendLocalBookProgress() {
     memcpy(payload.data() + off, localBookProgress_.data(), localBookProgressSize_);
     off += localBookProgressSize_;
   }
+  payload[off++] = localBookStatsSize_;
+  if (localBookStatsSize_ > 0) {
+    memcpy(payload.data() + off, localBookStats_.data(), localBookStatsSize_);
+    off += localBookStatsSize_;
+  }
   payload[off++] = static_cast<uint8_t>(localBookName_.size());
   memcpy(payload.data() + off, localBookName_.data(), localBookName_.size());
   off += localBookName_.size();
 
   if (off > 255) return false;
 
-  std::array<uint8_t, PACKET_HEADER_BYTES + 128> packet{};
+  std::array<uint8_t, PACKET_HEADER_BYTES + 192> packet{};
   packet[0] = 'C';
   packet[1] = 'I';
   packet[2] = 'S';
@@ -495,8 +604,17 @@ bool NearbyStatsSyncActivity::applyPeerBookProgress(const SyncEvent& event) {
     return true;
   }
 
-  const bool ok = writeProgressIfNewer(localPath, event.bookProgress.data(), event.bookProgressSize);
-  bookStatus_ = ok ? "Прогресс книги синхронизирован" : "Ошибка синхронизации прогресса";
+  const bool progressOk = writeProgressIfNewer(localPath, event.bookProgress.data(), event.bookProgressSize);
+  const bool statsOk = event.bookStatsSize == 0 ||
+                       writeBookStatsIfPreferred(localPath, event.bookStats.data(), event.bookStatsSize);
+  const bool ok = progressOk && statsOk;
+  if (ok && event.bookStatsSize > 0) {
+    bookStatus_ = "Прогресс и статистика книги синхронизированы";
+  } else if (ok) {
+    bookStatus_ = "Прогресс книги синхронизирован";
+  } else {
+    bookStatus_ = "Ошибка синхронизации книги";
+  }
   requestUpdate();
   return ok;
 }
@@ -564,11 +682,21 @@ void NearbyStatsSyncActivity::enqueueEspNowPacket(const uint8_t* sourceMac, cons
                      (static_cast<uint32_t>(payload[2]) << 16) | (static_cast<uint32_t>(payload[3]) << 24);
     event.bookProgressSize = payload[4];
     if (event.bookProgressSize != 0 && event.bookProgressSize != 4 && event.bookProgressSize != 6) return;
-    const size_t nameLenOffset = 5 + event.bookProgressSize;
-    if (nameLenOffset >= static_cast<size_t>(payloadLength)) return;
+    const size_t statsSizeOffset = 5 + event.bookProgressSize;
+    if (statsSizeOffset >= static_cast<size_t>(payloadLength)) return;
     if (event.bookProgressSize > 0) {
       memcpy(event.bookProgress.data(), payload + 5, event.bookProgressSize);
     }
+
+    event.bookStatsSize = payload[statsSizeOffset];
+    if (event.bookStatsSize != 0 && !isValidBookStatsPayload(payload + statsSizeOffset + 1, event.bookStatsSize)) return;
+    if (event.bookStatsSize > event.bookStats.size()) return;
+    const size_t nameLenOffset = statsSizeOffset + 1 + event.bookStatsSize;
+    if (nameLenOffset >= static_cast<size_t>(payloadLength)) return;
+    if (event.bookStatsSize > 0) {
+      memcpy(event.bookStats.data(), payload + statsSizeOffset + 1, event.bookStatsSize);
+    }
+
     const uint8_t nameLen = payload[nameLenOffset];
     if (nameLen == 0 || nameLen > 96 || nameLenOffset + 1 + nameLen != static_cast<size_t>(payloadLength)) return;
     memcpy(event.bookName.data(), payload + nameLenOffset + 1, nameLen);
