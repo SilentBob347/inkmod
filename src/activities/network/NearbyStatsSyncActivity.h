@@ -46,9 +46,11 @@ class NearbyStatsSyncActivity final : public Activity {
     std::array<uint8_t, GlobalReadingStats::CURRENT_FILE_SIZE> stats = {};
     std::array<char, 21> deviceName = {};
     std::array<uint8_t, 6> bookProgress = {};
+    std::array<uint8_t, 69> bookStats = {};
     std::array<char, 97> bookName = {};
     uint32_t bookSize = 0;
     uint8_t bookProgressSize = 0;
+    uint8_t bookStatsSize = 0;
     uint8_t statsSize = 0;
   };
   static constexpr size_t MAX_SYNC_EVENTS = 8;
@@ -75,8 +77,10 @@ class NearbyStatsSyncActivity final : public Activity {
   std::string localBookPath_;
   std::string localBookName_;
   std::array<uint8_t, 6> localBookProgress_ = {};
+  std::array<uint8_t, 69> localBookStats_ = {};
   uint32_t localBookSize_ = 0;
   uint8_t localBookProgressSize_ = 0;
+  uint8_t localBookStatsSize_ = 0;
   bool localBookReady_ = false;
   bool localBookProgressAcked_ = false;
   uint32_t lastBookProgressSendMs_ = 0;
