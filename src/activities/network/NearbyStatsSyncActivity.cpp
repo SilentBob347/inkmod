@@ -48,8 +48,12 @@ void NearbyStatsSyncActivity::setState(const State state) {
 
 #else
 
+#include <Epub.h>
+#include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <Txt.h>
+#include <Xtc.h>
 #include <Logging.h>
 #include <WiFi.h>
 #include <esp_mac.h>
@@ -64,7 +68,9 @@ void NearbyStatsSyncActivity::setState(const State state) {
 #include <string>
 
 #include "InkMODSettings.h"
+#include "InkMODState.h"
 #include "MappedInputManager.h"
+#include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
 #include "activities/reader/GlobalReadingStats.h"
 #include "components/UITheme.h"
@@ -173,6 +179,87 @@ bool writeSyncedStatsFile(const std::string& path, const uint8_t* data, const ui
     return false;
   }
   return true;
+}
+
+
+std::string bookNameFromPath(const std::string& path) {
+  const size_t slash = path.find_last_of("/\\");
+  return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+std::string progressPathForBook(const std::string& path) {
+  if (FsHelpers::hasXtcExtension(path)) return Xtc(path, "/.inkmod").getCachePath() + "/progress.bin";
+  if (FsHelpers::hasTxtExtension(path) || FsHelpers::hasMarkdownExtension(path)) {
+    return Txt(path, "/.inkmod").getCachePath() + "/progress.bin";
+  }
+  return Epub(path, "/.inkmod").getCachePath() + "/progress.bin";
+}
+
+bool readProgressBytes(const std::string& path, std::array<uint8_t, 6>& out, uint8_t& outSize) {
+  outSize = 0;
+  FsFile f;
+  if (!Storage.openFileForRead(LOG_TAG, progressPathForBook(path), f)) return false;
+  const size_t size = f.fileSize();
+  if (size != 4 && size != 6) {
+    f.close();
+    return false;
+  }
+  const int n = f.read(out.data(), size);
+  f.close();
+  if (n != static_cast<int>(size)) return false;
+  outSize = static_cast<uint8_t>(size);
+  return true;
+}
+
+uint32_t fileSize32(const std::string& path) {
+  FsFile f;
+  if (!Storage.openFileForRead(LOG_TAG, path, f)) return 0;
+  const uint64_t size = f.fileSize64();
+  f.close();
+  return size > 0xFFFFFFFFULL ? 0 : static_cast<uint32_t>(size);
+}
+
+uint64_t progressScore(const std::string& path, const uint8_t* data, const uint8_t size) {
+  if (!data || (size != 4 && size != 6)) return 0;
+  if (FsHelpers::hasXtcExtension(path)) {
+    return static_cast<uint64_t>(data[0]) | (static_cast<uint64_t>(data[1]) << 8) |
+           (static_cast<uint64_t>(data[2]) << 16) | (static_cast<uint64_t>(data[3]) << 24);
+  }
+  if (FsHelpers::hasTxtExtension(path) || FsHelpers::hasMarkdownExtension(path)) {
+    return static_cast<uint64_t>(data[0]) | (static_cast<uint64_t>(data[1]) << 8);
+  }
+  const uint16_t spine = static_cast<uint16_t>(data[0] | (static_cast<uint16_t>(data[1]) << 8));
+  const uint16_t page = static_cast<uint16_t>(data[2] | (static_cast<uint16_t>(data[3]) << 8));
+  const uint16_t count =
+      size == 6 ? static_cast<uint16_t>(data[4] | (static_cast<uint16_t>(data[5]) << 8)) : 0;
+  const uint64_t within = count > 0 ? (static_cast<uint64_t>(page) * 1000000ULL) / count : page;
+  return (static_cast<uint64_t>(spine) << 32) | std::min<uint64_t>(within, 1000000ULL);
+}
+
+bool writeProgressIfNewer(const std::string& path, const uint8_t* incoming, const uint8_t incomingSize) {
+  if (incomingSize != 4 && incomingSize != 6) return false;
+
+  std::array<uint8_t, 6> local{};
+  uint8_t localSize = 0;
+  if (readProgressBytes(path, local, localSize) &&
+      progressScore(path, incoming, incomingSize) <= progressScore(path, local.data(), localSize)) {
+    return true;
+  }
+
+  const std::string progressPath = progressPathForBook(path);
+  const size_t slash = progressPath.find_last_of('/');
+  if (slash != std::string::npos) Storage.mkdir(progressPath.substr(0, slash).c_str(), true);
+
+  const std::string backup = progressPath + ".bak";
+  if (Storage.exists(progressPath.c_str())) {
+    Storage.remove(backup.c_str());
+    Storage.rename(progressPath.c_str(), backup.c_str());
+  }
+
+  FsFile f;
+  if (!Storage.openFileForWrite(LOG_TAG, progressPath, f)) return false;
+  const size_t written = f.write(incoming, incomingSize);
+  return written == incomingSize && f.close();
 }
 
 void onEspNowReceive(const esp_now_recv_info_t* info, const uint8_t* data, int length) {
