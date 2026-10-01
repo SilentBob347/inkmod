@@ -10,6 +10,7 @@
 
 #include <cassert>
 
+#include "Bq27220Capacity.h"
 #include "HalGPIO.h"
 
 class HalPowerManager;
@@ -30,6 +31,7 @@ class HalPowerManager {
   enum LockMode { None, NormalSpeed };
   LockMode currentLockMode = None;
   SemaphoreHandle_t modeMutex = nullptr;  // Protect access to currentLockMode
+  Bq27220Capacity gaugeCapacity;
 
  public:
   // ESP32-C3 is stable at 10 MHz. X4 Pro's ESP32-S3 uses PSRAM; keep APB/PSRAM
@@ -37,8 +39,13 @@ class HalPowerManager {
   static constexpr int LOW_POWER_FREQ = FREEINK_MCU_S3 ? 80 : 10;  // MHz
   static constexpr unsigned long IDLE_POWER_SAVING_MS = 500;   // downclock after 0.5 s idle
   static constexpr unsigned long BATTERY_POLL_MS = 1500;       // ms
+  static constexpr uint16_t X3_BATTERY_MAH = 650;
 
   void begin();
+
+  void loadGaugeCapacity();
+  bool isGaugeCapacityLoadPending() const { return gaugeCapacity.result() == Bq27220Capacity::Result::Pending; }
+  void abandonGaugeCapacityLoad();
 
   // Control CPU frequency for power saving
   void setPowerSaving(bool enabled);
