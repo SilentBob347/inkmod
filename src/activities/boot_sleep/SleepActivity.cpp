@@ -580,36 +580,12 @@ void SleepActivity::renderCustomSleepScreen() const {
         config.useExactDimensions = true;
 
         PngToFramebufferConverter converter;
-        if (BoardConfig::isX4Pro()) {
-          // X4 Pro has a real 4-level panel path. Rendering the wallpaper into
-          // the ordinary BW framebuffer throws the two middle gray levels away
-          // and exposes the source halftone/checker pattern as a visible grid.
-          // Build both grayscale planes directly instead.
-          bool ok = true;
-
-          renderer.clearScreen(0x00);
-          renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
-          ok = converter.decodeToFramebuffer(selection.path, renderer, config);
-          if (ok) renderer.copyGrayscaleLsbBuffers();
-
-          if (ok) {
-            renderer.clearScreen(0x00);
-            renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
-            ok = converter.decodeToFramebuffer(selection.path, renderer, config);
-            if (ok) renderer.copyGrayscaleMsbBuffers();
-          }
-
-          renderer.setRenderMode(GfxRenderer::BW);
-          if (ok) {
-            renderer.displayGrayBuffer(TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
-            return;
-          }
-        } else {
-          renderer.clearScreen();
-          if (converter.decodeToFramebuffer(selection.path, renderer, config)) {
-            renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
-            return;
-          }
+        renderer.clearScreen();
+        renderer.setRenderMode(GfxRenderer::BW);
+        if (converter.decodeToFramebuffer(selection.path, renderer, config)) {
+          renderer.displayBuffer(BoardConfig::isX4Pro() ? HalDisplay::FULL_REFRESH : HalDisplay::HALF_REFRESH,
+                                 TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
+          return;
         }
       }
       LOG_ERR("SLP", "Failed to render custom sleep PNG: %s", selection.path.c_str());
@@ -739,7 +715,8 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool bla
   };
   paintCoverCanvas();
 
-  const bool hasGreyscale = bitmap.hasGreyscale() &&
+  const bool x4Pro = BoardConfig::isX4Pro();
+  const bool hasGreyscale = !x4Pro && bitmap.hasGreyscale() &&
                             SETTINGS.sleepScreenCoverFilter == InkMODSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER;
 
   renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
@@ -749,11 +726,11 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool bla
     renderer.invertScreen();
   }
 
-  // Keep the same proven two-stage path that was used before the X4 Pro
-  // special-case: a normal base refresh followed by the actual grayscale
-  // planes. Forcing X4 Pro to FULL 1-bit here destroys midtones and turns
-  // dithered artwork into the visible square grid reported on-device.
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
+  // On X4 Pro the first BW refresh is the good-looking image. The later
+  // displayGrayBuffer() pass is what visibly "smooths" it half a second later
+  // into a muddy result. Keep the clean first frame and stop there.
+  renderer.displayBuffer(x4Pro ? HalDisplay::FULL_REFRESH : HalDisplay::HALF_REFRESH,
+                         TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
 
   if (hasGreyscale) {
     bitmap.rewindToData();
