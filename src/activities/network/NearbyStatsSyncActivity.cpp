@@ -418,6 +418,261 @@ bool NearbyStatsSyncActivity::prepareLocalStats() {
   return true;
 }
 
+
+void NearbyStatsSyncActivity::resetBookSyncState() {
+  localBookPath_.clear();
+  localBookName_.clear();
+  localBookProgress_.fill(0);
+  localBookProgressSize_ = 0;
+  localBookSize_ = 0;
+  localBookCrc32_ = 0;
+  localBookReady_ = false;
+  localBookInfoSent_ = false;
+  localBookAcked_ = false;
+
+  peerBookName_.clear();
+  peerBookPath_.clear();
+  peerBookProgress_.fill(0);
+  peerBookProgressSize_ = 0;
+  peerBookSize_ = 0;
+  peerBookCrc32_ = 0;
+  peerBookStateSeen_ = false;
+  peerBookHandled_ = false;
+
+  sendingBookFile_ = false;
+  sendBookOffset_ = 0;
+  sendBookAwaitingAckOffset_ = 0;
+  lastBookChunkSendMs_ = 0;
+
+  receivingBookFile_ = false;
+  receiveBookOffset_ = 0;
+  receiveBookTempPath_.clear();
+  if (receiveBookFile_) receiveBookFile_.close();
+
+  bookStatus_.clear();
+}
+
+bool NearbyStatsSyncActivity::prepareLocalBook() {
+  localBookReady_ = false;
+
+  std::string path = APP_STATE.openEpubPath;
+  if (path.empty() || !Storage.exists(path.c_str())) {
+    for (const auto& book : RECENT_BOOKS.getBooks()) {
+      if (Storage.exists(book.path.c_str())) {
+        path = book.path;
+        break;
+      }
+    }
+  }
+  if (path.empty() || !Storage.exists(path.c_str())) return true;
+
+  uint64_t size = 0;
+  uint32_t crc = 0;
+  if (!fileSizeAndCrc(path, size, crc)) return true;
+
+  localBookPath_ = path;
+  localBookName_ = fileNameFromPath(path);
+  if (localBookName_.empty() || localBookName_.size() > MAX_BOOK_NAME_BYTES) return true;
+
+  localBookSize_ = size;
+  localBookCrc32_ = crc;
+  readBookProgress(path, localBookProgress_, localBookProgressSize_);
+  localBookReady_ = true;
+  return true;
+}
+
+bool NearbyStatsSyncActivity::sendBookState() {
+  if (!peerSeen_) return false;
+  if (!localBookReady_) {
+    localBookInfoSent_ = sendPacket(PacketType::BOOK_NONE, peerSourceMac_.data());
+    return localBookInfoSent_;
+  }
+
+  std::array<uint8_t, MAX_PACKET_PAYLOAD> payload{};
+  const size_t nameLen = std::min(localBookName_.size(), static_cast<size_t>(MAX_BOOK_NAME_BYTES));
+  size_t off = 0;
+  writeU64(payload.data() + off, localBookSize_); off += 8;
+  writeU32(payload.data() + off, localBookCrc32_); off += 4;
+  payload[off++] = localBookProgressSize_;
+  if (localBookProgressSize_ > 0) {
+    memcpy(payload.data() + off, localBookProgress_.data(), localBookProgressSize_);
+    off += localBookProgressSize_;
+  }
+  payload[off++] = static_cast<uint8_t>(nameLen);
+  memcpy(payload.data() + off, localBookName_.data(), nameLen);
+  off += nameLen;
+
+  localBookInfoSent_ =
+      sendPacket(PacketType::BOOK_INFO, peerSourceMac_.data(), payload.data(), static_cast<uint8_t>(off));
+  return localBookInfoSent_;
+}
+
+bool NearbyStatsSyncActivity::sendBookAck(const uint8_t* peerMac) {
+  return sendPacket(PacketType::BOOK_ACK, peerMac);
+}
+
+bool NearbyStatsSyncActivity::sendFileRequest(const uint8_t* peerMac) {
+  return sendPacket(PacketType::FILE_REQUEST, peerMac);
+}
+
+bool NearbyStatsSyncActivity::sendFileAck(const uint8_t* peerMac, const uint64_t nextOffset) {
+  uint8_t payload[8];
+  writeU64(payload, nextOffset);
+  return sendPacket(PacketType::FILE_ACK, peerMac, payload, sizeof(payload));
+}
+
+bool NearbyStatsSyncActivity::applyPeerBookProgress(const std::string& localPath) {
+  if (peerBookProgressSize_ == 0) return true;
+  const bool ok = writeBookProgressIfNewer(localPath, peerBookProgress_.data(), peerBookProgressSize_);
+  if (ok) bookStatus_ = "Прогресс книги синхронизирован";
+  return ok;
+}
+
+bool NearbyStatsSyncActivity::startReceivingPeerBook() {
+  if (peerBookName_.empty() || peerBookSize_ == 0) return false;
+  if (!Storage.ensureDirectoryExists("/Books") || !Storage.ensureDirectoryExists("/Books/Nearby")) return false;
+
+  std::string finalPath = std::string("/Books/Nearby/") + peerBookName_;
+  if (Storage.exists(finalPath.c_str())) {
+    finalPath = std::string("/Books/Nearby/") + peerId_.substr(0, std::min<size_t>(6, peerId_.size())) + "_" +
+                peerBookName_;
+  }
+  receiveBookTempPath_ = finalPath + ".part";
+  peerBookPath_ = finalPath;
+  Storage.remove(receiveBookTempPath_.c_str());
+
+  if (!Storage.openFileForWrite(LOG_TAG, receiveBookTempPath_, receiveBookFile_)) return false;
+  receivingBookFile_ = true;
+  receiveBookOffset_ = 0;
+  bookStatus_ = "Получение книги: 0%";
+  requestUpdate();
+  return true;
+}
+
+bool NearbyStatsSyncActivity::finalizeReceivedPeerBook() {
+  if (!receivingBookFile_) return false;
+  if (!receiveBookFile_.close()) return false;
+  receivingBookFile_ = false;
+
+  uint64_t size = 0;
+  uint32_t crc = 0;
+  if (!fileSizeAndCrc(receiveBookTempPath_, size, crc) || size != peerBookSize_ || crc != peerBookCrc32_) {
+    Storage.remove(receiveBookTempPath_.c_str());
+    return false;
+  }
+
+  if (Storage.exists(peerBookPath_.c_str())) Storage.remove(peerBookPath_.c_str());
+  if (!Storage.rename(receiveBookTempPath_.c_str(), peerBookPath_.c_str())) return false;
+
+  const RecentBook metadata = RECENT_BOOKS.getDataFromBook(peerBookPath_);
+  RECENT_BOOKS.addOrUpdateBook(peerBookPath_,
+                              metadata.title.empty() ? peerBookName_ : metadata.title,
+                              metadata.author, metadata.coverBmpPath);
+
+  if (!applyPeerBookProgress(peerBookPath_)) return false;
+
+  peerBookHandled_ = true;
+  bookStatus_ = "Книга получена и прогресс применён";
+  requestUpdate();
+  return sendBookAck(peerSourceMac_.data());
+}
+
+bool NearbyStatsSyncActivity::handlePeerBookInfo(const SyncEvent& event) {
+  if (event.payloadSize < 14) return false;
+  size_t off = 0;
+  peerBookSize_ = readU64(event.payload.data() + off); off += 8;
+  peerBookCrc32_ = readU32(event.payload.data() + off); off += 4;
+  peerBookProgressSize_ = event.payload[off++];
+  if (peerBookProgressSize_ != 0 && peerBookProgressSize_ != 4 && peerBookProgressSize_ != 6) return false;
+  if (off + peerBookProgressSize_ + 1 > event.payloadSize) return false;
+  if (peerBookProgressSize_ > 0) {
+    memcpy(peerBookProgress_.data(), event.payload.data() + off, peerBookProgressSize_);
+    off += peerBookProgressSize_;
+  }
+  const uint8_t nameLen = event.payload[off++];
+  if (nameLen == 0 || nameLen > MAX_BOOK_NAME_BYTES || off + nameLen != event.payloadSize) return false;
+  peerBookName_.assign(reinterpret_cast<const char*>(event.payload.data() + off), nameLen);
+  peerBookStateSeen_ = true;
+
+  auto candidateMatches = [&](const std::string& path) -> bool {
+    if (path.empty() || !Storage.exists(path.c_str()) || fileNameFromPath(path) != peerBookName_) return false;
+    uint64_t size = 0;
+    uint32_t crc = 0;
+    return fileSizeAndCrc(path, size, crc) && size == peerBookSize_ && crc == peerBookCrc32_;
+  };
+
+  std::string match;
+  if (candidateMatches(APP_STATE.openEpubPath)) match = APP_STATE.openEpubPath;
+  if (match.empty()) {
+    for (const auto& book : RECENT_BOOKS.getBooks()) {
+      if (candidateMatches(book.path)) {
+        match = book.path;
+        break;
+      }
+    }
+  }
+
+  if (!match.empty()) {
+    peerBookPath_ = match;
+    peerBookHandled_ = applyPeerBookProgress(match);
+    if (peerBookHandled_) sendBookAck(event.sourceMac.data());
+    return peerBookHandled_;
+  }
+
+  if (!startReceivingPeerBook()) return false;
+  return sendFileRequest(event.sourceMac.data());
+}
+
+bool NearbyStatsSyncActivity::handleBookChunk(const SyncEvent& event) {
+  if (!receivingBookFile_ || event.payloadSize < 8) return false;
+  const uint64_t offset = readU64(event.payload.data());
+  const size_t chunkSize = event.payloadSize - 8;
+
+  if (offset < receiveBookOffset_) {
+    sendFileAck(event.sourceMac.data(), receiveBookOffset_);
+    return true;
+  }
+  if (offset != receiveBookOffset_ || receiveBookOffset_ + chunkSize > peerBookSize_) {
+    sendFileAck(event.sourceMac.data(), receiveBookOffset_);
+    return false;
+  }
+
+  const size_t written = receiveBookFile_.write(event.payload.data() + 8, chunkSize);
+  if (written != chunkSize) return false;
+  receiveBookOffset_ += chunkSize;
+
+  const unsigned percent = peerBookSize_ > 0 ? static_cast<unsigned>((receiveBookOffset_ * 100) / peerBookSize_) : 0;
+  bookStatus_ = "Получение книги: " + std::to_string(std::min(percent, 100u)) + "%";
+  requestUpdate();
+
+  if (!sendFileAck(event.sourceMac.data(), receiveBookOffset_)) return false;
+  if (receiveBookOffset_ >= peerBookSize_) return finalizeReceivedPeerBook();
+  return true;
+}
+
+bool NearbyStatsSyncActivity::sendNextBookChunk(const bool retry) {
+  if (!sendingBookFile_ || localBookPath_.empty() || sendBookOffset_ >= localBookSize_) return false;
+
+  const uint64_t offset = retry ? sendBookAwaitingAckOffset_ : sendBookOffset_;
+  FsFile file;
+  if (!Storage.openFileForRead(LOG_TAG, localBookPath_, file)) return false;
+  if (!file.seek64(offset)) {
+    file.close();
+    return false;
+  }
+
+  std::array<uint8_t, MAX_PACKET_PAYLOAD> payload{};
+  writeU64(payload.data(), offset);
+  const size_t want = static_cast<size_t>(std::min<uint64_t>(MAX_BOOK_CHUNK_BYTES, localBookSize_ - offset));
+  const int n = file.read(payload.data() + 8, want);
+  file.close();
+  if (n <= 0) return false;
+
+  sendBookAwaitingAckOffset_ = offset;
+  lastBookChunkSendMs_ = millis();
+  return sendPacket(PacketType::FILE_CHUNK, peerSourceMac_.data(), payload.data(), static_cast<uint8_t>(8 + n));
+}
+
 void NearbyStatsSyncActivity::startSync() {
   errorMessage_.clear();
   peerSeen_ = false;
