@@ -81,6 +81,10 @@ class MappedInputManager {
   // a new activity is not seen again by that activity on its first frame.
   void suppressTouchContact() { gpio.suppressTouchContact(); }
   bool wasTapInRect(int x, int y, int width, int height) const;
+  // X4 Pro helper for UI controls that are deliberately rendered in fixed
+  // portrait coordinates regardless of the renderer's current orientation.
+  // Returns the visual slot 0..3 for the four Minimalism bottom buttons.
+  bool wasPortraitBottomButtonTapped(int& slot) const;
 
   enum class RowTouch : uint8_t { None, Down, Tap };
   RowTouch rowTouch(int& row, int top, int rowStep, int rowCount, int xStart = 0, int xEnd = INT32_MAX,
