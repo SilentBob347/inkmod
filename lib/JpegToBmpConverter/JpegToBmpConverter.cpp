@@ -1,5 +1,7 @@
 #include "JpegToBmpConverter.h"
 
+#include <BoardConfig.h>
+
 #include <HalDisplay.h>
 #include <HalGPIO.h>
 #include <HalStorage.h>
@@ -558,7 +560,7 @@ static bool convertProgressiveJpegToBmp(FsFile& jpegFile, Print& bmpOut, int tar
     ctx.atkinson1BitDitherer = makeUniqueNoThrow<Atkinson1BitDitherer>(outWidth);
     if (!ctx.atkinson1BitDitherer) return false;
   } else if (!USE_8BIT_OUTPUT) {
-    if (USE_ATKINSON) {
+    if (USE_ATKINSON && !BoardConfig::isX4Pro()) {
       ctx.atkinsonDitherer = makeUniqueNoThrow<AtkinsonDitherer>(outWidth);
       if (!ctx.atkinsonDitherer) return false;
     } else if (USE_FLOYD_STEINBERG) {
@@ -833,7 +835,7 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
       return false;
     }
   } else if (!USE_8BIT_OUTPUT) {
-    if (USE_ATKINSON) {
+    if (USE_ATKINSON && !BoardConfig::isX4Pro()) {
       ctx.atkinsonDitherer = makeUniqueNoThrow<AtkinsonDitherer>(outWidth);
       if (!ctx.atkinsonDitherer) {
         LOG_ERR("JPG", "OOM: AtkinsonDitherer");
