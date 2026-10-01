@@ -30,7 +30,7 @@ namespace {
 // Use darker middle representatives on X4 Pro so light-heavy artwork does not
 // wash out after 2-bit quantization. This keeps Floyd-Steinberg texture while
 // restoring the stronger midtone contrast that tested better on-device.
-constexpr uint8_t X4PRO_FS_GRAY[4] = {0, 78, 158, 255};
+constexpr uint8_t X4PRO_FS_GRAY[4] = {0, 68, 145, 255};
 
 struct X4ProFsDither {
   int width{0};
