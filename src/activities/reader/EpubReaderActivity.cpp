@@ -446,11 +446,7 @@ bool runTiledGrayscalePass(GfxRenderer& renderer, const Page& page, const int fo
       renderer.beginStripTarget(scratch.get(), y, rows);
       renderer.clearScreen(0x00);
       if (needsTextGrayscale) {
-        if (BoardConfig::isX4Pro() && page.hasImages() && !needsImageGrayscale) {
-          page.renderText(renderer, fontId, marginLeft, marginTop, foregroundBlack);
-        } else {
-          page.render(renderer, fontId, marginLeft, marginTop, foregroundBlack);
-        }
+        page.render(renderer, fontId, marginLeft, marginTop, foregroundBlack);
       } else {
         page.renderImages(renderer, fontId, marginLeft, marginTop);
       }
@@ -4501,9 +4497,11 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
       largestBlockPercent(heapBefore), largestBlockPercent(heapAfter));
 
   const bool foregroundBlack = ReaderUtils::readerForegroundBlack();
-  bool needsImageGrayscale = pageHasImages && !BoardConfig::isX4Pro();
-  // Text AA stays enabled on X4 Pro; GfxRenderer applies a darker Pro-specific
-  // gray mapping so the glyph core remains black while edge pixels are smoothed.
+  // X4 Pro now uses the same native 4-level image path as X4. Its image cache
+  // already contains clean 2-bit source levels; ImageBlock only applies
+  // Floyd-Steinberg to the temporary BW base and writes the original levels
+  // during the two grayscale plane passes.
+  bool needsImageGrayscale = pageHasImages;
   bool needsTextGrayscale = SETTINGS.textAntiAliasing && foregroundBlack;
   const bool needsAnyGrayscale = needsTextGrayscale || needsImageGrayscale;
 
@@ -4524,13 +4522,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
 
   const auto composeGrayscaleBuffer = [&]() {
     if (needsTextGrayscale) {
-      // X4 Pro image pixels stay in the B/W+dither pipeline. Only text takes
-      // the normal AA overlay on mixed pages; other devices keep the old path.
-      if (BoardConfig::isX4Pro() && pageHasImages && !needsImageGrayscale) {
-        page->renderText(renderer, fontId, orientedMarginLeft, pageRenderY, foregroundBlack);
-      } else {
-        page->render(renderer, fontId, orientedMarginLeft, pageRenderY, foregroundBlack);
-      }
+      page->render(renderer, fontId, orientedMarginLeft, pageRenderY, foregroundBlack);
     } else {
       page->renderImages(renderer, fontId, orientedMarginLeft, pageRenderY);
     }
