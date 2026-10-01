@@ -763,7 +763,12 @@ void NearbyStatsSyncActivity::handleEvent(const SyncEvent& event) {
     return;
   }
 
-  const bool startingPassiveSync = state_ != State::DISCOVERING && state_ != State::SYNCING;
+  // Only READY means a genuinely new passive sync.  Once this side has
+  // reached SYNCED the peer may still retransmit STATS/BOOK_PROGRESS while it
+  // waits for an ACK.  Treating those late duplicates as a brand-new session
+  // reset our completion flags and could end in a false "stats sync timed out"
+  // even though all data had already been transferred.
+  const bool startingPassiveSync = state_ == State::READY;
   if (startingPassiveSync) {
     errorMessage_.clear();
     peerStatsSaved_ = false;
@@ -786,7 +791,7 @@ void NearbyStatsSyncActivity::handleEvent(const SyncEvent& event) {
   addPeer(peerSourceMac_.data());
 
   if (!localStatsReady_ && !prepareLocalStats()) return;
-  if (state_ == State::READY || state_ == State::DISCOVERING || state_ == State::SYNCED) setState(State::SYNCING);
+  if (state_ == State::READY || state_ == State::DISCOVERING) setState(State::SYNCING);
 
   if (event.type == PacketType::INVALID_STATS) {
     setError(tr(STR_NEARBY_STATS_VERSION_MISMATCH));
