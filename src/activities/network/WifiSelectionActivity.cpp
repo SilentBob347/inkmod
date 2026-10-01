@@ -312,6 +312,15 @@ void WifiSelectionActivity::onEnter() {
   startWifiScan();
 }
 
+bool WifiSelectionActivity::handleHomeGesture() {
+  // X4 Pro Home is global navigation, even while Join a Network is scanning,
+  // connecting, or showing a prompt. Tear WiFi down because this flow is being
+  // abandoned rather than returning a successful connection to its parent.
+  tearDownWifiOnExit = true;
+  onGoHome();
+  return true;
+}
+
 void WifiSelectionActivity::onExit() {
   Activity::onExit();
 
