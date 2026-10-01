@@ -83,13 +83,14 @@ constexpr const char* INKMOD_ROOT = "/.inkmod";
 constexpr const char* GLOBAL_STATS_PATH = "/.inkmod/global_stats.bin";
 constexpr const char* SYNCED_STATS_DIR = "/.inkmod/synced_stats";
 constexpr uint8_t ESPNOW_CHANNEL = 1;
-constexpr uint8_t PROTOCOL_VERSION = 1;
+constexpr uint8_t PROTOCOL_VERSION = 2;
 constexpr uint8_t MIN_STATS_BYTES = static_cast<uint8_t>(GlobalReadingStats::MIN_SUPPORTED_FILE_SIZE);
 constexpr uint8_t MAX_STATS_BYTES = static_cast<uint8_t>(GlobalReadingStats::CURRENT_FILE_SIZE);
 constexpr uint8_t PACKET_HEADER_BYTES = 14;
 constexpr uint8_t MAX_DEVICE_NAME_BYTES = static_cast<uint8_t>(InkMODSettings::MAX_DEVICE_NAME_LENGTH);
 constexpr uint32_t HELLO_INTERVAL_MS = 750;
 constexpr uint32_t STATS_RETRY_INTERVAL_MS = 750;
+constexpr uint32_t BOOK_RETRY_INTERVAL_MS = 750;
 constexpr uint32_t SYNC_TIMEOUT_MS = 12000;
 constexpr uint8_t BROADCAST_MAC[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
@@ -380,6 +381,7 @@ void NearbyStatsSyncActivity::prepareLocalBookProgress() {
   localBookSize_ = 0;
   localBookReady_ = false;
   localBookProgressAcked_ = false;
+  lastBookProgressSendMs_ = 0;
   bookStatus_.clear();
 
   std::string path = APP_STATE.openEpubPath;
@@ -437,6 +439,7 @@ bool NearbyStatsSyncActivity::sendLocalBookProgress() {
   std::copy(localDeviceMac_.begin(), localDeviceMac_.end(), packet.begin() + 8);
   memcpy(packet.data() + PACKET_HEADER_BYTES, payload.data(), off);
 
+  lastBookProgressSendMs_ = millis();
   const esp_err_t result = esp_now_send(peerSourceMac_.data(), packet.data(), PACKET_HEADER_BYTES + off);
   if (result != ESP_OK) {
     LOG_ERR(LOG_TAG, "book progress send failed: %d", static_cast<int>(result));
@@ -519,7 +522,7 @@ void NearbyStatsSyncActivity::enqueueEspNowPacket(const uint8_t* sourceMac, cons
   const int payloadLength = length - PACKET_HEADER_BYTES;
   if (packetType != PacketType::HELLO && packetType != PacketType::STATS && packetType != PacketType::ACK &&
       packetType != PacketType::NAME && packetType != PacketType::BOOK_PROGRESS &&
-      packetType != PacketType::BOOK_ACK)
+      packetType != PacketType::BOOK_ACK && packetType != PacketType::BOOK_MISSING)
     return;
   if (event.deviceMac == localDeviceMac_) return;
 
@@ -624,6 +627,7 @@ void NearbyStatsSyncActivity::handleEvent(const SyncEvent& event) {
     localStatsSent_ = false;
     localStatsAcked_ = false;
     localStatsReady_ = false;
+    prepareLocalBookProgress();
     syncStartedMs_ = millis();
     lastHelloMs_ = syncStartedMs_;
     lastStatsSendMs_ = 0;
@@ -666,13 +670,25 @@ void NearbyStatsSyncActivity::handleEvent(const SyncEvent& event) {
   }
 
   if (event.type == PacketType::BOOK_PROGRESS) {
-    applyPeerBookProgress(event);
-    sendPacket(PacketType::BOOK_ACK, peerSourceMac_.data());
+    if (applyPeerBookProgress(event)) {
+      sendPacket(PacketType::BOOK_ACK, peerSourceMac_.data());
+    } else if (bookStatus_.rfind("Книги нет:", 0) == 0) {
+      sendPacket(PacketType::BOOK_MISSING, peerSourceMac_.data());
+    }
     return;
   }
 
   if (event.type == PacketType::BOOK_ACK) {
     localBookProgressAcked_ = true;
+    if (bookStatus_.empty()) bookStatus_ = "Прогресс книги передан";
+    requestUpdate();
+    return;
+  }
+
+  if (event.type == PacketType::BOOK_MISSING) {
+    localBookProgressAcked_ = true;
+    bookStatus_ = "На втором устройстве этой книги нет";
+    requestUpdate();
     return;
   }
 
@@ -759,7 +775,8 @@ void NearbyStatsSyncActivity::updateSyncProgress() {
     return;
   }
 
-  if (peerStatsSaved_ && localStatsAcked_) {
+  const bool bookSyncComplete = !localBookReady_ || localBookProgressAcked_;
+  if (peerStatsSaved_ && localStatsAcked_ && bookSyncComplete) {
     setState(State::SYNCED);
     return;
   }
@@ -771,6 +788,11 @@ void NearbyStatsSyncActivity::updateSyncProgress() {
 
   if (peerSeen_ && localStatsReady_ && !localStatsAcked_ && now - lastStatsSendMs_ >= STATS_RETRY_INTERVAL_MS) {
     sendLocalStats();
+  }
+
+  if (peerSeen_ && localBookReady_ && !localBookProgressAcked_ &&
+      now - lastBookProgressSendMs_ >= BOOK_RETRY_INTERVAL_MS) {
+    sendLocalBookProgress();
   }
 }
 
@@ -824,7 +846,9 @@ void NearbyStatsSyncActivity::render(RenderLock&&) {
       primary = tr(STR_NEARBY_STATS_SYNCED);
       detailPrimary = std::string(I18N.get(peerName_.empty() ? StrId::STR_SYSTEM_DEVICE : StrId::STR_DEVICE_NAME)) +
                       ": " + (peerName_.empty() ? peerId_ : peerName_);
-      if (!isZeroMac(peerDeviceMac_)) {
+      if (!bookStatus_.empty()) {
+        detailSecondary = bookStatus_;
+      } else if (!isZeroMac(peerDeviceMac_)) {
         detailSecondary = std::string(tr(STR_FILENAME)) + ": " + statsFileNameForDeviceMac(peerDeviceMac_);
       }
       break;
