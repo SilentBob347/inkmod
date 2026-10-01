@@ -60,8 +60,61 @@ void HalPowerManager::begin() {
   }
 #endif
   normalFreq = getCpuFrequencyMhz();
+  gaugeCapacity = Bq27220Capacity(gpio.deviceIsX3() ? X3_BATTERY_MAH : 0);
   modeMutex = xSemaphoreCreateMutex();
   assert(modeMutex != nullptr);
+}
+
+namespace {
+class X3GaugeBus final : public Bq27220Capacity::Bus {
+ public:
+  bool write(const uint8_t reg, const uint16_t word) override {
+    const uint8_t bytes[] = {reg, static_cast<uint8_t>(word & 0xFF), static_cast<uint8_t>(word >> 8)};
+    Wire.beginTransmission(I2C_ADDR_BQ27220);
+    Wire.write(bytes, 3);
+    const bool ok = Wire.endTransmission() == 0;
+    delayMicroseconds(66);
+    return ok;
+  }
+
+  bool read(const uint8_t reg, uint16_t& word) override {
+    Wire.beginTransmission(I2C_ADDR_BQ27220);
+    Wire.write(reg);
+    const bool ok = Wire.endTransmission(false) == 0 && Wire.requestFrom(I2C_ADDR_BQ27220, 2) == 2;
+    if (ok) {
+      word = static_cast<uint16_t>(Wire.read() & 0xFF);
+      word |= static_cast<uint16_t>((Wire.read() & 0xFF) << 8);
+    }
+    delayMicroseconds(66);
+    return ok;
+  }
+
+  void pause(const uint32_t ms) override { delay(ms); }
+};
+
+void logGaugeCapacity(const Bq27220Capacity& load) {
+  if (load.result() == Bq27220Capacity::Result::Loaded) {
+    LOG_INF("PWR", "X3 gauge capacity loaded, DesignCapacity %u mAh",
+            static_cast<unsigned>(load.designCapacity()));
+  } else if (load.result() == Bq27220Capacity::Result::Failed) {
+    LOG_ERR("PWR", "X3 gauge capacity load failed, DesignCapacity %u mAh",
+            static_cast<unsigned>(load.designCapacity()));
+  }
+}
+}  // namespace
+
+void HalPowerManager::loadGaugeCapacity() {
+  if (!gpio.deviceIsX3()) return;
+  X3GaugeBus bus;
+  gaugeCapacity.tick(bus, millis());
+  logGaugeCapacity(gaugeCapacity);
+}
+
+void HalPowerManager::abandonGaugeCapacityLoad() {
+  if (!gpio.deviceIsX3() || !isGaugeCapacityLoadPending()) return;
+  X3GaugeBus bus;
+  gaugeCapacity.abandon(bus);
+  logGaugeCapacity(gaugeCapacity);
 }
 
 void HalPowerManager::setPowerSaving(bool enabled) {
