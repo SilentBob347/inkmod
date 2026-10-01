@@ -1,5 +1,7 @@
 #include "PngToBmpConverter.h"
 
+#include <BoardConfig.h>
+
 #include <HalDisplay.h>
 #include <HalStorage.h>
 #include <InflateReader.h>
@@ -712,7 +714,7 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
   if (oneBit) {
     atkinson1BitDitherer = new Atkinson1BitDitherer(outWidth);
   } else if (!USE_8BIT_OUTPUT) {
-    if (USE_ATKINSON) {
+    if (USE_ATKINSON && !BoardConfig::isX4Pro()) {
       atkinsonDitherer = new AtkinsonDitherer(outWidth);
     } else if (USE_FLOYD_STEINBERG) {
       fsDitherer = new FloydSteinbergDitherer(outWidth);
