@@ -28,7 +28,15 @@ class NearbyStatsSyncActivity final : public Activity {
   void enqueueEspNowPacket(const uint8_t* sourceMac, const uint8_t* data, int length);
 
  private:
-  enum class PacketType : uint8_t { HELLO = 1, STATS = 2, ACK = 3, NAME = 4, INVALID_STATS = 0xFF };
+  enum class PacketType : uint8_t {
+    HELLO = 1,
+    STATS = 2,
+    ACK = 3,
+    NAME = 4,
+    BOOK_PROGRESS = 5,
+    BOOK_ACK = 6,
+    INVALID_STATS = 0xFF
+  };
 
   struct SyncEvent {
     PacketType type = PacketType::HELLO;
@@ -36,6 +44,10 @@ class NearbyStatsSyncActivity final : public Activity {
     std::array<uint8_t, 6> deviceMac = {};
     std::array<uint8_t, GlobalReadingStats::CURRENT_FILE_SIZE> stats = {};
     std::array<char, 21> deviceName = {};
+    std::array<uint8_t, 6> bookProgress = {};
+    std::array<char, 97> bookName = {};
+    uint32_t bookSize = 0;
+    uint8_t bookProgressSize = 0;
     uint8_t statsSize = 0;
   };
   static constexpr size_t MAX_SYNC_EVENTS = 8;
@@ -59,6 +71,15 @@ class NearbyStatsSyncActivity final : public Activity {
   std::array<uint8_t, GlobalReadingStats::CURRENT_FILE_SIZE> localStats_ = {};
   uint8_t localStatsSize_ = 0;
 
+  std::string localBookPath_;
+  std::string localBookName_;
+  std::array<uint8_t, 6> localBookProgress_ = {};
+  uint32_t localBookSize_ = 0;
+  uint8_t localBookProgressSize_ = 0;
+  bool localBookReady_ = false;
+  bool localBookProgressAcked_ = false;
+  std::string bookStatus_;
+
   uint32_t syncStartedMs_ = 0;
   uint32_t lastHelloMs_ = 0;
   uint32_t lastStatsSendMs_ = 0;
@@ -69,6 +90,9 @@ class NearbyStatsSyncActivity final : public Activity {
   bool beginEspNow();
   void endEspNow();
   bool prepareLocalStats();
+  void prepareLocalBookProgress();
+  bool sendLocalBookProgress();
+  bool applyPeerBookProgress(const SyncEvent& event);
   void startSync();
   void processEvents();
   void handleEvent(const SyncEvent& event);
