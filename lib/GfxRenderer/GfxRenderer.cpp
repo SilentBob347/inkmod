@@ -1537,6 +1537,25 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
   auto* outputRow = bitmapScratchOutputRow_;
   auto* rowBytes = bitmapScratchRowBytes_;
 
+  // X4 Pro sleep/home covers ultimately go through a monochrome framebuffer.
+  // A 4x4 ordered matrix makes its regular lattice visible as the "grid" seen
+  // on-device. Use the same serpentine Floyd-Steinberg idea as ImageBlock for
+  // unscaled full-size grayscale BMPs, so midtones survive without a pattern.
+  const bool x4ProFs = BoardConfig::isX4Pro() && renderMode == BW && bitmap.hasGreyscale() && !isScaled;
+  int16_t* fsCurrent = nullptr;
+  int16_t* fsNext = nullptr;
+  bool fsReverse = false;
+  if (x4ProFs) {
+    fsCurrent = static_cast<int16_t*>(calloc(static_cast<size_t>(bitmap.getWidth() + 2), sizeof(int16_t)));
+    fsNext = static_cast<int16_t*>(calloc(static_cast<size_t>(bitmap.getWidth() + 2), sizeof(int16_t)));
+    if (!fsCurrent || !fsNext) {
+      free(fsCurrent);
+      free(fsNext);
+      fsCurrent = nullptr;
+      fsNext = nullptr;
+    }
+  }
+
   for (int bmpY = 0; bmpY < (bitmap.getHeight() - cropPixY); bmpY++) {
     // The BMP's (0, 0) is the bottom-left corner (if the height is positive, top-left if negative).
     // Screen's (0, 0) is the top-left corner.
@@ -1563,16 +1582,17 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
       continue;
     }
 
-    for (int bmpX = cropPixX; bmpX < bitmap.getWidth() - cropPixX; bmpX++) {
+    const int beginBmpX = (fsCurrent && fsReverse) ? bitmap.getWidth() - cropPixX - 1 : cropPixX;
+    const int endBmpX = (fsCurrent && fsReverse) ? cropPixX - 1 : bitmap.getWidth() - cropPixX;
+    const int stepBmpX = (fsCurrent && fsReverse) ? -1 : 1;
+
+    for (int bmpX = beginBmpX; bmpX != endBmpX; bmpX += stepBmpX) {
       int screenX = bmpX - cropPixX;
       if (isScaled) {
         screenX = std::floor(screenX * scale);
       }
       screenX += x;  // the offset should not be scaled
-      if (screenX >= getScreenWidth()) {
-        break;
-      }
-      if (screenX < 0) {
+      if (screenX >= getScreenWidth() || screenX < 0) {
         continue;
       }
 
@@ -1580,16 +1600,35 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
 
       if (renderMode == BW) {
         if (BoardConfig::isX4Pro() && bitmap.hasGreyscale()) {
-          // Home/library covers are shown through the 1-bit UI framebuffer.
-          // Flattening every native gray (0/1/2) to solid black makes Pro
-          // covers much darker than the source. Preserve the four-level tone
-          // with a tiny ordered 1-bit dither: black=100%, dark~=69%,
-          // light~=31%, white=0% coverage.
-          static constexpr uint8_t kBayer4[4][4] = {
-              {0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}};
-          static constexpr uint8_t kCoverage[4] = {16, 11, 5, 0};
-          if (kBayer4[screenY & 3][screenX & 3] < kCoverage[val]) {
-            drawPixel(screenX, screenY);
+          if (fsCurrent) {
+            static constexpr uint8_t kGray[4] = {0, 108, 190, 255};
+            int adjusted = static_cast<int>(kGray[val]) + fsCurrent[bmpX + 1];
+            adjusted = std::clamp(adjusted, 0, 255);
+            const bool black = adjusted < 128;
+            const int error = adjusted - (black ? 0 : 255);
+
+            if (!fsReverse) {
+              fsCurrent[bmpX + 2] += static_cast<int16_t>((error * 7) >> 4);
+              fsNext[bmpX] += static_cast<int16_t>((error * 3) >> 4);
+              fsNext[bmpX + 1] += static_cast<int16_t>((error * 5) >> 4);
+              fsNext[bmpX + 2] += static_cast<int16_t>(error >> 4);
+            } else {
+              fsCurrent[bmpX] += static_cast<int16_t>((error * 7) >> 4);
+              fsNext[bmpX + 2] += static_cast<int16_t>((error * 3) >> 4);
+              fsNext[bmpX + 1] += static_cast<int16_t>((error * 5) >> 4);
+              fsNext[bmpX] += static_cast<int16_t>(error >> 4);
+            }
+
+            if (black) drawPixel(screenX, screenY);
+          } else {
+            // Allocation fallback: irregular hash threshold, deliberately no
+            // periodic matrix so a visible checker/grid cannot appear.
+            const uint8_t gray = static_cast<uint8_t>(val * 85);
+            uint32_t hash = static_cast<uint32_t>(screenX) * 374761393u +
+                            static_cast<uint32_t>(screenY) * 668265263u;
+            hash = (hash ^ (hash >> 13)) * 1274126177u;
+            const int threshold = 96 + static_cast<int>((hash >> 24) >> 2);
+            if (gray < threshold) drawPixel(screenX, screenY);
           }
         } else if (val < 3) {
           drawPixel(screenX, screenY);
@@ -1607,7 +1646,18 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
         drawPixel(screenX, screenY, false);
       }
     }
+
+    if (fsCurrent) {
+      int16_t* tmp = fsCurrent;
+      fsCurrent = fsNext;
+      fsNext = tmp;
+      memset(fsNext, 0, static_cast<size_t>(bitmap.getWidth() + 2) * sizeof(int16_t));
+      fsReverse = !fsReverse;
+    }
   }
+
+  free(fsCurrent);
+  free(fsNext);
 }
 
 void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y, const int maxWidth,
