@@ -27,11 +27,10 @@ bool ImageBlock::imageExists() const { return Storage.exists(imagePath.c_str());
 namespace {
 
 // X4 Pro ultimately shows book images through a 1-bit Floyd-Steinberg pass.
-// Using the nominal 2-bit values (or the previous 78/158 tuning) makes the
-// two middle levels carry too much black ink compared with X4's native gray
-// waveform. Bias those representatives toward white so the same cover has
-// comparable visual brightness on X4 and X4 Pro.
-constexpr uint8_t X4PRO_FS_GRAY[4] = {0, 108, 190, 255};
+// Use darker middle representatives on X4 Pro so light-heavy artwork does not
+// wash out after 2-bit quantization. This keeps Floyd-Steinberg texture while
+// restoring the stronger midtone contrast that tested better on-device.
+constexpr uint8_t X4PRO_FS_GRAY[4] = {0, 78, 158, 255};
 
 struct X4ProFsDither {
   int width{0};
