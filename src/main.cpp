@@ -1240,6 +1240,12 @@ void loop() {
 #endif
 
   gpio.update();
+
+  // Keep battery telemetry fresh from the main task. X4 Pro's CW2017 shares
+  // I2C with touch/RTC, so reader rendering must consume a cached value rather
+  // than starting an overlapping Wire transaction from the render task.
+  powerManager.pollBatteryPercentage();
+
   halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.tiltPageTurnDirection, SETTINGS.orientation,
                        activityManager.isReaderActivity());
 
