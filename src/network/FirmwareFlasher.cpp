@@ -72,36 +72,26 @@ namespace {
 Result validateChipCompatibility(const uint8_t* candidateHeader) {
   if (!candidateHeader || candidateHeader[0] != ESP_IMAGE_MAGIC) return Result::BAD_MAGIC;
 
-  const esp_partition_t* running = esp_ota_get_running_partition();
-  if (!running) {
-    LOG_ERR("FLASH", "chip guard: running partition unavailable");
-    return Result::NO_PARTITION;
-  }
+  // Validate against the SoC family this firmware was compiled for, not against
+  // the chip_id bytes of the currently installed image. Older/third-party X3/X4
+  // builds can carry a header encoded by a different ESP-IDF/toolchain revision,
+  // which made perfectly valid C3 updates fail before flashing.
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+  constexpr uint16_t expectedChip = 0x0005;  // ESP32-C3
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
+  constexpr uint16_t expectedChip = 0x0009;  // ESP32-S3
+#else
+#error Unsupported ESP target for firmware compatibility guard
+#endif
 
-  // Compare the standard ESP image chip_id stored in the first 24-byte image
-  // header.  Do not inspect project names or inkMOD-specific markers: any valid
-  // third-party firmware for the same SoC family remains allowed, while an X3/X4
-  // ESP32-C3 image is rejected on X4 Pro/ESP32-S3 and vice versa.
-  uint8_t runningPrefix[CHIP_ID_OFFSET + CHIP_ID_SIZE] = {};
-  if (esp_partition_read(running, 0, runningPrefix, sizeof(runningPrefix)) != ESP_OK) {
-    LOG_ERR("FLASH", "chip guard: failed to read running image header");
-    return Result::READ_FAIL;
-  }
-  if (runningPrefix[0] != ESP_IMAGE_MAGIC) {
-    LOG_ERR("FLASH", "chip guard: running image has bad magic 0x%02X", runningPrefix[0]);
-    return Result::BAD_MAGIC;
-  }
-
-  uint16_t runningChip = 0;
   uint16_t candidateChip = 0;
-  std::memcpy(&runningChip, runningPrefix + CHIP_ID_OFFSET, sizeof(runningChip));
   std::memcpy(&candidateChip, candidateHeader + CHIP_ID_OFFSET, sizeof(candidateChip));
-  LOG_INF("FLASH", "chip guard: running=0x%04X candidate=0x%04X", static_cast<unsigned>(runningChip),
+  LOG_INF("FLASH", "chip guard: expected=0x%04X candidate=0x%04X", static_cast<unsigned>(expectedChip),
           static_cast<unsigned>(candidateChip));
 
-  if (runningChip != candidateChip) {
-    LOG_ERR("FLASH", "chip guard: incompatible firmware (running=0x%04X candidate=0x%04X)",
-            static_cast<unsigned>(runningChip), static_cast<unsigned>(candidateChip));
+  if (candidateChip != expectedChip) {
+    LOG_ERR("FLASH", "chip guard: incompatible firmware (expected=0x%04X candidate=0x%04X)",
+            static_cast<unsigned>(expectedChip), static_cast<unsigned>(candidateChip));
     return Result::INCOMPATIBLE_CHIP;
   }
   return Result::OK;
