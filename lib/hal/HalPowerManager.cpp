@@ -241,32 +241,26 @@ void HalPowerManager::seedLastChargeEpochSeconds(const uint64_t persistedValue) 
   }
 }
 
-uint16_t HalPowerManager::getBatteryPercentage() const {
+void HalPowerManager::pollBatteryPercentage() const {
   trackChargingState();
   const unsigned long now = millis();
+  if (_batteryLastPollMs != 0 && (now - _batteryLastPollMs) < BATTERY_POLL_MS) return;
 
-  // Gauge-backed boards (X3 BQ27220, X4 Pro CW2017): keep the last good value
-  // across transient I2C failures instead of falling through to a nonexistent
-  // ADC. X4 Pro's BoardConfig points BatteryMonitor at the real CW2017 SOC
-  // register and OEM BATINFO profile.
+  // Gauge-backed boards (X3 BQ27220, X4 Pro/Classic CW2017): do all I2C work
+  // from the main loop. On X4 Pro the CW2017 shares Wire with GT911 + RTC;
+  // reading it from the render task can collide with touch polling, fail, and
+  // leave the UI stuck forever on the last cached percentage until reboot/wake.
   if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
-    if (_batteryLastPollMs != 0 && (now - _batteryLastPollMs) < BATTERY_POLL_MS) {
-      return static_cast<uint16_t>(std::clamp(_batteryCachedPercent, 0, 100));
-    }
     static const BatteryMonitor gaugeBattery;
     uint16_t percent = 0;
     if (gaugeBattery.readPercentageChecked(percent)) {
       _batteryCachedPercent = std::min<uint16_t>(100, percent);
     }
     _batteryLastPollMs = now;
-    return static_cast<uint16_t>(std::clamp(_batteryCachedPercent, 0, 100));
+    return;
   }
 
   // ADC-backed plain X4: retain the existing 0.1%-resolution smoothing.
-  if (_batteryLastPollMs != 0 && (now - _batteryLastPollMs) < BATTERY_POLL_MS) {
-    return static_cast<uint16_t>(_batteryCachedPercent / 10);
-  }
-
   static const BatteryMonitor battery;
   const uint16_t millivolts = battery.readMillivolts();
   const uint16_t rawPercent = BatteryMonitor::percentageFromMillivolts(millivolts);
@@ -278,7 +272,7 @@ uint16_t HalPowerManager::getBatteryPercentage() const {
   if (gpio.isUsbConnectedCached() && (rawPercent >= X4_USB_FULL_PERCENT || millivolts >= X4_USB_FULL_MV)) {
     _batteryCachedPercent = 1000;
     _batteryLastPollMs = now;
-    return 100;
+    return;
   }
 
   if (_batteryCachedPercent == 0) {
@@ -287,6 +281,17 @@ uint16_t HalPowerManager::getBatteryPercentage() const {
     _batteryCachedPercent = (_batteryCachedPercent * 9 + rawPercent * 10) / 10;
   }
   _batteryLastPollMs = now;
+}
+
+uint16_t HalPowerManager::getBatteryPercentage() const {
+  // Fallback for very early boot before loop() has had a chance to prefetch.
+  // Once the main loop has polled at least once, gauge-backed render paths only
+  // consume the cache and never touch the shared I2C bus themselves.
+  if (_batteryLastPollMs == 0) pollBatteryPercentage();
+
+  if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
+    return static_cast<uint16_t>(std::clamp(_batteryCachedPercent, 0, 100));
+  }
   return static_cast<uint16_t>(_batteryCachedPercent / 10);
 }
 
