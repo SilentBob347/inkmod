@@ -54,7 +54,13 @@ class HalPowerManager {
   // Should be called inside main loop() to handle the currentLockMode
   void startDeepSleep(HalGPIO& gpio) const;
 
-  // Get battery percentage (range 0-100)
+  // Refresh the cached battery percentage from hardware. Called from the
+  // main loop so gauge I2C never races the render task on shared-bus devices
+  // such as X4 Pro (GT911 + RTC + CW2017 all share Wire).
+  void pollBatteryPercentage() const;
+
+  // Get battery percentage (range 0-100). Gauge-backed boards return the
+  // main-loop-refreshed cache instead of touching I2C from the render task.
   uint16_t getBatteryPercentage() const;
 
   // Updates the internal "last charging observed" timestamp from HalGPIO's
