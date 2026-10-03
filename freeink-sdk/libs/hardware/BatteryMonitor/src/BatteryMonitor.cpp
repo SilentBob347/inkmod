@@ -82,12 +82,13 @@ bool writeReg8(uint8_t addr, uint8_t reg, uint8_t val) {
 // XTEink::Cw2017PowerHal class in app1) via Ghidra. Unlike the BQ27220, the CW2017
 // reports 0% until a matching 80-byte BATINFO battery profile is resident, so init
 // must verify/upload one before SoC reads mean anything.
-constexpr uint8_t CW2017_REG_VERSION = 0x00;  // running state in (ver & 0xFD) == 0x0D
-constexpr uint8_t CW2017_REG_VCELL_H = 0x02;  // 14-bit VCELL, big-endian over 0x02/0x03
-constexpr uint8_t CW2017_REG_SOC = 0x04;      // integer percent (0x05 = fraction, unused)
-constexpr uint8_t CW2017_REG_MODE = 0x08;     // soft-reset / sleep control
-constexpr uint8_t CW2017_REG_CONFIG = 0x0B;   // bit7 = profile-loaded / update-enable
-constexpr uint8_t CW2017_REG_BATINFO = 0x10;  // 80-byte profile spans 0x10..0x5F
+constexpr uint8_t CW2017_REG_VERSION = 0x00;
+constexpr uint8_t CW2017_REG_VCELL_H = 0x02;       // 14-bit VCELL, big-endian over 0x02/0x03
+constexpr uint8_t CW2017_REG_SOC_H = 0x04;         // integer SOC percent
+constexpr uint8_t CW2017_REG_SOC_L = 0x05;         // fractional SOC, 1/256 percent
+constexpr uint8_t CW2017_REG_CONFIG = 0x08;        // sleep/restart control
+constexpr uint8_t CW2017_REG_SOC_ALERT = 0x0B;     // bit7 = battery-profile UPDATE_FLAG
+constexpr uint8_t CW2017_REG_BATINFO = 0x10;       // 80-byte profile spans 0x10..0x5F
 
 // The exact BATINFO profile the OEM uploads (app1 table @ DROM 0x3c5d8d00). This is
 // battery-model-specific; it is the profile for the X4 Pro's cell.
@@ -98,14 +99,34 @@ constexpr uint8_t CW2017_BATINFO[80] = {
     0x72, 0x7c, 0x8c, 0xa3, 0xb7, 0xc8, 0xa5, 0x4f, 0x00, 0x00, 0xab, 0x02, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x23};
 
-// Soft-reset: MODE 0xF0 -> 0x30 -> 0x00, 20 ms apart (OEM FUN_4215042c).
+// CW2017 CONFIG 0x08 controls sleep/restart. Per the datasheet, 0x30 -> 0x00
+// wakes/restarts the calculation engine. Keep the OEM-style 0xF0 pre-step for a
+// full reset when loading a new battery profile.
 void cw2017Reset(uint8_t addr) {
-  writeReg8(addr, CW2017_REG_MODE, 0xF0);
+  writeReg8(addr, CW2017_REG_CONFIG, 0xF0);
   delay(20);
-  writeReg8(addr, CW2017_REG_MODE, 0x30);
+  writeReg8(addr, CW2017_REG_CONFIG, 0x30);
   delay(20);
-  writeReg8(addr, CW2017_REG_MODE, 0x00);
+  writeReg8(addr, CW2017_REG_CONFIG, 0x00);
   delay(20);
+}
+
+// A sleeping CW2017 keeps answering I2C but its SOC value is stale. This is
+// exactly the failure mode seen on X4 Pro: the displayed percentage stays fixed
+// while reading, then becomes correct after a sleep/wake cycle restarts the
+// gauge. Check CONFIG before every SOC read and wake the gauge only when needed.
+bool cw2017EnsureAwake(uint8_t addr) {
+  uint8_t config = 0;
+  if (!readReg8(addr, CW2017_REG_CONFIG, config)) return false;
+  if ((config & 0xF0) == 0x00) return true;
+
+  if (!writeReg8(addr, CW2017_REG_CONFIG, 0x30)) return false;
+  delay(20);
+  if (!writeReg8(addr, CW2017_REG_CONFIG, 0x00)) return false;
+  delay(100);
+
+  if (!readReg8(addr, CW2017_REG_CONFIG, config)) return false;
+  return (config & 0xF0) == 0x00;
 }
 
 // One-shot: make sure a valid BATINFO profile is loaded. Wakes/resets the gauge if it
@@ -115,10 +136,10 @@ void cw2017Reset(uint8_t addr) {
 bool cw2017EnsureProfile(uint8_t addr) {
   uint8_t ver = 0;
   if (!readReg8(addr, CW2017_REG_VERSION, ver)) return false;  // gauge absent; retry next poll
-  if ((ver & 0xFD) != 0x0D) cw2017Reset(addr);
+  if (!cw2017EnsureAwake(addr)) return false;
 
   uint8_t cfg = 0;
-  if (readReg8(addr, CW2017_REG_CONFIG, cfg) && (cfg & 0x80)) {
+  if (readReg8(addr, CW2017_REG_SOC_ALERT, cfg) && (cfg & 0x80)) {
     bool match = true;
     for (uint8_t i = 0; i < sizeof(CW2017_BATINFO); ++i) {
       uint8_t b = 0;
@@ -129,21 +150,21 @@ bool cw2017EnsureProfile(uint8_t addr) {
     }
     if (match) {
       uint8_t soc = 0;
-      return readReg8(addr, CW2017_REG_SOC, soc) && soc <= 100;
+      return readReg8(addr, CW2017_REG_SOC_H, soc) && soc <= 100;
     }
   }
 
   for (uint8_t i = 0; i < sizeof(CW2017_BATINFO); ++i) {
     writeReg8(addr, static_cast<uint8_t>(CW2017_REG_BATINFO + i), CW2017_BATINFO[i]);
   }
-  writeReg8(addr, CW2017_REG_CONFIG, 0x80);  // update-enable (bit7); alert threshold = 0
+  writeReg8(addr, CW2017_REG_SOC_ALERT, 0x80);  // UPDATE_FLAG bit7; alert threshold = 0
   delay(20);
   cw2017Reset(addr);
   for (int i = 0; i < 50; ++i) {  // ~1 s cap for the SoC to become valid
     uint8_t soc = 0;
-    if (readReg8(addr, CW2017_REG_SOC, soc) && soc <= 100) {
+    if (readReg8(addr, CW2017_REG_SOC_H, soc) && soc <= 100) {
       uint8_t verifyCfg = 0;
-      if (readReg8(addr, CW2017_REG_CONFIG, verifyCfg) && (verifyCfg & 0x80)) return true;
+      if (readReg8(addr, CW2017_REG_SOC_ALERT, verifyCfg) && (verifyCfg & 0x80)) return true;
     }
     delay(20);
   }
@@ -159,9 +180,20 @@ bool readGaugeSoc(uint16_t& out) {
       inited = cw2017EnsureProfile(g.gaugeAddr);
       if (!inited) return false;
     }
-    uint8_t soc = 0;
-    if (!readReg8(g.gaugeAddr, CW2017_REG_SOC, soc) || soc > 100) return false;
-    out = soc;
+
+    // The gauge can remain I2C-responsive while its calculation engine is in
+    // sleep, in which case SOC_H simply freezes. Ensure normal mode on every
+    // poll; this is a cheap register read in the normal case.
+    if (!cw2017EnsureAwake(g.gaugeAddr)) return false;
+
+    uint8_t socHi = 0;
+    uint8_t socLo = 0;
+    if (!readReg8(g.gaugeAddr, CW2017_REG_SOC_H, socHi) || socHi > 100) return false;
+    // Read the fractional byte as well. It is not displayed directly, but
+    // consuming the complete 16-bit SOC sample avoids treating an updating
+    // register pair as an unrelated one-byte snapshot.
+    if (!readReg8(g.gaugeAddr, CW2017_REG_SOC_L, socLo)) return false;
+    out = socHi;
     return true;
   }
   uint16_t soc = 0;
