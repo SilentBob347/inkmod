@@ -901,18 +901,13 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
   if (preserveNaturalWordSpaces && justifyExtra < 0) {
     justifyExtra = 0;
   }
-  // A line with very few words - common on a narrow e-reader column,
-  // especially with a short one-letter Russian preposition ("и", "с", "в")
-  // taking up its own gap - can end up needing to stretch each of its few
-  // gaps a lot to fill the line evenly. Splitting that stretch equally is
-  // the right idea, but with only one or two gaps to absorb it, the result
-  // reads as a single oversized gap "floating" around a tiny word rather
-  // than evenly-justified text. Professional typesetting caps per-space
-  // stretch at roughly double a space's natural width for exactly this
-  // reason; past that, this line is better left a little short of full
-  // justification (effectively ragged-right for just this line) than
-  // stretched into something that reads as broken.
-  if (justifyExtra > 0 && actualGapCount >= 1) {
+  // Keep the anti-"giant gap" guard only for genuinely sparse lines.
+  // Applying the stretch cap to normal prose (3+ gaps) leaves a visible ragged
+  // right edge even when the user explicitly selected Justify. With several
+  // gaps there is enough room to distribute the remainder naturally, so let
+  // those lines reach the full text width. One/two-gap lines retain the old
+  // protection against absurdly wide spaces.
+  if (justifyExtra > 0 && actualGapCount >= 1 && actualGapCount <= 2) {
     const int averageNaturalGap = std::max(1, totalNaturalGaps / static_cast<int>(actualGapCount));
     justifyExtra = std::min(justifyExtra, averageNaturalGap * 2);
   }
