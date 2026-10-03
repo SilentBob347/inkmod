@@ -1215,6 +1215,259 @@ static bool renderOrdinalToCanonicalSourceElement(const std::string& packageCach
   return true;
 }
 
+// Convert inkMOD's flat visible-character offset inside one synthetic FB2
+// paragraph back into the real FB2 DOM text node. A source paragraph may be:
+//
+//   <p>plain <emphasis>inline</emphasis> tail</p>
+//
+// inkMOD's XHTML flattens that to one text stream, while CREngine addresses it
+// as text()[1], emphasis[1]/text(), text()[2]. Publishing the flat offset as
+// /p[N]/text().K makes KOReader reject positions that cross an inline element
+// and fall back to page 1 / the cover.
+class SourceFlatTextOffsetResolver {
+ public:
+  SourceFlatTextOffsetResolver(uint16_t targetBody, std::vector<uint16_t> targetSections,
+                               int wantedRenderOrdinal, int wantedFlatOffset)
+      : targetBody_(targetBody),
+        targetSections_(std::move(targetSections)),
+        wantedRenderOrdinal_(wantedRenderOrdinal),
+        wantedFlatOffset_(std::max(0, wantedFlatOffset)) {
+    parser_ = XML_ParserCreate(nullptr);
+    if (!parser_) return;
+    XML_SetUserData(parser_, this);
+    XML_SetElementHandler(parser_, &SourceFlatTextOffsetResolver::startElement,
+                          &SourceFlatTextOffsetResolver::endElement);
+    XML_SetCharacterDataHandler(parser_, &SourceFlatTextOffsetResolver::characterData);
+  }
+
+  ~SourceFlatTextOffsetResolver() {
+    if (parser_) XML_ParserFree(parser_);
+  }
+
+  bool ok() const { return parser_ != nullptr && parseOk_; }
+  bool feed(const uint8_t* data, size_t len, bool finalChunk) {
+    if (!parser_ || !parseOk_ || stopped_) return parseOk_;
+    if (XML_Parse(parser_, reinterpret_cast<const char*>(data), static_cast<int>(len),
+                  finalChunk ? XML_TRUE : XML_FALSE) != XML_STATUS_OK) {
+      if (XML_GetErrorCode(parser_) != XML_ERROR_ABORTED) parseOk_ = false;
+    }
+    return parseOk_;
+  }
+
+  const std::string& relativeTextXPath() const { return resultPath_; }
+  int localOffset() const { return resultOffset_; }
+
+ private:
+  struct Holder {
+    SourceXmlFrame frame;
+    int textNodeIndex = 0;
+    bool inTextNode = false;
+  };
+
+  static void XMLCALL startElement(void* ud, const XML_Char* raw, const XML_Char**) {
+    static_cast<SourceFlatTextOffsetResolver*>(ud)->onStart(raw);
+  }
+  static void XMLCALL endElement(void* ud, const XML_Char* raw) {
+    static_cast<SourceFlatTextOffsetResolver*>(ud)->onEnd(raw);
+  }
+  static void XMLCALL characterData(void* ud, const XML_Char* text, int len) {
+    static_cast<SourceFlatTextOffsetResolver*>(ud)->onText(text, len);
+  }
+
+  std::vector<uint16_t> currentSectionPath() const {
+    std::vector<uint16_t> out;
+    bool bodySeen = false;
+    for (const auto& f : frames_) {
+      if (!bodySeen) {
+        if (f.frame.name == "body" && f.frame.siblingIndex == targetBody_) bodySeen = true;
+        continue;
+      }
+      if (f.frame.name == "section") out.push_back(static_cast<uint16_t>(f.frame.siblingIndex));
+    }
+    return out;
+  }
+
+  bool inTargetSection() const {
+    return currentSectionPath() == targetSections_;
+  }
+
+  std::string currentRelativePath() const {
+    std::string out;
+    if (!inTargetSection()) return out;
+    bool afterTarget = false;
+    size_t sectionDepth = 0;
+    for (const auto& f : frames_) {
+      if (f.frame.name == "body") continue;
+      if (f.frame.name == "section") {
+        ++sectionDepth;
+        if (sectionDepth == targetSections_.size()) afterTarget = true;
+        continue;
+      }
+      if (afterTarget) {
+        out += "/" + f.frame.name + "[" + std::to_string(f.frame.siblingIndex) + "]";
+      }
+    }
+    return out;
+  }
+
+  static size_t countCodepoints(const XML_Char* text, int len) {
+    if (!text || len <= 0) return 0;
+    size_t count = 0;
+    const unsigned char* ptr = reinterpret_cast<const unsigned char*>(text);
+    const unsigned char* end = ptr + len;
+    while (ptr < end) {
+      utf8NextCodepoint(&ptr);
+      ++count;
+    }
+    return count;
+  }
+
+  static std::string appendTextNode(std::string elementPath, int textNodeIndex) {
+    if (textNodeIndex <= 1) {
+      elementPath += "/text()";
+    } else {
+      elementPath += "/text()[" + std::to_string(textNodeIndex) + "]";
+    }
+    return elementPath;
+  }
+
+  void onStart(const XML_Char* raw) {
+    const std::string name = sourceLocalName(raw);
+    int sibling = 1;
+    if (!frames_.empty()) {
+      frames_.back().inTextNode = false;
+      sibling = frames_.back().frame.nextChildIndex(name);
+    }
+
+    Holder holder;
+    holder.frame.name = name;
+    holder.frame.siblingIndex = sibling;
+    frames_.push_back(std::move(holder));
+
+    if (targetDepth_ != 0) return;
+    if (!inTargetSection() || !isRenderedParagraphSourceTag(name)) return;
+
+    ++renderOrdinal_;
+    if (renderOrdinal_ == wantedRenderOrdinal_) {
+      targetDepth_ = frames_.size();
+      consumed_ = 0;
+    }
+  }
+
+  void onText(const XML_Char* text, int len) {
+    if (targetDepth_ == 0 || frames_.size() < targetDepth_ || len <= 0) return;
+
+    Holder& holder = frames_.back();
+    if (!holder.inTextNode) {
+      holder.inTextNode = true;
+      ++holder.textNodeIndex;
+    }
+
+    const size_t count = countCodepoints(text, len);
+    if (count == 0) return;
+
+    const std::string path = appendTextNode(currentRelativePath(), holder.textNodeIndex);
+    lastTextPath_ = path;
+    lastTextLength_ = static_cast<int>(count);
+
+    const size_t wanted = static_cast<size_t>(wantedFlatOffset_);
+    if (wanted < consumed_ + count) {
+      resultPath_ = path;
+      resultOffset_ = static_cast<int>(wanted - consumed_);
+      stop();
+      return;
+    }
+    consumed_ += count;
+  }
+
+  void onEnd(const XML_Char*) {
+    if (frames_.empty()) return;
+
+    const bool closingTarget = targetDepth_ != 0 && frames_.size() == targetDepth_;
+    frames_.pop_back();
+    if (!frames_.empty()) frames_.back().inTextNode = false;
+
+    if (closingTarget) {
+      if (resultPath_.empty() && !lastTextPath_.empty()) {
+        resultPath_ = lastTextPath_;
+        resultOffset_ = lastTextLength_;
+      }
+      stop();
+    }
+  }
+
+  void stop() {
+    stopped_ = true;
+    XML_StopParser(parser_, XML_FALSE);
+  }
+
+  XML_Parser parser_ = nullptr;
+  bool parseOk_ = true;
+  bool stopped_ = false;
+  uint16_t targetBody_ = 1;
+  std::vector<uint16_t> targetSections_;
+  int wantedRenderOrdinal_ = 0;
+  int wantedFlatOffset_ = 0;
+  int renderOrdinal_ = 0;
+  size_t targetDepth_ = 0;
+  size_t consumed_ = 0;
+  std::string resultPath_;
+  int resultOffset_ = 0;
+  std::string lastTextPath_;
+  int lastTextLength_ = 0;
+  std::vector<Holder> frames_;
+};
+
+static bool resolveCanonicalFb2TextOffset(const std::string& packageCachePath,
+                                          int originalSectionOrdinal,
+                                          int renderOrdinal,
+                                          int flatCharOffset,
+                                          std::string& outXPath) {
+  outXPath.clear();
+  if (renderOrdinal <= 0) return false;
+
+  uint16_t body = 1;
+  std::vector<uint16_t> sections;
+  if (!Fb2::getSourceSectionPath(packageCachePath, originalSectionOrdinal, body, sections)) return false;
+
+  std::string sourcePath;
+  if (!readPreparedFb2SourcePath(packageCachePath, sourcePath)) return false;
+
+  HalFile source;
+  if (!Storage.openFileForRead("PM", sourcePath, source)) return false;
+
+  SourceFlatTextOffsetResolver parser(body, sections, renderOrdinal, flatCharOffset);
+  if (!parser.ok()) {
+    source.close();
+    return false;
+  }
+
+  uint8_t buf[1024];
+  bool ok = true;
+  for (;;) {
+    const int got = source.read(buf, sizeof(buf));
+    if (got < 0) {
+      ok = false;
+      break;
+    }
+    if (got == 0) break;
+    if (!parser.feed(buf, static_cast<size_t>(got), false)) {
+      ok = false;
+      break;
+    }
+    if (!parser.relativeTextXPath().empty()) break;
+  }
+  if (ok && parser.relativeTextXPath().empty()) parser.feed(nullptr, 0, true);
+  source.close();
+
+  if (!ok || parser.relativeTextXPath().empty()) return false;
+  const std::string base = Fb2::buildCanonicalSourceSectionXPath(packageCachePath, originalSectionOrdinal);
+  if (base.empty()) return false;
+
+  outXPath = base + parser.relativeTextXPath() + "." + std::to_string(std::max(0, parser.localOffset()));
+  return true;
+}
+
 
 static std::string normalizeSyncSourceText(const std::string& in) {
   std::string out;
@@ -1698,8 +1951,12 @@ std::string ProgressMapper::generateFb2SourceXPath(const std::shared_ptr<Epub>& 
   std::string out;
   if (sourceElement.find("/empty-line[") != std::string::npos) {
     out = sourceElement + ".0";
+  } else if (resolveCanonicalFb2TextOffset(packageCachePath, originalSectionOrdinal,
+                                            sourceRenderOrdinal, charOffset, out)) {
+    LOG_INF("PM", "FB2 inline-aware upload: flatChar=%d -> %s", charOffset, out.c_str());
   } else {
     out = sourceElement + "/text()." + std::to_string(std::max(0, charOffset));
+    LOG_ERR("PM", "FB2 inline text-node map failed; using flat offset fallback");
   }
   LOG_INF("PM", "FB2 canonical upload: sourceSection=%d element=%s virtual=%d range=%d..%d localP=%d char=%d renderP=%d",
           originalSectionOrdinal, sourceElement.c_str(), pos.spineIndex, rangeStart, rangeEnd,
